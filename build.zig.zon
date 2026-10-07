@@ -1,0 +1,8 @@
+.{
+    .name = .warp,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0",
+    .fingerprint = 0xd3b58c6615b10424,
+    .paths = .{ "build.zig", "build.zig.zon", "src", "bench", "README.md", "CHANGELOG.md", "LICENSE" },
+    .dependencies = .{},
+}
