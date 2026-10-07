@@ -433,6 +433,8 @@ pub fn histogram(bytes: []const u8, counts: *[max_symbols]u32) struct { max_symb
 pub const EncodeTable = struct {
     codes: [max_symbols]u16,
     lens: [max_symbols]u8,
+    /// code << 8 | length: one load per symbol when coding.
+    cells: [max_symbols]u32,
     /// The largest symbol it was built for: the description's implied one.
     max_symbol: u8,
     /// The longest code.
@@ -506,12 +508,14 @@ pub const EncodeTable = struct {
             min += per_len[l];
             min >>= 1;
         }
-        for (t.lens[0..counts.len], t.codes[0..counts.len]) |len, *code| {
+        for (t.lens[0..counts.len], t.codes[0..counts.len], t.cells[0..counts.len]) |len, *code, *cell| {
             if (len == 0) {
                 code.* = 0;
+                cell.* = 0;
                 continue;
             }
             code.* = value[len];
+            cell.* = @as(u32, code.*) << 8 | len;
             value[len] += 1;
         }
         t.max_symbol = @intCast(counts.len - 1);
@@ -694,17 +698,19 @@ pub fn compress1(t: *const EncodeTable, src: []const u8, out: []u8) usize {
     if (out.len < 8) return 0;
     var w: Writer = .init(out, 0);
     var i = src.len;
+    const cells = &t.cells;
     while (i >= 4) {
         inline for (1..5) |k| {
-            const sym = src[i - k];
-            w.add(t.codes[sym], @intCast(t.lens[sym]));
+            const cell = cells[src[i - k]];
+            w.add(cell >> 8, @truncate(cell));
         }
         w.flush();
         i -= 4;
     }
     while (i > 0) {
         i -= 1;
-        w.add(t.codes[src[i]], @intCast(t.lens[src[i]]));
+        const cell = cells[src[i]];
+        w.add(cell >> 8, @truncate(cell));
     }
     w.add(1, 1);
     w.alignToByte();

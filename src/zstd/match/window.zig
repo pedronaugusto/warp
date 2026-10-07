@@ -81,6 +81,66 @@ pub inline fn read32(in: []const u8, p: usize) u32 {
     return std.mem.readInt(u32, in[p..][0..4], .little);
 }
 
+/// The input addressed by index: index `i` is the byte at `base + i`. One
+/// register serves current positions and candidates alike, as in the
+/// reference encoder's loops.
+pub const Bytes = struct {
+    base: usize,
+
+    pub fn of(w: Window) Bytes {
+        // safe: an address, only ever offset by indices of `w.in`
+        return .{ .base = @intFromPtr(w.in.ptr) -% w.start };
+    }
+
+    pub inline fn ptr(b: Bytes, i: usize) [*]const u8 {
+        return @ptrFromInt(b.base +% i);
+    }
+
+    pub inline fn byte(b: Bytes, i: usize) u8 {
+        return b.ptr(i)[0];
+    }
+
+    pub inline fn load32(b: Bytes, i: usize) u32 {
+        return std.mem.readInt(u32, b.ptr(i)[0..4], .little);
+    }
+
+    pub inline fn load64(b: Bytes, i: usize) u64 {
+        return std.mem.readInt(u64, b.ptr(i)[0..8], .little);
+    }
+
+    /// `hash` of the bytes at index `i`.
+    pub inline fn hash(b: Bytes, i: usize, bits: u5, comptime mls: u4) u32 {
+        switch (mls) {
+            4 => return (b.load32(i) *% prime4) >> @intCast(@as(u6, 32) - bits),
+            5, 6, 7, 8 => {
+                const v = b.load64(i);
+                const prime = switch (mls) {
+                    5 => prime5,
+                    6 => prime6,
+                    7 => prime7,
+                    else => prime8,
+                };
+                const shifted = if (mls == 8) v else v << (64 - 8 * @as(u7, mls));
+                return @intCast((shifted *% prime) >> @intCast(@as(u7, 64) - bits));
+            },
+            else => @compileError("hash of 4 to 8 bytes"),
+        }
+    }
+
+    /// `count` by index: the match between `a` and `b` (`a < b`) up to `end`.
+    pub inline fn count(b: Bytes, a: usize, c: usize, end: usize) usize {
+        var len: usize = 0;
+        const limit = end - c;
+        while (len + 8 <= limit) {
+            const x = b.load64(a + len) ^ b.load64(c + len);
+            if (x != 0) return len + @ctz(x) / 8;
+            len += 8;
+        }
+        while (len < limit and b.byte(a + len) == b.byte(c + len)) len += 1;
+        return len;
+    }
+};
+
 test "hashes are the reference's, and counts stop at the end" {
     const in = "abcdefghabcdefgh-tail--";
     try std.testing.expectEqual((std.mem.readInt(u32, "abcd", .little) *% prime4) >> 18, hash(in, 0, 14, 4));

@@ -64,15 +64,24 @@ pub const SeqStore = struct {
         s.long = null;
     }
 
-    /// A sequence: `literals`, then a match of `match_len` with offset
-    /// value `off`.
-    pub inline fn store(s: *SeqStore, literals: []const u8, off: u32, match_len: usize) void {
-        @memcpy(s.lits[s.lit_len..][0..literals.len], literals);
-        s.lit_len += literals.len;
-        if (literals.len > 0xffff) s.long = .{ .index = @intCast(s.count), .match = false };
+    /// A sequence: the literals `in[from..to]`, then a match of
+    /// `match_len` with offset value `off`. `limit` is how far `in` may be
+    /// read: literals that end 32 bytes before it are copied 16 at a time.
+    pub inline fn store(s: *SeqStore, in: []const u8, from: usize, to: usize, limit: usize, off: u32, match_len: usize) void {
+        const len = to - from;
+        const dst = s.lits[s.lit_len..];
+        if (to + 32 <= limit) {
+            copy16(dst.ptr, in[from..].ptr);
+            var i: usize = 16;
+            while (i < len) : (i += 16) copy16(dst.ptr + i, in[from + i ..].ptr);
+        } else {
+            @memcpy(dst[0..len], in[from..to]);
+        }
+        s.lit_len += len;
+        if (len > 0xffff) s.long = .{ .index = @intCast(s.count), .match = false };
         const ml = match_len - codes.min_match;
         if (ml > 0xffff) s.long = .{ .index = @intCast(s.count), .match = true };
-        s.seqs[s.count] = .{ .off = off, .lit = @truncate(literals.len), .ml = @truncate(ml) };
+        s.seqs[s.count] = .{ .off = off, .lit = @truncate(len), .ml = @truncate(ml) };
         s.count += 1;
     }
 
@@ -94,18 +103,52 @@ pub const SeqStore = struct {
         return m;
     }
 
-    /// The three codes of every sequence.
-    fn toCodes(s: *SeqStore) void {
-        for (s.seqs[0..s.count], s.ll_codes[0..s.count], s.ml_codes[0..s.count], s.of_codes[0..s.count]) |q, *ll, *ml, *of| {
+    /// How often each code occurs.
+    const Counts = struct {
+        ll: [64]u32,
+        of: [64]u32,
+        ml: [64]u32,
+    };
+
+    /// The three codes of every sequence, and their counts (two tables
+    /// each, even and odd sequences, so that runs of one code do not wait
+    /// on their own increments).
+    fn toCodes(s: *SeqStore, counts: *Counts) void {
+        var c: [2]Counts = .{ std.mem.zeroes(Counts), std.mem.zeroes(Counts) };
+        const n = s.count;
+        for (s.seqs[0..n], s.ll_codes[0..n], s.ml_codes[0..n], s.of_codes[0..n], 0..) |q, *ll, *ml, *of, i| {
             ll.* = codes.llCode(q.lit);
             ml.* = codes.mlCode(@as(u32, q.ml) + codes.min_match);
             of.* = codes.ofCode(q.off);
+            const t = &c[i & 1];
+            t.ll[ll.*] += 1;
+            t.ml[ml.*] += 1;
+            t.of[of.*] += 1;
         }
         if (s.long) |long| {
-            if (long.match) s.ml_codes[long.index] = codes.max_ml else s.ll_codes[long.index] = codes.max_ll;
+            const t = &c[long.index & 1];
+            if (long.match) {
+                t.ml[s.ml_codes[long.index]] -= 1;
+                s.ml_codes[long.index] = codes.max_ml;
+                t.ml[codes.max_ml] += 1;
+            } else {
+                t.ll[s.ll_codes[long.index]] -= 1;
+                s.ll_codes[long.index] = codes.max_ll;
+                t.ll[codes.max_ll] += 1;
+            }
+        }
+        for (0..64) |k| {
+            counts.ll[k] = c[0].ll[k] + c[1].ll[k];
+            counts.of[k] = c[0].of[k] + c[1].of[k];
+            counts.ml[k] = c[0].ml[k] + c[1].ml[k];
         }
     }
 };
+
+inline fn copy16(dst: [*]u8, src: [*]const u8) void {
+    const v: @Vector(16, u8) = src[0..16].*;
+    dst[0..16].* = v;
+}
 
 pub const Repeat = enum {
     /// No table to repeat.
@@ -189,18 +232,18 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
         next.ml_repeat = prev.ml_repeat;
         return o;
     }
-    store.toCodes();
+    var counts: SeqStore.Counts = undefined;
+    store.toCodes(&counts);
     const modes_at = o;
     o += 1;
     var last_table: usize = 0;
-    const ll = codeTable(LlTable, store.ll_codes[0..count], codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, true, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, out[o..]) orelse return null;
+    const ll = codeTable(LlTable, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, out[o..]) orelse return null;
     o += ll.len;
     if (ll.mode == .compressed) last_table = ll.len;
-    const max_of = maxCode(store.of_codes[0..count]);
-    const of = codeTable(OfTable, store.of_codes[0..count], codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, max_of <= 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, out[o..]) orelse return null;
+    const of = codeTable(OfTable, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, out[o..]) orelse return null;
     o += of.len;
     if (of.mode == .compressed) last_table = of.len;
-    const ml = codeTable(MlTable, store.ml_codes[0..count], codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, true, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, out[o..]) orelse return null;
+    const ml = codeTable(MlTable, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, out[o..]) orelse return null;
     o += ml.len;
     if (ml.mode == .compressed) last_table = ml.len;
     out[modes_at] = @as(u8, @intFromEnum(ll.mode)) << 6 | @as(u8, @intFromEnum(of.mode)) << 4 | @as(u8, @intFromEnum(ml.mode)) << 2;
@@ -209,12 +252,6 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
     // than 4 bytes with the stream; the reference sends such a block raw.
     if (last_table != 0 and last_table + stream < 4) return null;
     return o + stream;
-}
-
-fn maxCode(c: []const u8) u8 {
-    var m: u8 = 0;
-    for (c) |x| m = @max(m, x);
-    return m;
 }
 
 // ---- literals ----
@@ -378,14 +415,19 @@ const TableResult = struct { mode: Mode, len: usize };
 
 /// Choose and write one code's table: predefined, RLE, compressed (a new
 /// description) or repeated.
+/// `counts` are the code's counts over `total` sequences, `last` the last
+/// sequence's code; the predefined table is allowed when no code is above
+/// `default_max` (null: always).
 fn codeTable(
     comptime T: type,
-    symbols: []const u8,
+    counts: *[64]u32,
+    last: u8,
+    total_: usize,
     max: u8,
     max_log: u4,
     default_norm: []const i16,
     default_log: u4,
-    default_allowed: bool,
+    default_max: ?u8,
     prev: *const T,
     prev_repeat: Repeat,
     next: *T,
@@ -393,8 +435,6 @@ fn codeTable(
     strategy: Strategy,
     out: []u8,
 ) ?TableResult {
-    var counts: [64]u32 = @splat(0);
-    for (symbols) |sym| counts[sym] += 1;
     var top: u8 = 0;
     var most: u32 = 0;
     for (counts[0 .. @as(usize, max) + 1], 0..) |c, sym| {
@@ -402,8 +442,9 @@ fn codeTable(
         most = @max(most, c);
     }
     const used = counts[0 .. @as(usize, top) + 1];
+    const default_allowed = if (default_max) |m| top <= m else true;
     var repeat = prev_repeat;
-    const mode = selectMode(&repeat, used, most, symbols.len, max_log, prev, default_norm, default_log, default_allowed, strategy);
+    const mode = selectMode(&repeat, used, most, total_, max_log, prev, default_norm, default_log, default_allowed, strategy);
     next_repeat.* = repeat;
     switch (mode) {
         .rle => {
@@ -421,14 +462,13 @@ fn codeTable(
             return .{ .mode = .predefined, .len = 0 };
         },
         .compressed => {
-            var total = symbols.len;
+            var total = total_;
             // The last symbol is the state's start, coded for free.
-            const last = symbols[symbols.len - 1];
             if (counts[last] > 1) {
                 counts[last] -= 1;
                 total -= 1;
             }
-            const log = fse.optimalLog(max_log, symbols.len, top, 2);
+            const log = fse.optimalLog(max_log, total_, top, 2);
             var norm: [64]i16 = undefined;
             fse.normalize(norm[0..used.len], log, used, total, total >= 2048) catch return null;
             if (out.len < fse.countsBound(top, log)) return null;
@@ -544,7 +584,7 @@ fn descriptionCost(counts: []const u32, total: usize, max_log: u4) usize {
 
 /// The sequences bitstream: last sequence first, so the decoder reads the
 /// first first.
-fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of_table: *const OfTable, ml_table: *const MlTable, out: []u8) ?usize {
+noinline fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of_table: *const OfTable, ml_table: *const MlTable, out: []u8) ?usize {
     const n = store.count;
     if (out.len < 8) return null;
     var w: Writer = .init(out, 0);
@@ -562,7 +602,9 @@ fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of_table: *
         huffman.encodeFse(&w, of_table, &of_state, ofc);
         huffman.encodeFse(&w, ml_table, &ml_state, mlc);
         huffman.encodeFse(&w, ll_table, &ll_state, llc);
-        w.flush();
+        // 7 bits at most before the states, 26 in them: the extra bits
+        // fit unless they reach 31.
+        if (@as(u32, codes.ll_bits[llc]) + codes.ml_bits[mlc] + ofc >= 64 - 7 - (9 + 9 + 8)) w.flush();
         extraBits(&w, store, i);
     }
     flushState(&w, ml_state, ml_table.log);
