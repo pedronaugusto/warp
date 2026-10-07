@@ -719,13 +719,24 @@ fn copyCareful(s: *Stream, distance: usize, length: usize) void {
     s.op += length;
 }
 
-/// A match that starts in the history: the part there, then the rest from
-/// the output, which it may overlap.
+/// A match that starts in the history, from the fast loop (the output has
+/// `margin` bytes of room): the part in the history sixteen bytes at a
+/// time where one piece of it holds them, then the rest from the output,
+/// which it may overlap.
 fn copyFromHistory(s: *Stream, op: usize, distance: usize, length: usize) void {
     const back = op - s.start;
-    const from_history = @min(length, distance - back);
-    s.history.copyOut(distance - back, s.out[op..][0..from_history]);
-    for (from_history..length) |i| s.out[op + i] = s.out[op + i - distance];
+    const k = distance - back;
+    const from_history = @min(length, k);
+    const h = s.history;
+    const at = h.len() - k;
+    const piece = if (at >= h.older.len) h.newer[at - h.older.len ..] else h.older[at..];
+    if (from_history + 15 <= piece.len) {
+        // Up to fifteen bytes past the part are written, inside the margin.
+        const dst = s.out[op..].ptr;
+        var i: usize = 0;
+        while (i < from_history) : (i += 16) dst[i..][0..16].* = piece[i..][0..16].*;
+    } else h.copyOut(k, s.out[op..][0..from_history]);
+    if (from_history < length) copyMatch(s.out, op + from_history, distance, length - from_history);
 }
 
 /// Copy `length` bytes from `distance` back to `op`, sixteen at a time; up

@@ -140,10 +140,11 @@ pub const Sizes = struct {
             .ht_bits = hash_bits,
             .short_bits = hash_bits - 4,
             .window = window,
-            // Blocks of up to 4,096 matches and 32 KiB of literals, less in
-            // a small window.
+            // Blocks of up to 4,096 matches and 16 KiB of literals (zlib's
+            // 16,384 symbols at its default memLevel), less in a small
+            // window.
             .sequences = @min(4096, @max(512, window / 2)),
-            .literals = @min(32768, @max(4096, window * 4)),
+            .literals = @min(16384, @max(4096, window * 4)),
             .table = true,
             .chains = true,
         };

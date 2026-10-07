@@ -4,7 +4,7 @@
 //! row times warp beside the code it replaces in the family
 //! (bench/baseline/), interleaved, best and median of the runs.
 //!
-//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup]...
+//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket]...
 //!
 //! `--smoke` runs every row once on tiny inputs; `zig build test` does that.
 
@@ -13,6 +13,7 @@ const Io = std.Io;
 const warp = @import("warp");
 const gen = @import("gen");
 const baseline = @import("baseline");
+const stream = @import("stream.zig");
 
 const Options = struct {
     smoke: bool = false,
@@ -46,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
             options.runs = try std.fmt.parseInt(usize, args[i], 10);
         } else try what.append(arena, args[i]);
     }
-    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup" });
+    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup", "stream-decode", "stream-compress", "websocket" });
     if (options.smoke) options.runs = 1;
 
     var out_buf: [4096]u8 = undefined;
@@ -66,9 +67,26 @@ pub fn main(init: std.process.Init) !void {
             try compress(arena, io, w, options, workloads);
         } else if (std.mem.eql(u8, name, "setup")) {
             try setup(arena, io, w, options);
+        } else if (std.mem.eql(u8, name, "stream-decode")) {
+            const run: stream.Run = .{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke };
+            const wls = try streamWorkloads(arena, workloads);
+            const streams = try arena.alloc([]const []const u8, wls.len);
+            for (wls, streams) |wl, *s| s.* = try zlibStreams(arena, .{ .name = wl.name, .inputs = wl.inputs, .total = wl.total, .max = wl.max }, .level_6);
+            try stream.decode(run, wls, streams);
+        } else if (std.mem.eql(u8, name, "stream-compress")) {
+            try stream.compress(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke }, try streamWorkloads(arena, workloads));
+        } else if (std.mem.eql(u8, name, "websocket")) {
+            try stream.websocket(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke });
         } else return error.UnknownBenchmark;
         try w.flush();
     }
+}
+
+/// The workloads as the streaming rows take them.
+fn streamWorkloads(arena: std.mem.Allocator, workloads: []const Workload) ![]stream.Workload {
+    const list = try arena.alloc(stream.Workload, workloads.len);
+    for (list, workloads) |*s, wl| s.* = .{ .name = wl.name, .inputs = wl.inputs, .total = wl.total, .max = wl.max };
+    return list;
 }
 
 fn loadWorkloads(arena: std.mem.Allocator, io: Io, options: Options) ![]Workload {
