@@ -4,6 +4,7 @@
 //! repeat offset is tried one position ahead.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const window = @import("window.zig");
 const encode = @import("../encode.zig");
 
@@ -114,6 +115,9 @@ pub noinline fn compress(
             ip1 += step;
             hl0 = hl1;
             idxl0 = idxl1;
+            // AArch64 cores keep ahead of the scan with this (as the
+            // reference does there); x86 prefetchers need no help.
+            if (builtin.cpu.arch == .aarch64) @prefetch(b.ptr(ip + 256), .{});
             if (ip1 > limit) break :search .none;
         };
         switch (outcome) {
