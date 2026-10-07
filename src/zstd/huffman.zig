@@ -412,11 +412,9 @@ pub fn histogram(bytes: []const u8, counts: *[max_symbols]u32) struct { max_symb
     // Four tables break the store-to-load chain of repeated bytes.
     var c: [4][max_symbols]u32 = @splat(@splat(0));
     var i: usize = 0;
-    while (i + 4 <= bytes.len) : (i += 4) {
-        c[0][bytes[i]] += 1;
-        c[1][bytes[i + 1]] += 1;
-        c[2][bytes[i + 2]] += 1;
-        c[3][bytes[i + 3]] += 1;
+    while (i + 8 <= bytes.len) : (i += 8) {
+        const v = std.mem.readInt(u64, bytes[i..][0..8], .little);
+        inline for (0..8) |k| c[k & 3][@as(u8, @truncate(v >> (8 * k)))] += 1;
     }
     while (i < bytes.len) : (i += 1) c[0][bytes[i]] += 1;
     var max_symbol: u8 = 0;
@@ -447,17 +445,9 @@ pub const EncodeTable = struct {
     pub fn build(t: *EncodeTable, counts: []const u32, max_bits: u4) void {
         // Leaves by count, most frequent first, at 1..n; 0 is a sentinel.
         var nodes: [2 * max_symbols + 2]Node = undefined;
-        var keys: [max_symbols]u64 = undefined;
-        var n: usize = 0;
-        for (counts, 0..) |c, sym| {
-            if (c == 0) continue;
-            keys[n] = @as(u64, c) << 8 | (255 - sym);
-            n += 1;
-        }
-        std.debug.assert(n >= 2);
-        std.sort.pdq(u64, keys[0..n], {}, std.sort.desc(u64));
         nodes[0] = .{ .count = 1 << 31, .parent = 0, .symbol = 0, .bits = 0 };
-        for (keys[0..n], 1..) |k, j| nodes[j] = .{ .count = @intCast(k >> 8), .parent = 0, .symbol = @intCast(255 - (k & 0xff)), .bits = 0 };
+        const n = sortLeaves(counts, nodes[1..]);
+        std.debug.assert(n >= 2);
         // Internal nodes from `start`, merged from the two queues.
         const start = max_symbols + 1;
         var low_s: usize = n;
@@ -520,6 +510,56 @@ pub const EncodeTable = struct {
         }
         t.max_symbol = @intCast(counts.len - 1);
         t.log = max;
+    }
+
+    /// Bucket of a count: small counts each their own, larger ones by
+    /// power of two (the reference encoder's buckets).
+    fn bucket(c: u32) u32 {
+        const distinct = 165;
+        return if (c < distinct) c else @as(u32, std.math.log2_int(u32, c)) + 158;
+    }
+
+    /// The present symbols as leaves, by count, most frequent first, ties
+    /// in symbol order: a counting sort by bucket, then each power-of-two
+    /// bucket sorted in place (they are small). Returns how many.
+    fn sortLeaves(counts: []const u32, leaves: []Node) usize {
+        const buckets = 192;
+        var size: [buckets + 1]u16 = @splat(0);
+        var n: usize = 0;
+        for (counts) |c| {
+            if (c == 0) continue;
+            size[bucket(c)] += 1;
+            n += 1;
+        }
+        // Start of each bucket, from the highest down.
+        var at: [buckets + 1]u16 = undefined;
+        var sum: u16 = 0;
+        var k: usize = buckets + 1;
+        while (k > 0) {
+            k -= 1;
+            at[k] = sum;
+            sum += size[k];
+        }
+        for (counts, 0..) |c, sym| {
+            if (c == 0) continue;
+            const b = bucket(c);
+            leaves[at[b]] = .{ .count = c, .parent = 0, .symbol = @intCast(sym), .bits = 0 };
+            at[b] += 1;
+        }
+        for (165..buckets) |bk| {
+            if (size[bk] < 2) continue;
+            const end = at[bk];
+            const begin = end - size[bk];
+            // Insertion sort, stable: descending count.
+            var i = begin + 1;
+            while (i < end) : (i += 1) {
+                const x = leaves[i];
+                var j = i;
+                while (j > begin and leaves[j - 1].count < x.count) : (j -= 1) leaves[j] = leaves[j - 1];
+                leaves[j] = x;
+            }
+        }
+        return n;
     }
 
     /// Lengths of leaves sorted by count (most frequent first) cut to
@@ -684,6 +724,15 @@ fn compressWeights(weights: []const u8, out: []u8) ?usize {
     return o;
 }
 
+/// `w.flush()` where the output is known to have room: no check.
+pub inline fn flushUnchecked(w: *Writer) void {
+    std.mem.writeInt(u64, w.out[w.at..][0..8], w.bitbuf, .little);
+    const n = w.count >> 3;
+    w.at += n;
+    w.bitbuf >>= @intCast(@as(u7, n) << 3);
+    w.count &= 7;
+}
+
 /// One FSE symbol into `w`: the state's low bits out, the next state in.
 pub inline fn encodeFse(w: *Writer, table: anytype, state: *u32, symbol: u8) void {
     const tt = table.transforms[symbol];
@@ -696,6 +745,12 @@ pub inline fn encodeFse(w: *Writer, table: anytype, state: *u32, symbol: u8) voi
 /// fit.
 pub fn compress1(t: *const EncodeTable, src: []const u8, out: []u8) usize {
     if (out.len < 8) return 0;
+    // With room for every symbol at the longest code, no write is checked.
+    if (out.len >= (src.len * max_log) / 8 + 16) return encodeStream(t, src, out, false);
+    return encodeStream(t, src, out, true);
+}
+
+fn encodeStream(t: *const EncodeTable, src: []const u8, out: []u8, comptime checked: bool) usize {
     var w: Writer = .init(out, 0);
     var i = src.len;
     const cells = &t.cells;
@@ -704,7 +759,7 @@ pub fn compress1(t: *const EncodeTable, src: []const u8, out: []u8) usize {
             const cell = cells[src[i - k]];
             w.add(cell >> 8, @truncate(cell));
         }
-        w.flush();
+        if (checked) w.flush() else flushUnchecked(&w);
         i -= 4;
     }
     while (i > 0) {

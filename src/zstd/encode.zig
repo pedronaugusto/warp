@@ -584,7 +584,14 @@ fn descriptionCost(counts: []const u32, total: usize, max_log: u4) usize {
 
 /// The sequences bitstream: last sequence first, so the decoder reads the
 /// first first.
-noinline fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of_table: *const OfTable, ml_table: *const MlTable, out: []u8) ?usize {
+fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of_table: *const OfTable, ml_table: *const MlTable, out: []u8) ?usize {
+    // A sequence takes at most 89 bits: with room for that many, no write
+    // is checked.
+    if (out.len >= store.count * 12 + 32) return sequenceStream(store, ll_table, of_table, ml_table, out, false);
+    return sequenceStream(store, ll_table, of_table, ml_table, out, true);
+}
+
+noinline fn sequenceStream(store: *const SeqStore, ll_table: *const LlTable, of_table: *const OfTable, ml_table: *const MlTable, out: []u8, comptime checked: bool) ?usize {
     const n = store.count;
     if (out.len < 8) return null;
     var w: Writer = .init(out, 0);
@@ -592,7 +599,7 @@ noinline fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of
     var ll_state = ll_table.initState(store.ll_codes[last]);
     var ml_state = ml_table.initState(store.ml_codes[last]);
     var of_state = of_table.initState(store.of_codes[last]);
-    extraBits(&w, store, last);
+    extraBits(&w, store, last, checked);
     var i = last;
     while (i > 0) {
         i -= 1;
@@ -604,8 +611,8 @@ noinline fn encodeSequences(store: *const SeqStore, ll_table: *const LlTable, of
         huffman.encodeFse(&w, ll_table, &ll_state, llc);
         // 7 bits at most before the states, 26 in them: the extra bits
         // fit unless they reach 31.
-        if (@as(u32, codes.ll_bits[llc]) + codes.ml_bits[mlc] + ofc >= 64 - 7 - (9 + 9 + 8)) w.flush();
-        extraBits(&w, store, i);
+        if (@as(u32, codes.ll_bits[llc]) + codes.ml_bits[mlc] + ofc >= 64 - 7 - (9 + 9 + 8)) flush(&w, checked);
+        extraBits(&w, store, i, checked);
     }
     flushState(&w, ml_state, ml_table.log);
     flushState(&w, of_state, of_table.log);
@@ -622,7 +629,11 @@ inline fn flushState(w: *Writer, state: u32, log: u4) void {
 }
 
 /// A sequence's extra bits: literal length, match length, offset.
-inline fn extraBits(w: *Writer, store: *const SeqStore, i: usize) void {
+inline fn flush(w: *Writer, comptime checked: bool) void {
+    if (checked) w.flush() else huffman.flushUnchecked(w);
+}
+
+inline fn extraBits(w: *Writer, store: *const SeqStore, i: usize, comptime checked: bool) void {
     const llc = store.ll_codes[i];
     const mlc = store.ml_codes[i];
     const ofc = store.of_codes[i];
@@ -630,7 +641,7 @@ inline fn extraBits(w: *Writer, store: *const SeqStore, i: usize) void {
     const ml_bits = codes.ml_bits[mlc];
     w.add(store.litLen(i) - codes.ll_base[llc], @intCast(ll_bits));
     w.add(store.matchLen(i) + codes.min_match - codes.ml_base[mlc], @intCast(ml_bits));
-    if (@as(u32, ll_bits) + ml_bits + ofc > 56) w.flush();
+    if (@as(u32, ll_bits) + ml_bits + ofc > 56) flush(w, checked);
     w.add(store.seqs[i].off - (@as(u32, 1) << @intCast(ofc)), @intCast(ofc));
-    w.flush();
+    flush(w, checked);
 }
