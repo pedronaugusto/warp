@@ -1,8 +1,9 @@
 //! gzip member headers (RFC 1952): every field, read and written.
 //!
-//! One parser reads a header from any byte source and hands the variable
-//! fields (extra, name, comment) to a sink: `parseHeader` keeps slices of
-//! its input, the decoder skips them.
+//! One parser reads a header from bytes handed to it in pieces of any size,
+//! and hands the variable fields (extra, name, comment) to a sink as they
+//! pass: `parseHeader` keeps slices of its input, a streaming decoder
+//! copies them into `Fields`, the whole-buffer decoder skips them.
 
 const std = @import("std");
 const Io = std.Io;
@@ -38,6 +39,40 @@ pub const Header = struct {
     header_crc: bool = false,
 };
 
+/// Where a streaming decoder copies a header's fields: the fixed ones, and
+/// the variable ones into the caller's buffers. A field longer than its
+/// buffer is cut to the buffer and `cut` is set.
+pub const Fields = struct {
+    /// The fields read; `extra`, `name` and `comment` are slices of the
+    /// buffers below, and null when the header has none.
+    header: Header = .{},
+    extra_buffer: []u8 = &.{},
+    name_buffer: []u8 = &.{},
+    comment_buffer: []u8 = &.{},
+    /// A field was longer than its buffer.
+    cut: bool = false,
+
+    /// The parser's sink: each piece of a field appended to its buffer.
+    pub fn bytes(f: *Fields, field: Field, piece: []const u8, at: usize) void {
+        _ = at;
+        const buffer = switch (field) {
+            .extra => f.extra_buffer,
+            .name => f.name_buffer,
+            .comment => f.comment_buffer,
+        };
+        const slot = switch (field) {
+            .extra => &f.header.extra,
+            .name => &f.header.name,
+            .comment => &f.header.comment,
+        };
+        const len = if (slot.*) |s| s.len else 0;
+        const n = @min(piece.len, buffer.len - len);
+        @memcpy(buffer[len..][0..n], piece[0..n]);
+        slot.* = buffer[0 .. len + n];
+        if (n < piece.len) f.cut = true;
+    }
+};
+
 pub const ParseError = error{
     /// Not a gzip member header: magic, method, reserved flags, or a header
     /// CRC that does not match.
@@ -52,13 +87,19 @@ pub const Parsed = struct { header: Header, len: usize };
 /// The member header at the start of `in`. Slices in the result borrow
 /// `in`.
 pub fn parseHeader(in: []const u8) ParseError!Parsed {
-    var src: SliceSource = .{ .in = in };
-    var sink: SliceSink = .{ .src = &src };
-    var header = try parse(SliceSource, &src, &sink);
-    header.extra = sink.field(.extra);
-    header.name = sink.field(.name);
-    header.comment = sink.field(.comment);
-    return .{ .header = header, .len = src.at };
+    var p: Parser = .{};
+    var sink: SliceSink = .{ .in = in };
+    const fed = p.feed(in, &sink);
+    switch (fed.status) {
+        .more => return error.Truncated,
+        .invalid => return error.InvalidHeader,
+        .done => {},
+    }
+    var header = p.header();
+    if (header.extra != null) header.extra = sink.field(.extra);
+    if (header.name != null) header.name = sink.field(.name);
+    if (header.comment != null) header.comment = sink.field(.comment);
+    return .{ .header = header, .len = fed.used };
 }
 
 /// Write `header`.
@@ -118,109 +159,198 @@ pub fn fixedPart(out: *[10]u8, header: Header, xfl: u8) void {
 /// A variable field of the header.
 pub const Field = enum { extra, name, comment };
 
-/// Read a header from `src`, which has `byte() Src.Error!u8` and
-/// `invalid(Diagnostic.Reason) Src.Error`; hand the variable fields to
-/// `sink`, which has `begin(Field)`, `byte(Field, u8)` and `end(Field)`.
-/// The header CRC, when present, is checked.
-pub fn parse(comptime Src: type, src: *Src, sink: anytype) Src.Error!Header {
-    var crc: checksum.Crc32 = .init;
-    var fixed: [10]u8 = undefined;
-    for (&fixed, 0..) |*b, i| {
-        b.* = try src.byte();
-        // zlib checks the magic on two bytes, then the method and flags.
-        if (i == 1 and (fixed[0] != 0x1f or fixed[1] != 0x8b)) return src.invalid(.bad_gzip_header);
-        if (i == 3) {
-            if (fixed[2] != 8) return src.invalid(.bad_gzip_header);
-            if (fixed[3] & 0xe0 != 0) return src.invalid(.reserved_flags);
+/// A header read from bytes given in pieces of any size, checked as zlib
+/// checks it: the magic on two bytes, then the method and flags, then the
+/// header CRC when there is one.
+pub const Parser = struct {
+    part: Part = .fixed,
+    /// Bytes of the current part read.
+    at: u16 = 0,
+    fixed: [10]u8 = undefined,
+    /// The extra field's length, as it is read.
+    extra_len: u16 = 0,
+    /// The header's CRC-32 so far, kept only when it has one.
+    crc: checksum.Crc32 = .init,
+    /// The header CRC's first byte.
+    hcrc_low: u8 = 0,
+
+    const Part = enum { fixed, extra_len, extra, name, comment, hcrc, done };
+
+    pub const Status = enum { more, done, invalid };
+
+    /// What a piece did: the bytes it used (through the refused byte when
+    /// invalid), and why it was refused.
+    pub const Fed = struct { used: usize, status: Status, reason: Diagnostic.Reason = .bad_gzip_header };
+
+    /// Read from `in`, handing the variable fields' bytes to
+    /// `sink.bytes(field, piece, at)` (`at` is the piece's offset in `in`).
+    pub fn feed(p: *Parser, in: []const u8, sink: anytype) Fed {
+        var i: usize = 0;
+        while (i < in.len) {
+            const flags = p.fixed[3];
+            switch (p.part) {
+                .fixed => {
+                    p.fixed[p.at] = in[i];
+                    p.at += 1;
+                    i += 1;
+                    // zlib checks the magic on two bytes, then the method and flags.
+                    if (p.at == 2 and (p.fixed[0] != 0x1f or p.fixed[1] != 0x8b)) return .{ .used = i, .status = .invalid };
+                    if (p.at == 4) {
+                        if (p.fixed[2] != 8) return .{ .used = i, .status = .invalid };
+                        if (p.fixed[3] & 0xe0 != 0) return .{ .used = i, .status = .invalid, .reason = .reserved_flags };
+                    }
+                    if (p.at == 10) {
+                        if (flags & flag_hcrc != 0) p.crc.update(&p.fixed);
+                        p.next(.extra_len);
+                    }
+                },
+                .extra_len => {
+                    p.extra_len |= @as(u16, in[i]) << @intCast(8 * p.at);
+                    p.sum(in[i..][0..1]);
+                    p.at += 1;
+                    i += 1;
+                    if (p.at == 2) {
+                        sink.bytes(.extra, in[i..i], i);
+                        p.next(if (p.extra_len == 0) .name else .extra);
+                    }
+                },
+                .extra => {
+                    const n = @min(in.len - i, p.extra_len - p.at);
+                    sink.bytes(.extra, in[i..][0..n], i);
+                    p.sum(in[i..][0..n]);
+                    p.at += @intCast(n);
+                    i += n;
+                    if (p.at == p.extra_len) p.next(.name);
+                },
+                .name, .comment => {
+                    const field: Field = if (p.part == .name) .name else .comment;
+                    if (p.at == 0) sink.bytes(field, in[i..i], i);
+                    p.at = 1;
+                    const end = std.mem.findScalarPos(u8, in, i, 0);
+                    const stop = end orelse in.len;
+                    sink.bytes(field, in[i..stop], i);
+                    p.sum(in[i..stop]);
+                    i = stop;
+                    if (end != null) {
+                        p.sum(in[i..][0..1]);
+                        i += 1;
+                        p.next(if (field == .name) .comment else .hcrc);
+                    }
+                },
+                .hcrc => {
+                    if (p.at == 0) {
+                        p.hcrc_low = in[i];
+                        p.at = 1;
+                        i += 1;
+                        continue;
+                    }
+                    i += 1;
+                    if (@as(u16, in[i - 1]) << 8 | p.hcrc_low != @as(u16, @truncate(p.crc.final()))) return .{ .used = i, .status = .invalid, .reason = .header_crc };
+                    p.part = .done;
+                },
+                .done => break,
+            }
+            if (p.part == .done) break;
         }
+        // A part that the flags leave out is passed without a byte.
+        if (p.part != .done and p.part != .fixed) p.skipAbsent();
+        return .{ .used = i, .status = if (p.part == .done) .done else .more };
     }
-    crc.update(&fixed);
-    const flags = fixed[3];
-    var header: Header = .{
-        .text = flags & flag_text != 0,
-        .mtime = std.mem.readInt(u32, fixed[4..8], .little),
-        .xfl = fixed[8],
-        .os = fixed[9],
-        .header_crc = flags & flag_hcrc != 0,
-    };
-    if (flags & flag_extra != 0) {
-        var len_bytes: [2]u8 = undefined;
-        for (&len_bytes) |*b| b.* = try src.byte();
-        crc.update(&len_bytes);
-        const len = std.mem.readInt(u16, &len_bytes, .little);
-        sink.begin(.extra);
-        for (0..len) |_| {
-            const b = try src.byte();
-            crc.update(&.{b});
-            sink.byte(.extra, b);
-        }
-        sink.end(.extra);
-        header.extra = &.{};
+
+    /// The fixed fields, and which variable ones are present (as empty
+    /// slices), once the header is done.
+    pub fn header(p: *const Parser) Header {
+        const flags = p.fixed[3];
+        return .{
+            .text = flags & flag_text != 0,
+            .mtime = std.mem.readInt(u32, p.fixed[4..8], .little),
+            .xfl = p.fixed[8],
+            .os = p.fixed[9],
+            .extra = if (flags & flag_extra != 0) &.{} else null,
+            .name = if (flags & flag_name != 0) &.{} else null,
+            .comment = if (flags & flag_comment != 0) &.{} else null,
+            .header_crc = flags & flag_hcrc != 0,
+        };
     }
-    for ([_]struct { u8, Field }{ .{ flag_name, .name }, .{ flag_comment, .comment } }) |f| {
-        if (flags & f[0] == 0) continue;
-        sink.begin(f[1]);
+
+    /// Start `part`, or the first part after it that the flags include.
+    fn next(p: *Parser, part: Part) void {
+        p.part = part;
+        p.at = 0;
+        p.skipAbsent();
+    }
+
+    fn skipAbsent(p: *Parser) void {
+        const flags = p.fixed[3];
         while (true) {
-            const b = try src.byte();
-            crc.update(&.{b});
-            if (b == 0) break;
-            sink.byte(f[1], b);
+            const present = switch (p.part) {
+                .extra_len, .extra => flags & flag_extra != 0,
+                .name => flags & flag_name != 0,
+                .comment => flags & flag_comment != 0,
+                .hcrc => flags & flag_hcrc != 0,
+                .fixed, .done => return,
+            };
+            if (present) return;
+            p.part = switch (p.part) {
+                .extra_len, .extra => .name,
+                .name => .comment,
+                .comment => .hcrc,
+                else => .done,
+            };
+            p.at = 0;
         }
-        sink.end(f[1]);
-        if (f[1] == .name) header.name = &.{} else header.comment = &.{};
     }
-    if (header.header_crc) {
-        const lo = try src.byte();
-        const hi = try src.byte();
-        if (@as(u16, hi) << 8 | lo != @as(u16, @truncate(crc.final()))) return src.invalid(.header_crc);
+
+    /// The header CRC over `bytes`, when the header has one.
+    fn sum(p: *Parser, bytes: []const u8) void {
+        if (p.fixed[3] & flag_hcrc != 0) p.crc.update(bytes);
     }
-    return header;
-}
+};
 
 /// A sink that keeps nothing.
 pub const skip: Skip = .{};
 
 pub const Skip = struct {
-    pub fn begin(_: Skip, _: Field) void {}
-    pub fn byte(_: Skip, _: Field, _: u8) void {}
-    pub fn end(_: Skip, _: Field) void {}
-};
-
-const SliceSource = struct {
-    in: []const u8,
-    at: usize = 0,
-
-    const Error = ParseError;
-
-    fn byte(s: *SliceSource) Error!u8 {
-        if (s.at >= s.in.len) return error.Truncated;
-        s.at += 1;
-        return s.in[s.at - 1];
-    }
-
-    fn invalid(_: *SliceSource, _: Diagnostic.Reason) Error {
-        return error.InvalidHeader;
-    }
+    pub fn bytes(_: Skip, _: Field, _: []const u8, _: usize) void {}
 };
 
 /// Records where each field lies in the input, for slices of it.
 const SliceSink = struct {
-    src: *const SliceSource,
+    in: []const u8,
     spans: [3]?[2]usize = .{ null, null, null },
 
-    pub fn begin(s: *SliceSink, f: Field) void {
-        s.spans[@backingInt(f)] = .{ s.src.at, s.src.at };
+    pub fn bytes(s: *SliceSink, f: Field, piece: []const u8, at: usize) void {
+        const span = &s.spans[@backingInt(f)];
+        if (span.*) |*known| known[1] = at + piece.len else span.* = .{ at, at + piece.len };
     }
 
-    pub fn byte(_: *SliceSink, _: Field, _: u8) void {}
-
-    pub fn end(s: *SliceSink, f: Field) void {
-        // A name or comment ends at its terminating zero, already read.
-        s.spans[@backingInt(f)].?[1] = if (f == .extra) s.src.at else s.src.at - 1;
-    }
-
-    fn field(s: *const SliceSink, f: Field) ?[]const u8 {
-        const span = s.spans[@backingInt(f)] orelse return null;
-        return s.src.in[span[0]..span[1]];
+    fn field(s: *const SliceSink, f: Field) []const u8 {
+        const span = s.spans[@backingInt(f)] orelse return &.{};
+        return s.in[span[0]..span[1]];
     }
 };
+
+test "a header read a byte at a time is the header read whole" {
+    const header: Header = .{ .text = true, .mtime = 7, .xfl = 2, .os = 3, .extra = "AB\x02\x00hi", .name = "notes.txt", .comment = "", .header_crc = true };
+    var buffer: [64]u8 = undefined;
+    var w: Io.Writer = .fixed(&buffer);
+    try writeHeader(&w, header);
+    const written = w.buffered();
+    var name: [4]u8 = undefined;
+    var extra: [16]u8 = undefined;
+    var fields: Fields = .{ .name_buffer = &name, .extra_buffer = &extra };
+    var p: Parser = .{};
+    for (written, 0..) |b, i| {
+        const fed = p.feed(&.{b}, &fields);
+        try std.testing.expectEqual(@as(usize, 1), fed.used);
+        try std.testing.expectEqual(if (i + 1 == written.len) Parser.Status.done else .more, fed.status);
+    }
+    try std.testing.expectEqualStrings("note", fields.header.name.?);
+    try std.testing.expect(fields.cut);
+    try std.testing.expectEqualStrings("AB\x02\x00hi", fields.header.extra.?);
+    // An empty comment is present, and its buffer is empty.
+    try std.testing.expectEqualStrings("", fields.header.comment.?);
+    const parsed = try parseHeader(written);
+    try std.testing.expectEqualStrings("notes.txt", parsed.header.name.?);
+    try std.testing.expectEqualStrings("", parsed.header.comment.?);
+}

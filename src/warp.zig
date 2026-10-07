@@ -5,6 +5,7 @@ const checksum = @import("checksum.zig");
 const container = @import("container.zig");
 const inflate = @import("inflate.zig");
 const gzip_ = @import("gzip.zig");
+const stream = @import("stream.zig");
 
 /// The wrapper a compressor writes: raw DEFLATE, zlib or gzip.
 pub const Container = container.Container;
@@ -44,6 +45,9 @@ pub const Kernel = checksum.Kernel;
 pub const Decompressor = @import("Decompressor.zig");
 /// Whole-buffer compression to raw DEFLATE, zlib or gzip.
 pub const Compressor = @import("Compressor.zig");
+/// Streaming decoding of raw DEFLATE, zlib and gzip, and its
+/// `std.Io.Reader`.
+pub const Inflate = stream.Inflate;
 /// How matches are chosen, beside the level: zlib's strategies.
 pub const Strategy = Compressor.Strategy;
 /// Spare output room past the expected length that lets the decoder's fast
@@ -62,4 +66,6 @@ pub const gzip = struct {
     pub const parseHeader = gzip_.parseHeader;
     /// Write a member header.
     pub const writeHeader = gzip_.writeHeader;
+    /// Where a streaming decoder copies a member header's fields.
+    pub const Fields = gzip_.Fields;
 };

@@ -28,7 +28,9 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "encode parsers", .patterns = &.{"src/deflate/parse.zig"} },
     .{ .name = "engines", .patterns = &.{ "src/inflate.zig", "src/deflate.zig" } },
     .{ .name = "containers", .patterns = &.{ "src/container.zig", "src/gzip.zig" } },
-    .{ .name = "frame", .patterns = &.{ "src/Decompressor.zig", "src/Compressor.zig" } },
+    .{ .name = "unwrap", .patterns = &.{"src/unwrap.zig"} },
+    .{ .name = "frame", .patterns = &.{ "src/Decompressor.zig", "src/Compressor.zig", "src/stream/Inflate.zig" } },
+    .{ .name = "stream", .patterns = &.{"src/stream.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 

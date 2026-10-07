@@ -15,6 +15,14 @@
 //! an error found in bits the input has is `InvalidStream`. So every prefix
 //! of a valid stream is `Truncated`, and a stream zlib refuses is refused
 //! for the same reason at the same point.
+//!
+//! The engine is resumable at any input byte: its place in a stream is a
+//! `State` and the bits in hand. It reads in units of at most 48 bits (a
+//! block header, a stored block's lengths, one code length, one symbol
+//! with its extra bits) and tells its source after each unit it finishes
+//! (`commit`). A streaming caller that runs out of input inside a unit
+//! takes the `Truncated` as "more input", goes back to the last commit, and
+//! keeps the unit's bits for the next call.
 
 const std = @import("std");
 const huffman = @import("huffman.zig").decode;
@@ -28,16 +36,23 @@ const end_flag = huffman.end_flag;
 /// The longest match, plus the most a sixteen-byte copy writes past it.
 pub const margin = 258 + 16;
 
+/// The farthest a DEFLATE distance reaches.
+pub const max_distance = 32768;
+
 /// The input a round of the fast loop may read: two refills (one before a
 /// distance when the bits run short, or one for a subtable, and one at the
 /// end), each eight bytes from at most seven past the last.
 const fast_input = 7 + 8 + 1;
 
-/// Decoding tables for one block at a time: about 11 KiB.
+/// Decoding tables for one block at a time, and the code lengths a dynamic
+/// block's header gives for them: about 11 KiB.
 pub const Tables = struct {
     litlen: [huffman.Alphabet.litlen.enough()]u32 = undefined,
     dist: [huffman.Alphabet.dist.enough()]u32 = undefined,
     precode: [huffman.Alphabet.precode.enough()]u32 = undefined,
+    /// The code-length code's lengths, then the litlen and distance codes'.
+    pre: [19]u8 = undefined,
+    lens: [286 + 30]u8 = undefined,
 };
 
 pub const Error = error{
@@ -53,17 +68,48 @@ pub const Error = error{
 pub const Status = enum {
     /// The final block ended.
     done,
+    /// A block other than the final one ended.
+    block_end,
     /// The output is full and the stream goes on (partial decoding only).
     output_full,
 };
 
 /// Input that can grow: a reader's buffer, refilled as the engine asks.
-/// A slice has no more.
+/// A slice has no more, and nothing is told of the engine's progress.
 pub const no_more: NoMore = .{};
 
 pub const NoMore = struct {
     pub fn more(_: NoMore, _: *Stream) bool {
         return false;
+    }
+
+    pub fn commit(_: NoMore, _: *Stream) void {}
+};
+
+/// The bytes before the output that a distance may reach: a dictionary,
+/// or a streaming decoder's window, in two pieces (a ring's older and newer
+/// halves) that read as one.
+pub const History = struct {
+    older: []const u8 = &.{},
+    newer: []const u8 = &.{},
+
+    pub fn len(h: History) usize {
+        return h.older.len + h.newer.len;
+    }
+
+    /// Copy `dst.len` bytes into `dst`, starting `back` bytes before the
+    /// end (`dst.len <= back <= len()`).
+    pub fn copyOut(h: History, back: usize, dst: []u8) void {
+        var from = h.len() - back;
+        var to: usize = 0;
+        if (from < h.older.len) {
+            const n = @min(dst.len, h.older.len - from);
+            @memcpy(dst[0..n], h.older[from..][0..n]);
+            to = n;
+            from = h.older.len;
+        }
+        const rest = dst.len - to;
+        @memcpy(dst[to..], h.newer[from - h.older.len ..][0..rest]);
     }
 };
 
@@ -86,10 +132,13 @@ pub const Stream = struct {
     out: []u8,
     op: usize,
     /// Where this stream's output starts in `out`: a distance may reach
-    /// back to here, and then into `dictionary`.
+    /// back to here, and then into `history`.
     start: usize,
-    /// Bytes that precede the output as history.
-    dictionary: []const u8 = &.{},
+    /// Bytes that precede the output.
+    history: History = .{},
+    /// The farthest distance accepted: a streaming decoder's window. Past
+    /// it a stream is refused (`window_exceeded`).
+    window: u32 = max_distance,
     /// Stop without error when the output is full.
     partial: bool = false,
     diagnostic: ?*Diagnostic = null,
@@ -125,6 +174,16 @@ pub const Stream = struct {
     /// `Truncated` if the stream consumed bits past the end of the input.
     pub fn checkWhole(s: *Stream) Error!void {
         if (!s.whole()) return s.fail(.truncated);
+    }
+
+    /// `Truncated` at the end of the input, which a byte-wise reader (a
+    /// stored block, a gzip header) has reached.
+    pub fn failEnd(s: *Stream) Error {
+        s.bitbuf = 0;
+        s.bitsleft = 0;
+        s.virtual = 1;
+        s.ip = s.in.len + 1;
+        return s.fail(.truncated);
     }
 
     pub inline fn consume(s: *Stream, n: u6) void {
@@ -176,9 +235,11 @@ pub const Stream = struct {
     }
 
     /// Drop the bits to the next byte boundary, and hand back the whole
-    /// bytes still in the bit buffer: `ip` is then the next byte.
+    /// bytes still in the bit buffer: `ip` is then the next byte. Those
+    /// bytes were loaded from `in` (a unit finished in this input).
     pub fn alignToByte(s: *Stream) void {
         s.consume(@intCast(s.bitsleft & 7));
+        std.debug.assert(s.bitsleft / 8 <= s.ip);
         s.ip -= s.bitsleft / 8;
         s.bitbuf = 0;
         s.bitsleft = 0;
@@ -187,79 +248,164 @@ pub const Stream = struct {
     }
 };
 
-/// Decode blocks until the final one ends, or the output is full with
-/// `partial`. `s.bitbuf` may hold bits of the stream already.
-pub fn decode(t: *Tables, s: *Stream, source: anytype) Error!Status {
-    while (true) {
-        const header = try s.take(source, 3);
-        const final = header & 1 != 0;
-        const status: Status = switch (header >> 1) {
-            0 => try stored(s, source),
-            1 => try codes(s, source, &huffman.Fixed(.litlen).table, huffman.Fixed(.litlen).bits, &huffman.Fixed(.dist).table, huffman.Fixed(.dist).bits),
-            2 => blk: {
-                const bits = try dynamicHeader(t, s, source);
-                break :blk try codes(s, source, &t.litlen, bits.litlen, &t.dist, bits.dist);
-            },
-            else => return s.fail(.bad_block_type),
-        };
-        if (status == .output_full) return .output_full;
-        if (final) return .done;
+/// Where a stream is between blocks and inside one: everything a resumed
+/// decode needs besides the bits in hand and the tables.
+pub const State = struct {
+    phase: Phase = .header,
+    /// The current block is the last.
+    final: bool = false,
+    /// A stored block's bytes still to copy.
+    stored_left: u16 = 0,
+    /// The current Huffman block's code: the fixed one, or the tables'
+    /// with these main-table bits.
+    fixed: bool = false,
+    lbits: u5 = 0,
+    dbits: u5 = 0,
+    /// A match the output had no room for: its bytes still to copy and
+    /// its distance.
+    copy_left: u16 = 0,
+    copy_distance: u16 = 0,
+    /// A dynamic block's header so far: its counts, and how many code
+    /// lengths are read (they are in the tables').
+    hlit: u16 = 0,
+    hdist: u16 = 0,
+    hclen: u16 = 0,
+    read: u16 = 0,
+    pre_bits: u5 = 0,
+
+    pub const Phase = enum { header, stored, precode, lengths, codes, done };
+};
+
+/// Decode until a block ends, the final one ends, or the output is full
+/// (partial decoding). `s.bitbuf` may hold bits of the stream already.
+pub noinline fn decode(t: *Tables, s: *Stream, source: anytype, state: *State) Error!Status {
+    // Each part goes on to the next by a direct jump: one indirect jump
+    // shared by every part would be mispredicted at each.
+    phase: switch (state.phase) {
+        .header => switch (try blockHeader(s, source, state)) {
+            .stored => continue :phase .stored,
+            .precode => continue :phase .precode,
+            else => continue :phase .codes,
+        },
+        .stored => {
+            if (!try stored(s, source, state)) return .output_full;
+            return blockEnd(s, source, state);
+        },
+        .precode => {
+            try precode(t, s, source, state);
+            continue :phase .lengths;
+        },
+        .lengths => {
+            try lengths(t, s, source, state);
+            continue :phase .codes;
+        },
+        .codes => {
+            if (state.copy_left != 0) {
+                if (!resumeCopy(s, state)) return .output_full;
+                source.commit(s);
+            }
+            const ended = if (state.fixed)
+                try codes(s, source, state, &huffman.Fixed(.litlen).table, huffman.Fixed(.litlen).bits, &huffman.Fixed(.dist).table, huffman.Fixed(.dist).bits)
+            else
+                try codes(s, source, state, &t.litlen, state.lbits, &t.dist, state.dbits);
+            if (!ended) return .output_full;
+            return blockEnd(s, source, state);
+        },
+        .done => return .done,
     }
 }
 
-/// A stored block: its length and complement, then the bytes as they are.
-fn stored(s: *Stream, source: anytype) Error!Status {
-    s.consume(@intCast(s.bitsleft & 7));
-    const lens = try s.take(source, 32);
-    const len: u16 = @truncate(lens);
-    if (len != ~@as(u16, @truncate(lens >> 16))) return s.fail(.stored_length);
-    // The bit buffer holds whole bytes now; hand them back and copy from
-    // the input itself.
-    s.alignToByte();
-    var left: usize = len;
-    while (left > 0) {
-        if (s.ip >= s.in.len and !source.more(s)) {
-            s.virtual = 1;
-            s.bitsleft = 0;
-            s.ip += 1;
-            return s.fail(.truncated);
-        }
+inline fn blockEnd(s: *Stream, source: anytype, state: *State) Status {
+    state.phase = if (state.final) .done else .header;
+    source.commit(s);
+    return if (state.final) .done else .block_end;
+}
+
+/// A block's three header bits, and what follows them in the same unit: a
+/// stored block's lengths, or a dynamic block's counts. The part that
+/// follows.
+inline fn blockHeader(s: *Stream, source: anytype, state: *State) Error!State.Phase {
+    const header = try s.take(source, 3);
+    const final = header & 1 != 0;
+    switch (header >> 1) {
+        0 => {
+            s.consume(@intCast(s.bitsleft & 7));
+            const lens = try s.take(source, 32);
+            const len: u16 = @truncate(lens);
+            if (len != ~@as(u16, @truncate(lens >> 16))) return s.fail(.stored_length);
+            // The bit buffer holds whole bytes now; hand them back and copy
+            // from the input itself.
+            s.alignToByte();
+            state.stored_left = len;
+            state.phase = .stored;
+        },
+        1 => {
+            state.fixed = true;
+            state.phase = .codes;
+        },
+        2 => {
+            const counts = try s.take(source, 14);
+            const hlit: u16 = @intCast((counts & 31) + 257);
+            const hdist: u16 = @intCast(((counts >> 5) & 31) + 1);
+            if (hlit > 286 or hdist > 30) return s.fail(.too_many_codes);
+            state.hlit = hlit;
+            state.hdist = hdist;
+            state.hclen = @intCast(((counts >> 10) & 15) + 4);
+            state.read = 0;
+            state.phase = .precode;
+        },
+        else => return s.fail(.bad_block_type),
+    }
+    state.final = final;
+    source.commit(s);
+    return state.phase;
+}
+
+/// A stored block's bytes, as they are; false when the output filled first.
+fn stored(s: *Stream, source: anytype, state: *State) Error!bool {
+    while (state.stored_left > 0) {
+        if (s.ip >= s.in.len and !source.more(s)) return s.failEnd();
         const room = s.out.len - s.op;
-        if (room == 0) return if (s.partial) .output_full else error.OutputTooSmall;
-        const n = @min(left, s.in.len - s.ip, room);
+        if (room == 0) {
+            if (!s.partial) return error.OutputTooSmall;
+            return false;
+        }
+        const n = @min(state.stored_left, s.in.len - s.ip, room);
         @memcpy(s.out[s.op..][0..n], s.in[s.ip..][0..n]);
         s.op += n;
         s.ip += n;
-        left -= n;
+        state.stored_left -= @intCast(n);
+        source.commit(s);
     }
-    return .done;
+    return true;
 }
 
-/// The main-table bits of a dynamic block's two tables.
-const Bits = struct { litlen: u5, dist: u5 };
+const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
 
-/// A dynamic block's header: the code-length code, then the litlen and
-/// distance code lengths through it, then their tables.
-fn dynamicHeader(t: *Tables, s: *Stream, source: anytype) Error!Bits {
-    const counts = try s.take(source, 14);
-    const hlit: usize = (counts & 31) + 257;
-    const hdist: usize = ((counts >> 5) & 31) + 1;
-    const hclen: usize = ((counts >> 10) & 15) + 4;
-    if (hlit > 286 or hdist > 30) return s.fail(.too_many_codes);
-    const order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
-    var pre: [19]u8 = @splat(0);
-    for (order[0..hclen]) |sym| pre[sym] = @intCast(try s.take(source, 3));
-    const pre_bits = huffman.build(.precode, &t.precode, &pre, &huffman.countLengths(&pre)) catch |err| return s.fail(switch (err) {
-        error.Oversubscribed => .oversubscribed_code,
-        error.Incomplete => .incomplete_code,
-    });
+/// A dynamic block's code-length code: three bits per length, then its
+/// table.
+fn precode(t: *Tables, s: *Stream, source: anytype, state: *State) Error!void {
+    if (state.read == 0) t.pre = @splat(0);
+    while (state.read < state.hclen) {
+        const len: u8 = @intCast(try s.take(source, 3));
+        t.pre[precode_order[state.read]] = len;
+        state.read += 1;
+        source.commit(s);
+    }
+    state.pre_bits = huffman.build(.precode, &t.precode, &t.pre, &huffman.countLengths(&t.pre)) catch |err| return s.fail(codeReason(err));
+    state.read = 0;
+    state.phase = .lengths;
+}
 
-    var lens: [286 + 30]u8 = undefined;
-    const total = hlit + hdist;
-    var i: usize = 0;
-    while (i < total) {
+/// A dynamic block's litlen and distance code lengths through the
+/// code-length code, one length or repeat at a time, then their tables.
+fn lengths(t: *Tables, s: *Stream, source: anytype, state: *State) Error!void {
+    const total = state.hlit + state.hdist;
+    const lens = &t.lens;
+    while (state.read < total) {
+        const i = state.read;
         s.need(source, 7 + 7);
-        const e = t.precode[s.peek(pre_bits)];
+        const e = t.precode[s.peek(state.pre_bits)];
         const len = huffman.consumed(e);
         // An empty precode decodes every bit as symbol 0, one bit long, as
         // zlib's does: the lengths come out all zero and the block has no
@@ -269,7 +415,8 @@ fn dynamicHeader(t: *Tables, s: *Stream, source: anytype) Error!Bits {
             s.consume(len);
             try s.checkWhole();
             lens[i] = @intCast(sym);
-            i += 1;
+            state.read = i + 1;
+            source.commit(s);
             continue;
         }
         // The symbol and its repeat count together, as zlib asks for them.
@@ -278,25 +425,28 @@ fn dynamicHeader(t: *Tables, s: *Stream, source: anytype) Error!Bits {
             17 => 3,
             else => 7,
         };
-        const repeat_base: usize = switch (sym) {
+        const repeat_base: u16 = switch (sym) {
             16 => 3,
             17 => 3,
             else => 11,
         };
         s.consume(len);
-        const repeat = repeat_base + try s.take(source, repeat_bits);
+        const repeat = repeat_base + @as(u16, @intCast(try s.take(source, repeat_bits)));
         const fill: u8 = if (sym == 16) blk: {
             if (i == 0) return s.fail(.bad_code_lengths);
             break :blk lens[i - 1];
         } else 0;
         if (i + repeat > total) return s.fail(.bad_code_lengths);
         @memset(lens[i..][0..repeat], fill);
-        i += repeat;
+        state.read = i + repeat;
+        source.commit(s);
     }
     if (lens[256] == 0) return s.fail(.no_end_code);
-    const lit_bits = huffman.build(.litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
-    const dist_bits = huffman.build(.dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
-    return .{ .litlen = lit_bits, .dist = dist_bits };
+    const hlit = state.hlit;
+    state.lbits = huffman.build(.litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
+    state.dbits = huffman.build(.dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
+    state.fixed = false;
+    state.phase = .codes;
 }
 
 fn codeReason(err: huffman.BuildError) Diagnostic.Reason {
@@ -307,16 +457,22 @@ fn codeReason(err: huffman.BuildError) Diagnostic.Reason {
 }
 
 /// A Huffman-coded block: the fast loop while it can run, the careful loop
-/// near either end.
-inline fn codes(s: *Stream, source: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!Status {
+/// near either end. Whether the block ended (else the output is full).
+inline fn codes(s: *Stream, source: anytype, state: *State, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
     while (true) {
-        if (fastReady(s) and try fast(s, litlen, lbits, dist, dbits)) return .done;
+        if (fastReady(s)) {
+            if (try fast(s, litlen, lbits, dist, dbits)) return true;
+            source.commit(s);
+        }
         // One symbol at a time until the fast loop can run again.
         while (!fastReady(s)) {
-            switch (try careful(s, source, litlen, lbits, dist, dbits)) {
-                .symbol => {},
-                .end => return .done,
-                .full => return .output_full,
+            switch (try careful(s, source, state, litlen, lbits, dist, dbits)) {
+                .symbol => source.commit(s),
+                .end => return true,
+                .full => {
+                    source.commit(s);
+                    return false;
+                },
             }
         }
     }
@@ -342,7 +498,7 @@ fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5
     };
     const out = s.out;
     const start = s.start;
-    const reach = s.dictionary.len;
+    const window = s.window;
     var op = s.op;
     defer {
         s.ip = r.ip;
@@ -412,20 +568,26 @@ fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5
         entry = dist[r.low(r.dmask)];
         if (entry & exceptional != 0) {
             @branchHint(.unlikely);
-            if (entry & subtable_flag == 0) return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+            // A code with no symbol is refused after its bits, as the
+            // careful loop refuses it.
             r.consume(entry);
+            if (entry & subtable_flag == 0) return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
             entry = dist[huffman.value(entry) + r.low((@as(u64, 1) << huffman.codeword(entry)) - 1)];
-            if (entry & exceptional != 0) return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+            if (entry & exceptional != 0) {
+                r.consume(entry);
+                return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+            }
         }
         saved = r.bitbuf;
         r.consume(entry);
         const distance = huffman.value(entry) + huffman.extra(saved, entry);
         // The next symbol's entry and the refill go ahead of the copy.
         entry = litlen[r.low(r.lmask)];
-        if (distance > op - start) {
+        if (distance > @min(op - start, window)) {
             @branchHint(.cold);
-            if (distance > op - start + reach) return s.failAt(.distance_too_far, r.ip, r.bitsleft & 63);
-            copyFromDictionary(s, op, distance, length);
+            if (distance > window) return s.failAt(.window_exceeded, r.ip, r.bitsleft & 63);
+            if (distance > op - start + s.history.len()) return s.failAt(.distance_too_far, r.ip, r.bitsleft & 63);
+            copyFromHistory(s, op, distance, length);
         } else copyMatch(out, op, distance, length);
         op += length;
         if (!r.more(op, out.len)) return false;
@@ -473,7 +635,7 @@ const Fast = struct {
 /// One symbol with every bound checked.
 const Careful = enum { symbol, end, full };
 
-inline fn careful(s: *Stream, source: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!Careful {
+inline fn careful(s: *Stream, source: anytype, state: *State, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!Careful {
     const lit = try symbol(s, source, litlen, lbits);
     if (lit.entry & end_flag != 0) {
         s.consume(lit.bits);
@@ -495,11 +657,14 @@ inline fn careful(s: *Stream, source: anytype, litlen: []const u32, lbits: u5, d
     const d = try symbol(s, source, dist, dbits);
     s.consume(d.bits);
     const distance = huffman.value(d.entry) + try s.take(source, d.extra);
-    if (distance > s.op - s.start + s.dictionary.len) return s.fail(.distance_too_far);
+    if (distance > s.window) return s.fail(.window_exceeded);
+    if (distance > s.op - s.start + s.history.len()) return s.fail(.distance_too_far);
     const room = s.out.len - s.op;
     if (length > room) {
         if (!s.partial) return error.OutputTooSmall;
         copyCareful(s, distance, room);
+        state.copy_left = @intCast(length - room);
+        state.copy_distance = @intCast(distance);
         return .full;
     }
     copyCareful(s, distance, length);
@@ -532,23 +697,35 @@ inline fn symbol(s: *Stream, source: anytype, table: []const u32, bits: u5) Erro
     return .{ .entry = e, .bits = code, .extra = huffman.consumed(e) - huffman.codeword(e) };
 }
 
-/// A match where the output may end within sixteen bytes, or that reaches
-/// into the dictionary: one byte at a time.
+/// The rest of a match the output had no room for, as far as it has room
+/// now; whether it is all copied.
+fn resumeCopy(s: *Stream, state: *State) bool {
+    const n = @min(state.copy_left, s.out.len - s.op);
+    copyCareful(s, state.copy_distance, n);
+    state.copy_left -= @intCast(n);
+    return state.copy_left == 0;
+}
+
+/// A match where the output may end within sixteen bytes: the part in the
+/// history, then a byte at a time.
 fn copyCareful(s: *Stream, distance: usize, length: usize) void {
     const back = s.op - s.start;
-    for (0..length) |i| {
-        const at = back + i;
-        s.out[s.op + i] = if (distance <= at) s.out[s.op + i - distance] else s.dictionary[s.dictionary.len - (distance - at)];
+    var done: usize = 0;
+    if (distance > back) {
+        done = @min(length, distance - back);
+        s.history.copyOut(distance - back, s.out[s.op..][0..done]);
     }
+    for (done..length) |i| s.out[s.op + i] = s.out[s.op + i - distance];
     s.op += length;
 }
 
-fn copyFromDictionary(s: *Stream, op: usize, distance: usize, length: usize) void {
+/// A match that starts in the history: the part there, then the rest from
+/// the output, which it may overlap.
+fn copyFromHistory(s: *Stream, op: usize, distance: usize, length: usize) void {
     const back = op - s.start;
-    for (0..length) |i| {
-        const at = back + i;
-        s.out[op + i] = if (distance <= at) s.out[op + i - distance] else s.dictionary[s.dictionary.len - (distance - at)];
-    }
+    const from_history = @min(length, distance - back);
+    s.history.copyOut(distance - back, s.out[op..][0..from_history]);
+    for (from_history..length) |i| s.out[op + i] = s.out[op + i - distance];
 }
 
 /// Copy `length` bytes from `distance` back to `op`, sixteen at a time; up
@@ -583,4 +760,15 @@ inline fn copyMatch(out: []u8, op: usize, distance: usize, length: usize) void {
         var i: usize = 0;
         while (i < length) : (i += distance) dst[i..][0..8].* = src[i..][0..8].*;
     }
+}
+
+test "history reads as one across a ring's two pieces" {
+    const h: History = .{ .older = "abcd", .newer = "efg" };
+    var out: [5]u8 = undefined;
+    h.copyOut(7, &out);
+    try std.testing.expectEqualStrings("abcde", &out);
+    h.copyOut(3, out[0..3]);
+    try std.testing.expectEqualStrings("efg", out[0..3]);
+    h.copyOut(5, out[0..4]);
+    try std.testing.expectEqualStrings("cdef", out[0..4]);
 }
