@@ -87,25 +87,25 @@ fn decodeWeights(in: []const u8, out: []u8) Error!usize {
     var op: usize = 0;
     const omax = out.len;
     while (r.reload() == .unfinished and op + 3 < omax) : (op += 4) {
-        out[op] = symbol(cells, &s1, &r);
-        out[op + 1] = symbol(cells, &s2, &r);
-        out[op + 2] = symbol(cells, &s1, &r);
-        out[op + 3] = symbol(cells, &s2, &r);
+        out[op] = weightSymbol(cells, &s1, &r);
+        out[op + 1] = weightSymbol(cells, &s2, &r);
+        out[op + 2] = weightSymbol(cells, &s1, &r);
+        out[op + 3] = weightSymbol(cells, &s2, &r);
     }
     while (true) {
         if (op + 2 > omax) return error.InvalidStream;
-        out[op] = symbol(cells, &s1, &r);
+        out[op] = weightSymbol(cells, &s1, &r);
         op += 1;
         if (r.reload() == .overflow) {
-            out[op] = symbol(cells, &s2, &r);
+            out[op] = weightSymbol(cells, &s2, &r);
             op += 1;
             break;
         }
         if (op + 2 > omax) return error.InvalidStream;
-        out[op] = symbol(cells, &s2, &r);
+        out[op] = weightSymbol(cells, &s2, &r);
         op += 1;
         if (r.reload() == .overflow) {
-            out[op] = symbol(cells, &s1, &r);
+            out[op] = weightSymbol(cells, &s1, &r);
             op += 1;
             break;
         }
@@ -113,7 +113,7 @@ fn decodeWeights(in: []const u8, out: []u8) Error!usize {
     return op;
 }
 
-inline fn symbol(cells: []const fse.Cell, state: *u32, r: *bits.Reader) u8 {
+inline fn weightSymbol(cells: []const fse.Cell, state: *u32, r: *bits.Reader) u8 {
     const c = cells[state.*];
     state.* = c.next_state + @as(u32, @intCast(r.read(@intCast(c.nb_bits))));
     return c.symbol;
@@ -397,6 +397,341 @@ fn streamDouble(t: *const Table, r: *bits.Reader, out: []u8) void {
             if (r.consumed > 64) r.consumed = 64;
         }
     }
+}
+
+// ---- encoding ----
+
+const Writer = @import("../bits.zig").Writer;
+
+/// The longest code the encoder makes.
+pub const encode_log = 11;
+
+/// The byte histogram of `bytes`: `counts` filled, the largest symbol
+/// present and the largest count returned.
+pub fn histogram(bytes: []const u8, counts: *[max_symbols]u32) struct { max_symbol: u8, largest: u32 } {
+    // Four tables break the store-to-load chain of repeated bytes.
+    var c: [4][max_symbols]u32 = @splat(@splat(0));
+    var i: usize = 0;
+    while (i + 4 <= bytes.len) : (i += 4) {
+        c[0][bytes[i]] += 1;
+        c[1][bytes[i + 1]] += 1;
+        c[2][bytes[i + 2]] += 1;
+        c[3][bytes[i + 3]] += 1;
+    }
+    while (i < bytes.len) : (i += 1) c[0][bytes[i]] += 1;
+    var max_symbol: u8 = 0;
+    var largest: u32 = 0;
+    for (counts, 0..) |*x, sym| {
+        x.* = c[0][sym] + c[1][sym] + c[2][sym] + c[3][sym];
+        if (x.* != 0) max_symbol = @intCast(sym);
+        largest = @max(largest, x.*);
+    }
+    return .{ .max_symbol = max_symbol, .largest = largest };
+}
+
+/// A code for encoding: each symbol's codeword and length.
+pub const EncodeTable = struct {
+    codes: [max_symbols]u16,
+    lens: [max_symbols]u8,
+    /// The largest symbol it was built for: the description's implied one.
+    max_symbol: u8,
+    /// The longest code.
+    log: u4,
+
+    const Node = struct { count: u32, parent: u16, symbol: u8, bits: u8 };
+
+    /// A code for `counts` (symbols 0 to `counts.len - 1`, the last present),
+    /// no code longer than `max_bits`; two or more symbols present.
+    pub fn build(t: *EncodeTable, counts: []const u32, max_bits: u4) void {
+        // Leaves by count, most frequent first, at 1..n; 0 is a sentinel.
+        var nodes: [2 * max_symbols + 2]Node = undefined;
+        var keys: [max_symbols]u64 = undefined;
+        var n: usize = 0;
+        for (counts, 0..) |c, sym| {
+            if (c == 0) continue;
+            keys[n] = @as(u64, c) << 8 | (255 - sym);
+            n += 1;
+        }
+        std.debug.assert(n >= 2);
+        std.sort.pdq(u64, keys[0..n], {}, std.sort.desc(u64));
+        nodes[0] = .{ .count = 1 << 31, .parent = 0, .symbol = 0, .bits = 0 };
+        for (keys[0..n], 1..) |k, j| nodes[j] = .{ .count = @intCast(k >> 8), .parent = 0, .symbol = @intCast(255 - (k & 0xff)), .bits = 0 };
+        // Internal nodes from `start`, merged from the two queues.
+        const start = max_symbols + 1;
+        var low_s: usize = n;
+        var low_n: usize = start;
+        var next: usize = start;
+        const root = start + n - 2;
+        nodes[next].count = nodes[low_s].count + nodes[low_s - 1].count;
+        nodes[low_s].parent = @intCast(next);
+        nodes[low_s - 1].parent = @intCast(next);
+        next += 1;
+        low_s -= 2;
+        for (next..root + 1) |j| nodes[j].count = 1 << 30;
+        while (next <= root) : (next += 1) {
+            var pick: [2]usize = undefined;
+            for (&pick) |*x| {
+                if (nodes[low_s].count < nodes[low_n].count) {
+                    x.* = low_s;
+                    low_s -= 1;
+                } else {
+                    x.* = low_n;
+                    low_n += 1;
+                }
+            }
+            nodes[next].count = nodes[pick[0]].count + nodes[pick[1]].count;
+            nodes[pick[0]].parent = @intCast(next);
+            nodes[pick[1]].parent = @intCast(next);
+        }
+        nodes[root].bits = 0;
+        var j = root;
+        while (j > start) {
+            j -= 1;
+            nodes[j].bits = nodes[nodes[j].parent].bits + 1;
+        }
+        for (nodes[1 .. n + 1]) |*leaf| leaf.bits = nodes[leaf.parent].bits + 1;
+        const max = limitHeight(nodes[1 .. n + 1], max_bits);
+        // Codewords: per length from the longest, values in symbol order.
+        var per_len: [max_log + 2]u16 = @splat(0);
+        @memset(&t.lens, 0);
+        for (nodes[1 .. n + 1]) |leaf| {
+            per_len[leaf.bits] += 1;
+            t.lens[leaf.symbol] = leaf.bits;
+        }
+        var value: [max_log + 2]u16 = @splat(0);
+        var min: u16 = 0;
+        var l: usize = max;
+        while (l > 0) : (l -= 1) {
+            value[l] = min;
+            min += per_len[l];
+            min >>= 1;
+        }
+        for (t.lens[0..counts.len], t.codes[0..counts.len]) |len, *code| {
+            if (len == 0) {
+                code.* = 0;
+                continue;
+            }
+            code.* = value[len];
+            value[len] += 1;
+        }
+        t.max_symbol = @intCast(counts.len - 1);
+        t.log = max;
+    }
+
+    /// Lengths of leaves sorted by count (most frequent first) cut to
+    /// `target` bits, the cost moved onto the cheapest shorter codes, as
+    /// the format's reference encoder does; returns the longest length.
+    fn limitHeight(leaves: []Node, target: u4) u4 {
+        const last = leaves.len - 1;
+        const largest: u32 = leaves[last].bits;
+        if (largest <= target) return @intCast(largest);
+        var total: i32 = 0;
+        const base_cost: i32 = @as(i32, 1) << @intCast(largest - target);
+        var n: isize = @intCast(last);
+        while (leaves[@intCast(n)].bits > target) : (n -= 1) {
+            total += base_cost - (@as(i32, 1) << @intCast(largest - leaves[@intCast(n)].bits));
+            leaves[@intCast(n)].bits = target;
+        }
+        while (leaves[@intCast(n)].bits == target) n -= 1;
+        total >>= @intCast(largest - target);
+        const none: u32 = 0xf0f0f0f0;
+        var rank_last: [max_log + 2]u32 = @splat(none);
+        {
+            var current: u32 = target;
+            var pos = n;
+            while (pos >= 0) : (pos -= 1) {
+                const b = leaves[@intCast(pos)].bits;
+                if (b >= current) continue;
+                current = b;
+                rank_last[target - current] = @intCast(pos);
+            }
+        }
+        while (total > 0) {
+            var decrease: u32 = std.math.log2_int(u32, @intCast(total)) + 1;
+            while (decrease > 1) : (decrease -= 1) {
+                const high = rank_last[decrease];
+                const low = rank_last[decrease - 1];
+                if (high == none) continue;
+                if (low == none) break;
+                if (leaves[high].count <= 2 * leaves[low].count) break;
+            }
+            while (decrease <= max_log and rank_last[decrease] == none) decrease += 1;
+            total -= @as(i32, 1) << @intCast(decrease - 1);
+            leaves[rank_last[decrease]].bits += 1;
+            if (rank_last[decrease - 1] == none) rank_last[decrease - 1] = rank_last[decrease];
+            if (rank_last[decrease] == 0) {
+                rank_last[decrease] = none;
+            } else {
+                rank_last[decrease] -= 1;
+                if (leaves[rank_last[decrease]].bits != target - decrease) rank_last[decrease] = none;
+            }
+        }
+        while (total < 0) {
+            if (rank_last[1] == none) {
+                while (leaves[@intCast(n)].bits == target) n -= 1;
+                leaves[@intCast(n + 1)].bits -= 1;
+                rank_last[1] = @intCast(n + 1);
+                total += 1;
+                continue;
+            }
+            leaves[rank_last[1] + 1].bits -= 1;
+            rank_last[1] += 1;
+            total += 1;
+        }
+        return target;
+    }
+
+    /// Whether every symbol of `counts` has a code here.
+    pub fn covers(t: *const EncodeTable, counts: []const u32) bool {
+        if (counts.len > @as(usize, t.max_symbol) + 1) return false;
+        for (counts, t.lens[0..counts.len]) |c, len| if (c != 0 and len == 0) return false;
+        return true;
+    }
+
+    /// The bytes `counts` take in this code, rounded down.
+    pub fn estimate(t: *const EncodeTable, counts: []const u32) usize {
+        var bits_total: usize = 0;
+        for (counts, t.lens[0..counts.len]) |c, len| bits_total += @as(usize, c) * len;
+        return bits_total >> 3;
+    }
+
+    /// The tree description (RFC 8878 4.2.1.1): weights FSE-compressed when
+    /// that is smaller, else four bits each. Null when neither fits.
+    pub fn writeDescription(t: *const EncodeTable, out: []u8) ?usize {
+        var weights: [max_symbols]u8 = undefined;
+        const n = t.max_symbol;
+        for (t.lens[0..n], weights[0..n]) |len, *w| w.* = if (len == 0) 0 else @as(u8, t.log) + 1 - len;
+        if (out.len < 1) return null;
+        if (compressWeights(weights[0..n], out[1..])) |size| {
+            if (size > 1 and size < n / 2) {
+                out[0] = @intCast(size);
+                return size + 1;
+            }
+        }
+        if (n > 128) return null;
+        const size = (@as(usize, n) + 1) / 2;
+        if (size + 1 > out.len) return null;
+        out[0] = 128 + (n - 1);
+        weights[n] = 0;
+        var k: usize = 0;
+        while (k < n) : (k += 2) out[k / 2 + 1] = weights[k] << 4 | weights[k + 1];
+        return size + 1;
+    }
+};
+
+/// Weights FSE-compressed with two interleaved states (6-bit tables at
+/// most); null when not worth it or no room.
+fn compressWeights(weights: []const u8, out: []u8) ?usize {
+    if (weights.len <= 1) return null;
+    var counts: [max_log + 1]u32 = @splat(0);
+    var max_symbol: u8 = 0;
+    var largest: u32 = 0;
+    for (weights) |w| {
+        counts[w] += 1;
+        max_symbol = @max(max_symbol, w);
+    }
+    for (counts[0 .. @as(usize, max_symbol) + 1]) |c| largest = @max(largest, c);
+    if (largest == weights.len) return 1;
+    if (largest == 1) return null;
+    const log = fse.optimalLog(6, weights.len, max_symbol, 2);
+    var norm: [max_log + 1]i16 = undefined;
+    const used = norm[0 .. @as(usize, max_symbol) + 1];
+    fse.normalize(used, log, counts[0..used.len], weights.len, false) catch return null;
+    if (out.len < fse.countsBound(max_symbol, log)) return null;
+    var o = fse.writeCounts(out, used, log);
+    var table: fse.EncodeTable(6, max_log) = undefined;
+    table.build(used, log);
+    if (weights.len <= 2) return null;
+    if (out.len - o < 8) return null;
+    var w: Writer = .init(out, o);
+    var s1: u32 = undefined;
+    var s2: u32 = undefined;
+    var i = weights.len;
+    if (i & 1 != 0) {
+        s1 = table.initState(weights[i - 1]);
+        s2 = table.initState(weights[i - 2]);
+        encodeFse(&w, &table, &s1, weights[i - 3]);
+        w.flush();
+        i -= 3;
+    } else {
+        s2 = table.initState(weights[i - 1]);
+        s1 = table.initState(weights[i - 2]);
+        i -= 2;
+    }
+    if ((i) & 2 != 0) {
+        encodeFse(&w, &table, &s2, weights[i - 1]);
+        encodeFse(&w, &table, &s1, weights[i - 2]);
+        w.flush();
+        i -= 2;
+    }
+    while (i > 0) : (i -= 4) {
+        encodeFse(&w, &table, &s2, weights[i - 1]);
+        encodeFse(&w, &table, &s1, weights[i - 2]);
+        encodeFse(&w, &table, &s2, weights[i - 3]);
+        encodeFse(&w, &table, &s1, weights[i - 4]);
+        w.flush();
+    }
+    w.add(s2 & ((@as(u32, 1) << table.log) - 1), table.log);
+    w.add(s1 & ((@as(u32, 1) << table.log) - 1), table.log);
+    w.add(1, 1);
+    w.alignToByte();
+    if (w.overflow) return null;
+    o = w.at;
+    return o;
+}
+
+/// One FSE symbol into `w`: the state's low bits out, the next state in.
+pub inline fn encodeFse(w: *Writer, table: anytype, state: *u32, symbol: u8) void {
+    const tt = table.transforms[symbol];
+    const nb: u5 = @intCast((state.* +% tt.delta_nb_bits) >> 16);
+    w.add(state.* & ((@as(u32, 1) << nb) - 1), nb);
+    state.* = table.states[@intCast(@as(i32, @intCast(state.* >> nb)) + tt.delta_find_state)];
+}
+
+/// One stream of `src` into `out`, last symbol first; 0 when it does not
+/// fit.
+pub fn compress1(t: *const EncodeTable, src: []const u8, out: []u8) usize {
+    if (out.len < 8) return 0;
+    var w: Writer = .init(out, 0);
+    var i = src.len;
+    while (i >= 4) {
+        inline for (1..5) |k| {
+            const sym = src[i - k];
+            w.add(t.codes[sym], @intCast(t.lens[sym]));
+        }
+        w.flush();
+        i -= 4;
+    }
+    while (i > 0) {
+        i -= 1;
+        w.add(t.codes[src[i]], @intCast(t.lens[src[i]]));
+    }
+    w.add(1, 1);
+    w.alignToByte();
+    if (w.overflow) return 0;
+    return w.at;
+}
+
+/// Four streams behind a jump table; 0 when they do not fit.
+pub fn compress4(t: *const EncodeTable, src: []const u8, out: []u8) usize {
+    if (out.len < 6 + 1 + 1 + 1 + 8) return 0;
+    if (src.len < 12) return 0;
+    const segment = (src.len + 3) / 4;
+    var o: usize = 6;
+    for (0..4) |k| {
+        const part = if (k < 3) src[k * segment ..][0..segment] else src[3 * segment ..];
+        const n = compress1(t, part, out[o..]);
+        if (n == 0 or n > 65535) return 0;
+        if (k < 3) std.mem.writeInt(u16, out[2 * k ..][0..2], @intCast(n), .little);
+        o += n;
+    }
+    return o;
+}
+
+/// The table log the reference encoder picks for `len` literals of
+/// symbols up to `max_symbol`, at most `max`.
+pub fn optimalLog(max: u4, len: usize, max_symbol: u8) u4 {
+    return fse.optimalLog(max, len, max_symbol, 1);
 }
 
 test "a direct description: weights read, the last implied, and the table's codes" {

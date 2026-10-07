@@ -12,6 +12,8 @@ pub const Diagnostic = @import("zstd/Diagnostic.zig");
 pub const Dictionary = @import("zstd/Dictionary.zig");
 /// Whole-buffer decoding.
 pub const Decompressor = @import("zstd/Decompressor.zig");
+/// Whole-buffer compression.
+pub const Compressor = @import("zstd/Compressor.zig");
 /// How many frames a decoder reads.
 pub const Frames = Decompressor.Frames;
 
@@ -31,4 +33,7 @@ test {
     _ = @import("zstd/huffman.zig");
     _ = @import("zstd/frame.zig");
     _ = Dictionary;
+    _ = @import("zstd/params.zig");
+    _ = @import("zstd/match/window.zig");
+    _ = @import("zstd/split.zig");
 }
