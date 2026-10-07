@@ -395,10 +395,11 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
     var o: usize = 0;
     const size: i32 = @as(i32, 1) << log;
     var bit_stream: u32 = @as(u32, log) - min_log;
-    var bit_count: u5 = 4;
+    // Up to 32 bits gather before a flush (16 held, 7 repeat codes, one more).
+    var bit_count: u6 = 4;
     var remaining: i32 = size + 1;
     var threshold: i32 = size;
-    var nb_bits: u5 = @as(u5, log) + 1;
+    var nb_bits: u6 = @as(u6, log) + 1;
     var symbol: usize = 0;
     var previous0 = false;
     while (symbol < norm.len and remaining > 1) {
@@ -408,7 +409,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
             std.debug.assert(symbol != norm.len);
             while (symbol >= start + 24) {
                 start += 24;
-                bit_stream += @as(u32, 0xffff) << bit_count;
+                bit_stream += @as(u32, 0xffff) << @intCast(bit_count);
                 out[o] = @truncate(bit_stream);
                 out[o + 1] = @truncate(bit_stream >> 8);
                 o += 2;
@@ -416,10 +417,10 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
             }
             while (symbol >= start + 3) {
                 start += 3;
-                bit_stream += @as(u32, 3) << bit_count;
+                bit_stream += @as(u32, 3) << @intCast(bit_count);
                 bit_count += 2;
             }
-            bit_stream += @as(u32, @intCast(symbol - start)) << bit_count;
+            bit_stream += @as(u32, @intCast(symbol - start)) << @intCast(bit_count);
             bit_count += 2;
             if (bit_count > 16) {
                 out[o] = @truncate(bit_stream);
@@ -435,7 +436,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
         remaining -= if (count < 0) -count else count;
         count += 1;
         if (count >= threshold) count += max;
-        bit_stream += @as(u32, @intCast(count)) << bit_count;
+        bit_stream += @as(u32, @intCast(count)) << @intCast(bit_count);
         bit_count += nb_bits;
         if (count < max) bit_count -= 1;
         previous0 = count == 1;

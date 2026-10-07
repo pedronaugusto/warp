@@ -14,6 +14,7 @@ const encode = @import("encode.zig");
 const frame = @import("frame.zig");
 const window = @import("match/window.zig");
 const fast = @import("match/fast.zig");
+const dfast = @import("match/dfast.zig");
 const split = @import("split.zig");
 
 pub const Strategy = encode.Strategy;
@@ -271,11 +272,15 @@ fn search(c: *Compressor, p: Params, w: window.Window, reps: *[3]u32, start: usi
     const table = c.hash_table[0 .. @as(usize, 1) << p.hash_log];
     const cmov = p.window_log < 19;
     return switch (p.strategy) {
-        else => switch (@max(4, @min(p.min_match, 7))) {
+        .fast => switch (@max(4, @min(p.min_match, 7))) {
             inline 4, 5, 6, 7 => |mls| if (cmov)
                 fast.compress(table, p.hash_log, w, &c.store, reps, start, end, p.target_length, mls, true)
             else
                 fast.compress(table, p.hash_log, w, &c.store, reps, start, end, p.target_length, mls, false),
+            else => unreachable,
+        },
+        else => switch (@max(4, @min(p.min_match, 7))) {
+            inline 4, 5, 6, 7 => |mls| dfast.compress(table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end, mls),
             else => unreachable,
         },
     };
