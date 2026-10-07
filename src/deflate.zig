@@ -88,7 +88,7 @@ pub const Sizes = struct {
         }
         if (lv.parser == .fastest) {
             s.ht_bits = @max(10, @min(ht_bits_max, fit));
-            s.short_bits = s.ht_bits - 2;
+            s.short_bits = s.ht_bits - 4;
         } else {
             s.chains = true;
             s.hash4_bits = @max(10, @min(hash4_bits_max, fit));
