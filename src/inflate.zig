@@ -308,11 +308,11 @@ fn codeReason(err: huffman.BuildError) Diagnostic.Reason {
 
 /// A Huffman-coded block: the fast loop while it can run, the careful loop
 /// near either end.
-fn codes(s: *Stream, source: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!Status {
+inline fn codes(s: *Stream, source: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!Status {
     while (true) {
-        if (try fast(s, litlen, lbits, dist, dbits)) return .done;
+        if (fastReady(s) and try fast(s, litlen, lbits, dist, dbits)) return .done;
         // One symbol at a time until the fast loop can run again.
-        while (s.virtual != 0 or s.ip + fast_input > s.in.len or s.op + margin > s.out.len) {
+        while (!fastReady(s)) {
             switch (try careful(s, source, litlen, lbits, dist, dbits)) {
                 .symbol => {},
                 .end => return .done,
@@ -322,11 +322,16 @@ fn codes(s: *Stream, source: anytype, litlen: []const u32, lbits: u5, dist: []co
     }
 }
 
-/// Decode while sixteen input bytes and `margin` output bytes remain;
-/// whether the block ended. Every bit this reads is real.
+/// Whether the fast loop can run: sixteen real input bytes and `margin`
+/// output bytes remain. It never runs on virtual input.
+inline fn fastReady(s: *const Stream) bool {
+    return s.virtual == 0 and s.ip + fast_input <= s.in.len and s.op + margin <= s.out.len;
+}
+
+/// Decode while `fastReady`; whether the block ended. Every bit this reads
+/// is real.
 fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
-    // The fast loop never runs on virtual input.
-    if (s.virtual != 0 or s.ip + fast_input > s.in.len or s.op + margin > s.out.len) return false;
+    std.debug.assert(fastReady(s));
     var r: Fast = .{
         .in = s.in,
         .ip = s.ip,

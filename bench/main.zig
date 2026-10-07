@@ -324,7 +324,7 @@ fn setup(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options) !voi
     d.* = .init;
     const relic = try arena.create(baseline.inflate.Decoder);
     relic.* = .{};
-    const rounds: usize = if (options.smoke) 10 else 20_000;
+    const rounds: usize = if (options.smoke) 10 else 200_000;
     const inputs = [_][]const u8{ "", "blob 28\x00tiny file for the setup case\n" };
     try w.print("\nsetup | input | warp ns/stream | relic ns/stream\n", .{});
     for (inputs) |in| {
@@ -348,9 +348,10 @@ fn setup(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options) !voi
             }
         };
         const t = try timeAll(io, options.runs, 2, Ctx{ .d = d, .relic = relic, .stream = streams[0], .out = out[0..in.len], .rounds = rounds }, .{ Ctx.warpRun, Ctx.relicRun });
-        try w.print("setup | {d} B | {d:.0} | {d:.0}\n", .{ in.len, @as(f64, @floatFromInt(t[0].best)) / @as(f64, @floatFromInt(rounds)), @as(f64, @floatFromInt(t[1].best)) / @as(f64, @floatFromInt(rounds)) });
+        try w.print("setup | {d} B | {d:.1} | {d:.1}\n", .{ in.len, @as(f64, @floatFromInt(t[0].best)) / @as(f64, @floatFromInt(rounds)), @as(f64, @floatFromInt(t[1].best)) / @as(f64, @floatFromInt(rounds)) });
     }
-    try setupCompress(arena, io, w, options, rounds, &inputs);
+    // A compression costs microseconds: a tenth of the rounds.
+    try setupCompress(arena, io, w, options, @max(1, rounds / 10), &inputs);
 }
 
 /// Per-stream cost of compressing tiny inputs, beside std's, which sets up

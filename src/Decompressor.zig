@@ -141,8 +141,8 @@ fn zlib(d: *Decompressor, s: *inflate_.Stream, source: anytype, options: Options
     const flg: u8 = @truncate(header >> 8);
     if ((@as(u16, cmf) << 8 | flg) % 31 != 0 or cmf & 15 != 8 or cmf >> 4 > 7) return s.fail(.bad_zlib_header);
     if (flg & 0x20 != 0) {
-        var id: u32 = 0;
-        for (0..4) |_| id = id << 8 | try s.take(source, 8);
+        // Big-endian, as the trailer.
+        const id = @byteSwap(try s.take(source, 32));
         if (options.dictionary.len == 0) return s.fail(.dictionary_required);
         if (checksum.adler32(1, options.dictionary) != id) {
             if (options.diagnostic) |diag| diag.* = .{ .bit_offset = s.bitOffset(), .reason = .dictionary_mismatch };
@@ -153,8 +153,7 @@ fn zlib(d: *Decompressor, s: *inflate_.Stream, source: anytype, options: Options
     const status = try inflate_.decode(&d.tables, s, source);
     if (status == .output_full) return finish(s, false);
     s.consume(@intCast(s.bitsleft & 7));
-    var want: u32 = 0;
-    for (0..4) |_| want = want << 8 | try s.take(source, 8);
+    const want = @byteSwap(try s.take(source, 32));
     if (checksum.adler32(1, s.out[0..s.op]) != want) return mismatch(s, .adler32);
     return finish(s, true);
 }
@@ -170,8 +169,8 @@ fn gzipMembers(d: *Decompressor, s: *inflate_.Stream, source: anytype, options: 
         if (status == .output_full) return finish(s, false);
         s.consume(@intCast(s.bitsleft & 7));
         // Each check as soon as its bytes are read, as zlib makes them.
-        if (checksum.crc32(0, s.out[start..s.op]) != try takeLittle(s, source)) return mismatch(s, .crc32);
-        const size = try takeLittle(s, source);
+        if (checksum.crc32(0, s.out[start..s.op]) != try s.take(source, 32)) return mismatch(s, .crc32);
+        const size = try s.take(source, 32);
         // safe: ISIZE is the length modulo 2^32
         if (@as(u32, @truncate(s.op - start)) != size) return mismatch(s, .size);
         if (options.members == .one) return finish(s, true);
@@ -182,12 +181,6 @@ fn gzipMembers(d: *Decompressor, s: *inflate_.Stream, source: anytype, options: 
         const magic = s.peek(16);
         if (magic & 0xff != 0x1f or (s.bitsleft >= 8 * (s.virtual + 2) and magic >> 8 != 0x8b)) return s.fail(.trailing_data);
     }
-}
-
-fn takeLittle(s: *inflate_.Stream, source: anytype) inflate_.Error!u32 {
-    var v: u32 = 0;
-    for (0..4) |i| v |= try s.take(source, 8) << @intCast(8 * i);
-    return v;
 }
 
 fn mismatch(s: *inflate_.Stream, reason: Diagnostic.Reason) InflateError {
