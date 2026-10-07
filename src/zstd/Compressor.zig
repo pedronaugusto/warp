@@ -15,6 +15,7 @@ const frame = @import("frame.zig");
 const window = @import("match/window.zig");
 const fast = @import("match/fast.zig");
 const dfast = @import("match/dfast.zig");
+const lazy_ = @import("match/lazy.zig");
 const split = @import("split.zig");
 
 pub const Strategy = encode.Strategy;
@@ -27,6 +28,9 @@ capacity: Params,
 /// Private: the match tables.
 hash_table: []u32,
 chain_table: []u32,
+tag_table: []u8,
+/// Private: the chain and row matchfinders' insertion state.
+lazy: lazy_.State,
 /// Private: one block's sequences and literals.
 store: encode.SeqStore,
 /// Private: the tables the last block left, and the block's own.
@@ -90,24 +94,36 @@ fn resolve(options: Options, size: ?u64) Params {
     return p;
 }
 
+/// Hash rows rather than chains: greedy to lazy2 over windows above 16 KiB,
+/// as the reference decides.
+fn rows(p: Params) bool {
+    return params_.usesRows(p.strategy) and p.window_log > 14;
+}
+
 const Layout = struct {
     hash: usize,
     chain: usize,
+    tags: usize,
     seqs: usize,
     lits: usize,
 
     fn of(p: Params) Layout {
         const block: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
+        const with_rows = rows(p);
+        // Rows serve large inputs; an input under 16 KiB is searched by
+        // chains, which never need more than 2^15 entries there.
+        const chain: usize = if (p.strategy == .fast) 0 else if (with_rows) @as(usize, 1) << @min(p.chain_log, 15) else @as(usize, 1) << p.chain_log;
         return .{
             .hash = @as(usize, 1) << p.hash_log,
-            .chain = if (p.strategy == .fast) 0 else @as(usize, 1) << p.chain_log,
+            .chain = chain,
+            .tags = if (with_rows) @as(usize, 1) << p.hash_log else 0,
             .seqs = encode.SeqStore.capacity(block, p.min_match),
             .lits = block + 32,
         };
     }
 
     fn bytes(l: Layout) usize {
-        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits, 64);
+        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits, 64);
     }
 };
 
@@ -135,6 +151,8 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
     at += l.hash * 4;
     const chain_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4]));
     at += l.chain * 4;
+    const tag_table = buffer[at..][0..l.tags];
+    at += l.tags;
     const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)]));
     at += l.seqs * @sizeOf(encode.Sequence);
     const codes_ = buffer[at..][0 .. 3 * l.seqs];
@@ -142,11 +160,14 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
     const lits = buffer[at..][0..l.lits];
     @memset(hash_table, 0);
     @memset(chain_table, 0);
+    @memset(tag_table, 0);
     var c: Compressor = .{
         .options = options,
         .capacity = p,
         .hash_table = hash_table,
         .chain_table = chain_table,
+        .tag_table = tag_table,
+        .lazy = undefined,
         .store = .{ .seqs = seqs, .lits = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
         .entropy = undefined,
         .next_index = first_index,
@@ -184,14 +205,16 @@ pub fn bound(len: usize) usize {
 pub fn compress(c: *Compressor, in: []const u8, out: []u8, f: Frame) CompressError!usize {
     var p = resolve(c.options, in.len);
     p.hash_log = @min(p.hash_log, c.capacity.hash_log);
-    p.chain_log = @min(p.chain_log, c.capacity.chain_log);
+    if (c.chain_table.len != 0) p.chain_log = @min(p.chain_log, std.math.log2_int(usize, c.chain_table.len));
     if (c.next_index + @as(u64, in.len) >= index_limit) {
         @memset(c.hash_table, 0);
         @memset(c.chain_table, 0);
+        @memset(c.tag_table, 0);
         c.next_index = first_index;
     }
     const start = c.next_index;
     c.next_index += @intCast(in.len + 1);
+    if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
     var o = try writeHeader(out, p, in.len, f);
     const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
     var reps: [3]u32 = .{ 1, 4, 8 };
@@ -267,6 +290,22 @@ fn allSame(bytes: []const u8) bool {
     return true;
 }
 
+fn prepareLazy(c: *Compressor, p: Params, start: u32) void {
+    const with_rows = rows(p);
+    const row_log: u3 = @intCast(std.math.clamp(p.search_log, 4, 6));
+    c.lazy = .{
+        .hash = c.hash_table[0 .. @as(usize, 1) << p.hash_log],
+        .chain = if (with_rows) &.{} else c.chain_table[0 .. @as(usize, 1) << p.chain_log],
+        .tags = if (with_rows) c.tag_table[0 .. @as(usize, 1) << p.hash_log] else &.{},
+        .hash_log = if (with_rows) p.hash_log - row_log else p.hash_log,
+        .chain_log = p.chain_log,
+        .row_log = row_log,
+        .search_log = p.search_log,
+        .window_log = p.window_log,
+        .next = start,
+    };
+}
+
 /// Run the strategy over one block; returns the trailing literals.
 fn search(c: *Compressor, p: Params, w: window.Window, reps: *[3]u32, start: usize, end: usize) usize {
     const table = c.hash_table[0 .. @as(usize, 1) << p.hash_log];
@@ -279,10 +318,32 @@ fn search(c: *Compressor, p: Params, w: window.Window, reps: *[3]u32, start: usi
                 fast.compress(table, p.hash_log, w, &c.store, reps, start, end, p.target_length, mls, false),
             else => unreachable,
         },
+        .dfast => switch (@max(4, @min(p.min_match, 7))) {
+            inline 4, 5, 6, 7 => |mls| dfast.compress(table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end, mls),
+            else => unreachable,
+        },
+        .greedy, .lazy, .lazy2 => switch (@max(4, @min(p.min_match, 6))) {
+            inline 4, 5, 6 => |mls| switch (p.strategy) {
+                inline .greedy, .lazy, .lazy2 => |s| if (rows(p))
+                    lazy_.compress(&c.lazy, w, &c.store, reps, start, end, .row, depthOf(s), mls)
+                else
+                    lazy_.compress(&c.lazy, w, &c.store, reps, start, end, .chain, depthOf(s), mls),
+                else => unreachable,
+            },
+            else => unreachable,
+        },
         else => switch (@max(4, @min(p.min_match, 7))) {
             inline 4, 5, 6, 7 => |mls| dfast.compress(table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end, mls),
             else => unreachable,
         },
+    };
+}
+
+fn depthOf(s: Strategy) u2 {
+    return switch (s) {
+        .greedy => 0,
+        .lazy => 1,
+        else => 2,
     };
 }
 

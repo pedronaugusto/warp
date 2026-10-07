@@ -529,13 +529,17 @@ pub fn EncodeTable(comptime table_log: u4, comptime max_symbol: u8) type {
             if (symbol > t.symbols) return null;
             const accuracy = 8;
             const tt = t.transforms[symbol];
-            const min_bits = tt.delta_nb_bits >> 16;
-            const threshold = (min_bits + 1) << 16;
-            const size = @as(u32, 1) << t.log;
-            if (min_bits + 1 >= @as(u32, t.log) + 2) return null;
-            const delta = threshold - (tt.delta_nb_bits + size);
+            const min_bits: i64 = tt.delta_nb_bits >> 16;
+            const threshold: i64 = (min_bits + 1) << 16;
+            const size: i64 = @as(i64, 1) << t.log;
+            const delta = threshold - (@as(i64, tt.delta_nb_bits) + size);
             const normalized = (delta << accuracy) >> t.log;
-            return (min_bits + 1) * (1 << accuracy) - normalized;
+            const cost = (min_bits + 1) * (1 << accuracy) - normalized;
+            // A symbol of probability 0 (or any of an RLE table) costs at
+            // least a table log and a bit: it cannot be coded at all.
+            const bad = (@as(i64, t.log) + 1) << accuracy;
+            if (cost >= bad or cost < 0) return null;
+            return @intCast(cost);
         }
 
         /// The state of a stream that ends with `symbol`.
@@ -562,6 +566,22 @@ test "the default tables are the format's: cells from its published tables" {
     try std.testing.expectEqual(SeqCell{ .next_state = 16, .extra_bits = 7, .nb_bits = 4, .base = 125 }, of_default.cells[15]);
     try std.testing.expectEqual(SeqCell{ .next_state = 0, .extra_bits = 24, .nb_bits = 5, .base = 16777213 }, of_default.cells[31]);
     try std.testing.expectEqual(@as(u32, 3), ml_default.cells[0].base);
+}
+
+test "a table cannot price a symbol it has no state for, nor any symbol of an RLE table" {
+    // Counts over symbols 0-3 with symbol 2 absent: a block that needs
+    // symbol 2 cannot repeat this table (it once could, and decoded wrong).
+    var t: EncodeTable(9, 52) = undefined;
+    const norm = [_]i16{ 20, 10, 0, 2 };
+    t.build(&norm, 5);
+    try std.testing.expect(t.bitCost(0) != null);
+    try std.testing.expect(t.bitCost(3) != null);
+    try std.testing.expectEqual(@as(?u32, null), t.bitCost(2));
+    try std.testing.expectEqual(@as(?u32, null), t.bitCost(4));
+    // The cost of a frequent symbol is below one of a rare one.
+    try std.testing.expect(t.bitCost(0).? < t.bitCost(3).?);
+    t.rle(1);
+    try std.testing.expectEqual(@as(?u32, null), t.bitCost(1));
 }
 
 test "descriptions that break the rules are refused" {
