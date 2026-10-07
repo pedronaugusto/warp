@@ -295,8 +295,6 @@ pub const Frame = struct {
         }
     }
 
-    const State = struct { value: u32 };
-
     fn execute(f: *Frame, stream: []const u8, count: usize, op: *usize, lp: *[*]const u8, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
         const ll_cells = &f.entropy.ll.cells;
@@ -308,7 +306,10 @@ pub const Frame = struct {
         _ = r.reload();
         var ml_state: u32 = @intCast(r.read(f.entropy.ml.log));
         _ = r.reload();
-        var reps = f.entropy.reps;
+        // The repeat offsets, most recent first, kept in registers.
+        var rep0 = f.entropy.reps[0];
+        var rep1 = f.entropy.reps[1];
+        var rep2 = f.entropy.reps[2];
         const out = f.out;
         const prefix = f.start;
         const lit_end = lits.ptr + lits.len;
@@ -321,26 +322,33 @@ pub const Frame = struct {
             const llc = ll_cells[ll_state];
             const mlc = ml_cells[ml_state];
             const ofc = of_cells[of_state];
-            var offset: usize = undefined;
+            var offset: u32 = undefined;
             if (ofc.extra_bits > 1) {
                 offset = ofc.base + @as(u32, @intCast(r.readFast(@intCast(ofc.extra_bits))));
-                reps[2] = reps[1];
-                reps[1] = reps[0];
-                reps[0] = @intCast(offset);
+                rep2 = rep1;
+                rep1 = rep0;
+                rep0 = offset;
             } else {
-                const ll0: u32 = @intFromBool(llc.base == 0);
+                const ll0 = llc.base == 0;
                 if (ofc.extra_bits == 0) {
-                    offset = reps[ll0];
-                    reps[1] = reps[ll0 ^ 1];
-                    reps[0] = @intCast(offset);
+                    // Repeat 1, or repeat 2 after no literals.
+                    offset = if (ll0) rep1 else rep0;
+                    rep1 = if (ll0) rep0 else rep1;
+                    rep0 = offset;
                 } else {
-                    const index = ofc.base + ll0 + @as(u32, @intCast(r.readFast(1)));
-                    var rep: u32 = if (index == 3) reps[0] -% 1 else reps[index];
+                    // Repeat 2 or 3, or after no literals repeat 3 or
+                    // repeat 1 less one.
+                    const index = ofc.base + @intFromBool(ll0) + @as(u32, @intCast(r.readFast(1)));
+                    var rep: u32 = switch (index) {
+                        1 => rep1,
+                        2 => rep2,
+                        else => rep0 -% 1,
+                    };
                     // A repeat offset of zero is broken: made impossible.
                     if (rep == 0) rep = std.math.maxInt(u32);
-                    if (index != 1) reps[2] = reps[1];
-                    reps[1] = reps[0];
-                    reps[0] = rep;
+                    if (index != 1) rep2 = rep1;
+                    rep1 = rep0;
+                    rep0 = rep;
                     offset = rep;
                 }
             }
@@ -388,57 +396,34 @@ pub const Frame = struct {
                 o = o_end;
                 continue;
             }
-            try f.executeCarefully(&o, &l, ll, ml, offset, lit_end, at);
+            l = try f.executeCarefully(o, l, ll, ml, offset, lit_end, at);
+            o = o_end;
         }
         if (!r.finished()) return f.fail(error.InvalidStream, at, .bitstream_left);
-        f.entropy.reps = reps;
+        f.entropy.reps = .{ rep0, rep1, rep2 };
         op.* = o;
         lp.* = l;
     }
 
-    /// One sequence with every bound checked and exact copies.
-    fn executeCarefully(f: *Frame, op: *usize, lp: *[*]const u8, ll: usize, ml: usize, offset: usize, lit_end: [*]const u8, at: usize) Error!void {
+    /// One sequence with every bound checked and exact copies; returns
+    /// where the next literal is.
+    fn executeCarefully(f: *Frame, o: usize, lp: [*]const u8, ll: usize, ml: usize, offset: usize, lit_end: [*]const u8, at: usize) Error![*]const u8 {
         const out = f.out;
-        const o = op.*;
         if (ll + ml > out.len - o) return f.fail(error.OutputTooSmall, at, .bad_length);
-        if (ll > @intFromPtr(lit_end) - @intFromPtr(lp.*)) return f.fail(error.InvalidStream, at, .bad_length);
-        std.mem.copyForwards(u8, out[o..][0..ll], lp.*[0..ll]);
-        lp.* += ll;
+        if (ll > @intFromPtr(lit_end) - @intFromPtr(lp)) return f.fail(error.InvalidStream, at, .bad_length);
+        std.mem.copyForwards(u8, out[o..][0..ll], lp[0..ll]);
         const o_lit = o + ll;
-        var dst = o_lit;
-        var len = ml;
         if (offset > o_lit - f.start) {
             // Into the dictionary, maybe on into the frame.
             const back = offset - (o_lit - f.start);
             if (back > f.dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
-            const from = f.dict.len - back;
-            const n = @min(len, back);
-            @memcpy(out[dst..][0..n], f.dict[from..][0..n]);
-            dst += n;
-            len -= n;
-            if (len == 0) {
-                op.* = o_lit + ml;
-                return;
-            }
-            // The rest continues from the frame's first byte.
-            var src = f.start;
-            while (len > 0) : (len -= 1) {
-                out[dst] = out[src];
-                dst += 1;
-                src += 1;
-            }
-            op.* = o_lit + ml;
-            return;
+            const first = @min(ml, back);
+            @memcpy(out[o_lit..][0..first], f.dict[f.dict.len - back ..][0..first]);
+            if (first < ml) repeat(out[o_lit + first ..].ptr, out[f.start..].ptr, ml - first);
+            return lp + ll;
         }
-        var src = o_lit - offset;
-        if (offset >= len) {
-            @memcpy(out[dst..][0..len], out[src..][0..len]);
-        } else while (len > 0) : (len -= 1) {
-            out[dst] = out[src];
-            dst += 1;
-            src += 1;
-        }
-        op.* = o_lit + ml;
+        repeat(out[o_lit..].ptr, out[o_lit - offset ..].ptr, ml);
+        return lp + ll;
     }
 };
 
