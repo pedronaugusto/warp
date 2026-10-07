@@ -248,7 +248,14 @@ pub const Frame = struct {
             ip += try f.codeTable(fse.MlTable, &f.tables.ml, &f.entropy.ml, @truncate(modes >> 2), codes.max_ml, codes.max_ml_log, &codes.ml_base, &codes.ml_bits, &fse.ml_default, in, ip);
             if (f.out.len == op) return f.fail(error.OutputTooSmall, at, .bad_sequences_header);
             f.entropy.fse_ready = true;
-            try f.execute(in[ip..], count, &op, &lp, lits, ip);
+            // Where literals sit in the output ahead of the block's end, the
+            // output may not overtake the next unread one; elsewhere the
+            // block's limit is fixed.
+            if (lits.in_out != null and lits.limit == f.out.len) {
+                try f.execute(true, in[ip..], count, &op, &lp, lits, ip);
+            } else {
+                try f.execute(false, in[ip..], count, &op, &lp, lits, ip);
+            }
         }
         // The literals after the last sequence.
         const last = lits.len - lp;
@@ -303,7 +310,7 @@ pub const Frame = struct {
 
     /// Out of line: inlined into the frame loop, the sequence loop loses
     /// registers to it and runs 7-9% slower (measured on large frames).
-    noinline fn execute(f: *Frame, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
+    noinline fn execute(f: *Frame, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
         const ll_cells = &f.entropy.ll.cells;
         const of_cells = &f.entropy.of.cells;
@@ -378,7 +385,7 @@ pub const Frame = struct {
             const o_end = o_lit + ml;
             const l_end = l + ll;
             // Writes stop short of the next unread literal and of the end.
-            const write_limit = if (lits.in_out) |base| @min(base + l_end, lits.limit) else lits.limit;
+            const write_limit = if (behind_literals) lits.in_out.? + l_end else lits.limit;
             if (l_end <= lit_fast_end and o_end + margin <= write_limit) {
                 @branchHint(.likely);
                 const dst = out.ptr + o;
@@ -405,7 +412,9 @@ pub const Frame = struct {
                 o = o_end;
                 continue;
             }
-            try f.executeCarefully(o, lits.bytes[l..lits.len], ll, ml, offset, write_limit, at);
+            // A literal length past the section puts the unread literal past
+            // the output's end: the output's end comes first.
+            try f.executeCarefully(o, lits.bytes[l..lits.len], ll, ml, offset, @min(write_limit, lits.limit), at);
             l = l_end;
             o = o_end;
         }
