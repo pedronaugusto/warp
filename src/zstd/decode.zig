@@ -175,7 +175,7 @@ pub const Frame = struct {
                 const src = in[header..][0..csize];
                 const dst = f.out[f.out.len - len ..];
                 if (kind == 2) {
-                    try f.huffmanTable(src, header);
+                    try f.huffmanTable(src, header, !single and huffman.chooseDouble(len, csize));
                     const used = f.tables.weights.len;
                     if (used >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
                     try f.huffmanDecode(src[used..], dst, single, header);
@@ -192,9 +192,9 @@ pub const Frame = struct {
         return .{ .ptr = f.out[f.out.len - len ..].ptr, .len = len, .in_out = true, .read_limit = f.out.ptr + f.out.len - 16 };
     }
 
-    fn huffmanTable(f: *Frame, src: []const u8, at: usize) Error!void {
+    fn huffmanTable(f: *Frame, src: []const u8, at: usize, double: bool) Error!void {
         huffman.readWeights(src, &f.tables.weights) catch return f.fail(error.InvalidStream, at, .bad_huffman_weights);
-        f.tables.huffman.build(&f.tables.weights);
+        if (double) f.tables.huffman.buildDouble(&f.tables.weights) else f.tables.huffman.buildSingle(&f.tables.weights);
         f.entropy.huffman = &f.tables.huffman;
     }
 

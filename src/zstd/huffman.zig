@@ -119,38 +119,152 @@ inline fn symbol(cells: []const fse.Cell, state: *u32, r: *bits.Reader) u8 {
     return c.symbol;
 }
 
-/// A decoding table of single symbols: indexed by the next `log` bits,
-/// each cell is a symbol and its code's length.
-pub const Table = struct {
-    /// symbol | length << 8
-    cells: [1 << max_log]u16,
-    log: u4,
+/// How a table decodes: one symbol per lookup, or two where both codes
+/// fit the lookup's bits.
+pub const Kind = enum { single, double };
 
-    pub fn build(t: *Table, w: *const Weights) void {
-        const log = w.log;
+/// A decoding table, indexed by the next `log` bits of a stream.
+pub const Table = struct {
+    kind: Kind,
+    log: u4,
+    cells: extern union {
+        /// symbol | length << 8
+        single: [1 << max_log]u16,
+        /// symbols (first in the low byte) | bits << 16 | symbol count << 24
+        double: [1 << max_log]u32,
+    },
+
+    /// One symbol per lookup, `log` the longest code.
+    pub fn buildSingle(t: *Table, w: *const Weights) void {
+        t.kind = .single;
+        t.log = w.log;
+        fillSingle(w, w.log, &t.cells.single);
+    }
+
+    /// Two symbols per lookup where they fit, over 11 bits (12 when a code
+    /// is that long), as the format's reference decoder builds it.
+    pub fn buildDouble(t: *Table, w: *const Weights) void {
+        const log: u4 = if (w.log <= 11) 11 else 12;
+        t.kind = .double;
         t.log = log;
-        // Cells in order of weight, then symbol: weight w fills 2^(w-1)
-        // cells, its code `log + 1 - w` bits long.
+        const scale: u4 = log - w.log;
+        // Symbols in table order (weight, then symbol), and where each
+        // weight's cells start over `log` bits.
+        var sorted: [max_symbols]u8 = undefined;
+        var first: [max_log + 2]u32 = undefined;
         var start: [max_log + 2]u32 = undefined;
-        var next: u32 = 0;
-        for (1..@as(usize, log) + 1) |weight| {
-            start[weight] = next;
-            next += w.rank[weight] << @intCast(weight - 1);
+        var n: u32 = 0;
+        var pos: u32 = 0;
+        var max_weight: u4 = 1;
+        for (1..@as(usize, w.log) + 1) |weight| {
+            first[weight] = n;
+            start[weight] = pos;
+            n += w.rank[weight];
+            pos += w.rank[weight] << @intCast(weight - 1 + scale);
+            if (w.rank[weight] != 0) max_weight = @intCast(weight);
         }
+        first[@as(usize, w.log) + 1] = n;
+        start[@as(usize, w.log) + 1] = pos;
+        var fill = first;
         for (w.weights[0..w.count], 0..) |weight, s| {
             if (weight == 0) continue;
-            const len = @as(u32, 1) << @intCast(weight - 1);
-            const cell: u16 = @as(u16, @intCast(s)) | @as(u16, log + 1 - weight) << 8;
-            @memset(t.cells[start[weight]..][0..len], cell);
-            start[weight] += len;
+            sorted[fill[weight]] = @intCast(s);
+            fill[weight] += 1;
+        }
+        const baseline: u32 = @as(u32, w.log) + 1;
+        const min_len: u32 = baseline - max_weight;
+        const cells = &t.cells.double;
+        for (1..@as(usize, w.log) + 1) |weight1| {
+            const len1: u32 = baseline - @as(u32, @intCast(weight1));
+            const rest: u32 = log - len1;
+            const span1 = @as(u32, 1) << @intCast(rest);
+            var at = start[weight1];
+            for (sorted[first[weight1]..first[weight1 + 1]]) |s1| {
+                if (rest < min_len) {
+                    @memset(cells[at..][0..span1], @as(u32, s1) | len1 << 16 | 1 << 24);
+                    at += span1;
+                    continue;
+                }
+                // Second codes longer than `rest` bits come first: one
+                // symbol there.
+                const min_weight: u32 = if (rest >= baseline) 1 else baseline - rest;
+                const skip = start[min_weight] >> @intCast(len1);
+                @memset(cells[at..][0..skip], @as(u32, s1) | len1 << 16 | 1 << 24);
+                var sub = at + skip;
+                for (min_weight..@as(usize, w.log) + 1) |weight2| {
+                    const len2: u32 = baseline - @as(u32, @intCast(weight2));
+                    const span2 = @as(u32, 1) << @intCast(rest - len2);
+                    const cell = @as(u32, s1) | len1 + len2 << 16 | 2 << 24;
+                    for (sorted[first[weight2]..first[weight2 + 1]]) |s2| {
+                        @memset(cells[sub..][0..span2], cell | @as(u32, s2) << 8);
+                        sub += span2;
+                    }
+                }
+                at += span1;
+            }
         }
     }
 };
 
+/// Single-symbol cells over `log` bits (at least the longest code): in
+/// order of weight, then symbol, weight w filling 2^(w-1) cells scaled to
+/// `log`, its code `w.log + 1 - w` bits long.
+fn fillSingle(w: *const Weights, log: u4, cells: *[1 << max_log]u16) void {
+    const scale: u4 = log - w.log;
+    var start: [max_log + 2]u32 = undefined;
+    var next: u32 = 0;
+    for (1..@as(usize, w.log) + 1) |weight| {
+        start[weight] = next;
+        next += w.rank[weight] << @intCast(weight - 1 + scale);
+    }
+    for (w.weights[0..w.count], 0..) |weight, s| {
+        if (weight == 0) continue;
+        const len = @as(u32, 1) << @intCast(weight - 1 + scale);
+        const cell: u16 = @as(u16, @intCast(s)) | @as(u16, w.log + 1 - weight) << 8;
+        @memset(cells[start[weight]..][0..len], cell);
+        start[weight] += len;
+    }
+}
+
+/// Whether two symbols per lookup decode faster than one, from the
+/// section's sizes: the format's reference decoder's measured costs, so a
+/// table is built the same way, and treeless sections after it decode the
+/// same way.
+pub fn chooseDouble(len: usize, csize: usize) bool {
+    const Cost = struct { table: u32, per256: u32 };
+    const costs = [16][2]Cost{
+        .{ .{ .table = 0, .per256 = 0 }, .{ .table = 1, .per256 = 1 } },
+        .{ .{ .table = 0, .per256 = 0 }, .{ .table = 1, .per256 = 1 } },
+        .{ .{ .table = 150, .per256 = 216 }, .{ .table = 381, .per256 = 119 } },
+        .{ .{ .table = 170, .per256 = 205 }, .{ .table = 514, .per256 = 112 } },
+        .{ .{ .table = 177, .per256 = 199 }, .{ .table = 539, .per256 = 110 } },
+        .{ .{ .table = 197, .per256 = 194 }, .{ .table = 644, .per256 = 107 } },
+        .{ .{ .table = 221, .per256 = 192 }, .{ .table = 735, .per256 = 107 } },
+        .{ .{ .table = 256, .per256 = 189 }, .{ .table = 881, .per256 = 106 } },
+        .{ .{ .table = 359, .per256 = 188 }, .{ .table = 1167, .per256 = 109 } },
+        .{ .{ .table = 582, .per256 = 187 }, .{ .table = 1570, .per256 = 114 } },
+        .{ .{ .table = 688, .per256 = 187 }, .{ .table = 1712, .per256 = 122 } },
+        .{ .{ .table = 825, .per256 = 186 }, .{ .table = 1965, .per256 = 136 } },
+        .{ .{ .table = 976, .per256 = 185 }, .{ .table = 2131, .per256 = 150 } },
+        .{ .{ .table = 1180, .per256 = 186 }, .{ .table = 2070, .per256 = 175 } },
+        .{ .{ .table = 1377, .per256 = 185 }, .{ .table = 1731, .per256 = 202 } },
+        .{ .{ .table = 1412, .per256 = 185 }, .{ .table = 1695, .per256 = 202 } },
+    };
+    const q: usize = if (csize >= len) 15 else csize * 16 / len;
+    const d256: u32 = @intCast(len >> 8);
+    const one = costs[q][0].table + costs[q][0].per256 * d256;
+    var two = costs[q][1].table + costs[q][1].per256 * d256;
+    two += two >> 5;
+    return two < one;
+}
+
 /// Decode one stream of exactly `out.len` symbols.
 pub fn decode1(t: *const Table, stream: []const u8, out: []u8) Error!void {
     var r = try bits.Reader.init(stream);
-    decodeStream(t, &r, out);
+    switch (t.kind) {
+        .single => streamSingle(t, &r, out),
+        .double => streamDouble(t, &r, out),
+    }
     if (!r.finished()) return error.InvalidStream;
 }
 
@@ -165,62 +279,124 @@ pub fn decode4(t: *const Table, in: []const u8, out: []u8) Error!void {
     if (l1 + l2 + l3 + 6 > in.len) return error.InvalidStream;
     const segment = (out.len + 3) / 4;
     if (3 * segment > out.len) return error.InvalidStream;
-    const s1 = in[6..][0..l1];
-    const s2 = in[6 + l1 ..][0..l2];
-    const s3 = in[6 + l1 + l2 ..][0..l3];
-    const s4 = in[6 + l1 + l2 + l3 ..];
-    var r1 = try bits.Reader.init(s1);
-    var r2 = try bits.Reader.init(s2);
-    var r3 = try bits.Reader.init(s3);
-    var r4 = try bits.Reader.init(s4);
-    const o1 = out[0..segment];
-    const o2 = out[segment..][0..segment];
-    const o3 = out[2 * segment ..][0..segment];
-    const o4 = out[3 * segment ..];
-    // In lock step while every stream has a full register: four symbols
-    // per stream per reload (4 x 12 bits fit the 57 a reload guarantees).
-    const cells = &t.cells;
-    const log = t.log;
-    var i: usize = 0;
-    const lockstep = if (o4.len >= 4) o4.len - 3 else 0;
-    while (i + 4 <= lockstep) : (i += 4) {
-        if (r1.reload() != .unfinished or r2.reload() != .unfinished or r3.reload() != .unfinished or r4.reload() != .unfinished) break;
-        inline for (0..4) |k| {
-            o1[i + k] = decodeSymbol(cells, log, &r1);
-            o2[i + k] = decodeSymbol(cells, log, &r2);
-            o3[i + k] = decodeSymbol(cells, log, &r3);
-            o4[i + k] = decodeSymbol(cells, log, &r4);
-        }
+    var r: [4]bits.Reader = undefined;
+    r[0] = try .init(in[6..][0..l1]);
+    r[1] = try .init(in[6 + l1 ..][0..l2]);
+    r[2] = try .init(in[6 + l1 + l2 ..][0..l3]);
+    r[3] = try .init(in[6 + l1 + l2 + l3 ..]);
+    const ends = [4]usize{ segment, 2 * segment, 3 * segment, out.len };
+    var op = [4]usize{ 0, segment, 2 * segment, 3 * segment };
+    switch (t.kind) {
+        .single => lockstepSingle(t, &r, out, &op),
+        .double => {
+            lockstepDouble(t, &r, out, &op);
+            // Only a broken stream runs past its quarter in lock step.
+            for (0..3) |i| if (op[i] > ends[i]) return error.InvalidStream;
+        },
     }
-    decodeStream(t, &r1, o1[i..]);
-    decodeStream(t, &r2, o2[i..]);
-    decodeStream(t, &r3, o3[i..]);
-    decodeStream(t, &r4, o4[i..]);
-    if (!(r1.finished() and r2.finished() and r3.finished() and r4.finished())) return error.InvalidStream;
+    for (0..4) |i| switch (t.kind) {
+        .single => streamSingle(t, &r[i], out[op[i]..ends[i]]),
+        .double => streamDouble(t, &r[i], out[op[i]..ends[i]]),
+    };
+    for (r) |x| if (!x.finished()) return error.InvalidStream;
 }
 
-inline fn decodeSymbol(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader) u8 {
+inline fn lookupSingle(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader) u8 {
     const c = cells[@intCast(r.peek(log))];
     r.skip(c >> 8);
     return @truncate(c);
 }
 
+/// Two symbols' bytes written (the second may be overwritten next); the
+/// count returned.
+inline fn lookupDouble(cells: *const [1 << max_log]u32, log: u4, r: *bits.Reader, out: [*]u8) u32 {
+    const c = cells[@intCast(r.peek(log))];
+    std.mem.writeInt(u16, out[0..2], @truncate(c), .little);
+    r.skip((c >> 16) & 0xff);
+    return c >> 24;
+}
+
+/// Four streams in lock step, four symbols each per reload, while every
+/// stream's register is full.
+fn lockstepSingle(t: *const Table, r: *[4]bits.Reader, out: []u8, op: *[4]usize) void {
+    const cells = &t.cells.single;
+    const log = t.log;
+    if (out.len - op[3] < 8) return;
+    const limit = out.len - 3;
+    while (op[3] < limit) {
+        inline for (0..4) |k| {
+            inline for (0..4) |s| out[op[s] + k] = lookupSingle(cells, log, &r[s]);
+        }
+        inline for (0..4) |s| op[s] += 4;
+        var full = true;
+        inline for (0..4) |s| full = full and r[s].reloadFast() == .unfinished;
+        if (!full) break;
+    }
+}
+
+fn lockstepDouble(t: *const Table, r: *[4]bits.Reader, out: []u8, op: *[4]usize) void {
+    const cells = &t.cells.double;
+    const log = t.log;
+    if (out.len - op[3] < 8) return;
+    const limit = out.len - 7;
+    while (op[3] < limit) {
+        inline for (0..4) |_| {
+            inline for (0..4) |s| op[s] += lookupDouble(cells, log, &r[s], out[op[s]..].ptr);
+        }
+        var full = true;
+        inline for (0..4) |s| full = full and r[s].reloadFast() == .unfinished;
+        if (!full) break;
+    }
+}
+
 /// Decode `out.len` symbols from `r`, reloading while the stream has
 /// bytes left; past its start the reader gives zeros and the caller's
 /// end check refuses the stream.
-fn decodeStream(t: *const Table, r: *bits.Reader, out: []u8) void {
-    const cells = &t.cells;
+fn streamSingle(t: *const Table, r: *bits.Reader, out: []u8) void {
+    const cells = &t.cells.single;
     const log = t.log;
     var i: usize = 0;
     while (out.len - i >= 4) {
         if (r.reload() != .unfinished) break;
-        inline for (0..4) |k| out[i + k] = decodeSymbol(cells, log, r);
+        inline for (0..4) |k| out[i + k] = lookupSingle(cells, log, r);
         i += 4;
     }
-    // At most 4 x 12 bits remain to read, or the register holds the
-    // stream's first byte: no further reload can add bits.
+    // Four 12-bit codes fit one reload, or the register holds the stream's
+    // first byte and no reload can add bits.
     _ = r.reload();
-    while (i < out.len) : (i += 1) out[i] = decodeSymbol(cells, log, r);
+    while (i < out.len) : (i += 1) out[i] = lookupSingle(cells, log, r);
+}
+
+fn streamDouble(t: *const Table, r: *bits.Reader, out: []u8) void {
+    const cells = &t.cells.double;
+    const log = t.log;
+    var p: usize = 0;
+    const end = out.len;
+    if (end >= 8) {
+        while (p + 8 <= end) {
+            if (r.reload() != .unfinished) break;
+            inline for (0..4) |_| p += lookupDouble(cells, log, r, out[p..].ptr);
+        }
+    } else _ = r.reload();
+    if (end - p >= 2) {
+        while (p + 2 <= end) {
+            if (r.reload() != .unfinished) break;
+            p += lookupDouble(cells, log, r, out[p..].ptr);
+        }
+        while (p + 2 <= end) p += lookupDouble(cells, log, r, out[p..].ptr);
+    }
+    if (p < end) {
+        // The last symbol: a lookup may hold two, of which one is wanted;
+        // its bits are taken up to the stream's start and no further.
+        const c = cells[@intCast(r.peek(log))];
+        out[p] = @truncate(c);
+        if (c >> 24 == 1) {
+            r.skip((c >> 16) & 0xff);
+        } else if (r.consumed < 64) {
+            r.skip((c >> 16) & 0xff);
+            if (r.consumed > 64) r.consumed = 64;
+        }
+    }
 }
 
 test "a direct description: weights read, the last implied, and the table's codes" {
@@ -233,12 +409,18 @@ test "a direct description: weights read, the last implied, and the table's code
     try std.testing.expectEqual(@as(u4, 4), w.log);
     try std.testing.expectEqualSlices(u8, &.{ 4, 3, 2, 0, 1, 1 }, w.weights[0..6]);
     var t: Table = undefined;
-    t.build(&w);
+    t.buildSingle(&w);
     // Codes: 0 -> 1, 1 -> 01, 2 -> 001, 4 -> 0000, 5 -> 0001.
     const want = [_]struct { u16, u8, u8 }{ .{ 0b1000, 0, 1 }, .{ 0b0100, 1, 2 }, .{ 0b0010, 2, 3 }, .{ 0b0000, 4, 4 }, .{ 0b0001, 5, 4 } };
     for (want) |c| {
-        try std.testing.expectEqual(@as(u16, c[1]) | @as(u16, c[2]) << 8, t.cells[c[0]]);
+        try std.testing.expectEqual(@as(u16, c[1]) | @as(u16, c[2]) << 8, t.cells.single[c[0]]);
     }
+    // Over 11 bits, two symbols where they fit: "1" then "01" is 0b101
+    // followed by anything, three bits.
+    t.buildDouble(&w);
+    try std.testing.expectEqual(@as(u4, 11), t.log);
+    const pair = t.cells.double[0b101 << 8];
+    try std.testing.expectEqual(@as(u32, 0 | 1 << 8 | 3 << 16 | 2 << 24), pair);
 }
 
 test "descriptions whose weights do not form a code are refused" {

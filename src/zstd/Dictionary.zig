@@ -46,7 +46,9 @@ pub fn parse(bytes: []const u8) ParseError!Dictionary {
     const e = &d.entropy;
     var pos: usize = 8;
     huffman.readWeights(bytes[pos..], &e.weights) catch return error.InvalidDictionary;
-    e.huffman.build(&e.weights);
+    // Two symbols per lookup, as the reference decoder builds a
+    // dictionary's table: treeless literals decode the same way.
+    e.huffman.buildDouble(&e.weights);
     pos += e.weights.len;
     pos += try counts(bytes[pos..], codes.max_of, codes.max_of_log, &e.of_counts);
     e.of.build(e.of_counts.norm[0 .. @as(usize, e.of_counts.max_symbol) + 1], e.of_counts.log, &codes.of_base, &codes.of_bits);

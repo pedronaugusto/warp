@@ -89,6 +89,17 @@ pub const Reader = struct {
         return r.reloadNearStart();
     }
 
+    /// Refill only where eight bytes lie before the register; nearer the
+    /// stream's start, say `overflow` and leave the register as it is: a
+    /// lock-step decoder stops there and finishes with `reload`.
+    pub inline fn reloadFast(r: *Reader) Status {
+        if (r.at < 8 or r.consumed > 64) return .overflow;
+        r.at -= r.consumed >> 3;
+        r.consumed &= 7;
+        r.container = std.mem.readInt(u64, r.stream[r.at..][0..8], .little);
+        return .unfinished;
+    }
+
     fn reloadNearStart(r: *Reader) Status {
         if (r.at == 0) return if (r.consumed < 64) .end_of_buffer else .completed;
         var n: usize = r.consumed >> 3;
