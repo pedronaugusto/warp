@@ -1,0 +1,19 @@
+# Changelog
+
+All notable changes to warp are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+### Added
+
+- `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every
+  member, or one), from memory or a `std.Io.Reader`, with dictionaries, partial
+  output, and the reason and bit offset of every refusal.
+- `Compressor`: whole-buffer compression at levels 0 to 9 (10 to 12 as 9), with
+  zlib's strategies, dictionaries and gzip headers, in allocated or given memory.
+- CRC-32, CRC-32C and Adler-32, running and combined, on folding, CRC32, UDOT
+  and AVX2 kernels chosen at run time.
+- `gzip.parseHeader` and `gzip.writeHeader` for every header field.
+
+[Unreleased]: https://github.com/pedronaugusto/warp/commits/main

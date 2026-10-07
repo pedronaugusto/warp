@@ -50,7 +50,7 @@ pub const Prng = struct {
     }
 
     /// A value in `[0, n)`, `n > 0` (Lemire's multiply, no division).
-    pub fn below(p: *Prng, n: u64) u64 {
+    pub fn below(p: *Prng, n: usize) usize {
         return @intCast((@as(u128, p.next()) * n) >> 64);
     }
 
@@ -63,7 +63,7 @@ pub const Prng = struct {
 pub fn fill(kind: Kind, seed: u64, out: []u8) void {
     // The kind is mixed into the seed so that two kinds with one seed share
     // no random stream.
-    var prng: Prng = .init(seed ^ (@as(u64, @intFromEnum(kind)) << 56) ^ 0x7761_7270);
+    var prng: Prng = .init(seed ^ (@as(u64, @backingInt(kind)) << 56) ^ 0x7761_7270);
     switch (kind) {
         .text => text(&prng, out),
         .binary => binary(&prng, out),
@@ -109,8 +109,8 @@ pub const Spec = struct {
 
 const vocabulary_size = 2048;
 const syllables = [_][]const u8{
-    "ka", "ro", "mi", "tel", "an", "us", "be", "lor", "de", "pha", "si", "on", "gra", "vi", "ne", "str",
-    "o", "ul", "en", "qua", "te", "ri", "mo", "dax", "pel", "i", "zu", "chen", "fa", "lu", "orb", "et",
+    "ka", "ro", "mi", "tel", "an", "us", "be", "lor", "de",  "pha", "si", "on",   "gra", "vi", "ne",  "str",
+    "o",  "ul", "en", "qua", "te", "ri", "mo", "dax", "pel", "i",   "zu", "chen", "fa",  "lu", "orb", "et",
 };
 
 /// The vocabulary: 2,048 words of 1 to 4 syllables, fixed.
@@ -280,7 +280,9 @@ fn json(p: *Prng, out: []u8) void {
             if (!put(out, &at, "\"") or !put(out, &at, key) or !put(out, &at, "\":")) return;
             var buf: [24]u8 = undefined;
             const value = switch (p.below(4)) {
+                // unreachable: 24 bytes hold any u64 in decimal
                 0 => std.fmt.bufPrint(&buf, "{d}", .{seq}) catch unreachable,
+                // unreachable: 24 bytes hold any u64 in decimal
                 1 => std.fmt.bufPrint(&buf, "{d}", .{p.below(1000)}) catch unreachable,
                 2 => if (p.below(2) == 0) "true" else "false",
                 else => blk: {
