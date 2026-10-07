@@ -295,7 +295,9 @@ pub const Frame = struct {
         }
     }
 
-    fn execute(f: *Frame, stream: []const u8, count: usize, op: *usize, lp: *[*]const u8, lits: *const Literals, at: usize) Error!void {
+    /// Out of line: inlined into the frame loop, the sequence loop loses
+    /// registers to it and runs 7-9% slower (measured on large frames).
+    noinline fn execute(f: *Frame, stream: []const u8, count: usize, op: *usize, lp: *[*]const u8, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
         const ll_cells = &f.entropy.ll.cells;
         const of_cells = &f.entropy.of.cells;
