@@ -275,28 +275,47 @@ fn storedCost(len: usize, position: u64) u64 {
     }
 }
 
-/// Write one block of `data`: the matches in `seqs`, each after its
-/// literals, then `tail` literals; the cheapest kind `kinds` allows for
-/// `counts`, which do not include the end of the block.
-pub fn write(w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, counts_in: *const Counts, final: bool, kinds: Kinds) void {
+/// A block's bytes for the writer.
+pub const Data = struct {
+    /// The literals' bytes: the block's own bytes, which the matches skip
+    /// over (`interleaved`), or its literals alone, kept as they were
+    /// parsed.
+    bytes: []const u8,
+    /// The block's bytes as they are, for a stored block; null when they
+    /// are no longer at hand (a streaming window moved past them).
+    raw: ?[]const u8,
+};
+
+/// Write one block: the matches in `seqs`, each after its literals, then
+/// `tail` literals; the cheapest kind `kinds` allows for `counts`, which
+/// do not include the end of the block.
+pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []const Sequence, tail: u32, counts_in: *const Counts, final: bool, kinds: Kinds) void {
     var counts = counts_in.*;
     counts.litlen[end_of_block] += 1;
-    if (kinds == .stored_only) return writeStored(w, data, final);
+    if (kinds == .stored_only) return writeStored(w, data.raw.?, final);
     var code: Code = undefined;
     var header: Header = undefined;
     const fixed_cost = 3 + dataCost(&counts, &fixed);
     const dynamic_cost = if (kinds == .any) 3 + dynamicCode(&counts, &code, &header) else std.math.maxInt(u64);
-    const stored_cost = storedCost(data.len, w.bitPosition());
-    if (stored_cost < @min(fixed_cost, dynamic_cost)) return writeStored(w, data, final);
+    if (data.raw) |raw| {
+        if (storedCost(raw.len, w.bitPosition()) < @min(fixed_cost, dynamic_cost)) return writeStored(w, raw, final);
+    }
     if (fixed_cost <= dynamic_cost) {
         w.add(@as(u64, @intFromBool(final)) | 2, 3);
-        writeData(w, data, seqs, tail, &fixed);
+        writeData(interleaved, w, data.bytes, seqs, tail, &fixed);
     } else {
         w.add(@as(u64, @intFromBool(final)) | 4, 3);
         codewords(&code, &header);
         writeHeader(w, &header);
-        writeData(w, data, seqs, tail, &code);
+        writeData(interleaved, w, data.bytes, seqs, tail, &code);
     }
+}
+
+/// The most bits `write` writes for a block of `literals` literals and
+/// `matches` matches: fixed codes at their longest, which every choice
+/// costs no more than.
+pub fn bound(literals: usize, matches: usize) usize {
+    return 3 + 9 * literals + (8 + 5 + 5 + 13) * matches + 7;
 }
 
 fn writeHeader(w: *bits.Writer, header: *const Header) void {
@@ -321,9 +340,9 @@ fn writeHeader(w: *bits.Writer, header: *const Header) void {
     }
 }
 
-fn writeData(out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
+fn writeData(comptime interleaved: bool, out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
     // A small block costs less written symbol by symbol than its tables.
-    if (data.len < 2048 and seqs.len < 128) return writeFew(out, data, seqs, tail, code);
+    if (data.len < 2048 and seqs.len < 128) return writeFew(interleaved, out, data, seqs, tail, code);
     // Each literal's codeword and length in one entry, each match length's
     // codeword with its extra bits after it, each distance symbol's
     // codeword and length: one load and one add per field.
@@ -372,7 +391,7 @@ fn writeData(out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: 
         const dlen: u6 = @intCast(d >> 16);
         w.add(@as(u64, s.distance - decode.dist_base[ds]) << dlen | (d & 0xffff), dlen + @as(u6, @intCast(decode.dist_extra[ds])));
         w.flush();
-        at += s.length;
+        if (interleaved) at += s.length;
     }
     for (data[at..][0..tail]) |b| {
         const e = literal[b];
@@ -384,7 +403,7 @@ fn writeData(out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: 
 }
 
 /// `writeData` for a few symbols: each looked up where it is written.
-fn writeFew(w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
+fn writeFew(comptime interleaved: bool, w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
     var at: usize = 0;
     for (seqs) |s| {
         for (data[at..][0..s.literals]) |b| {
@@ -401,7 +420,7 @@ fn writeFew(w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32
         w.flush();
         w.add(s.distance - decode.dist_base[ds], @intCast(decode.dist_extra[ds]));
         w.flush();
-        at += s.length;
+        if (interleaved) at += s.length;
     }
     for (data[at..][0..tail]) |b| {
         w.add(code.litlen_codes[b], @intCast(code.litlen_lens[b]));

@@ -8,6 +8,12 @@
 //!
 //! and the strategies: Huffman-only (literals), RLE (distance one only),
 //! filtered (matches shorter than six are literals).
+//!
+//! Every parser stops and resumes at any position: where it is and a lazy
+//! parser's held match are the builder's. A position is searched only when
+//! every byte a match there may read is at hand (`lookahead` of them), or
+//! the bytes end there: so a stream comes out the same however its input
+//! arrives.
 
 const std = @import("std");
 const bits = @import("../bits.zig");
@@ -16,107 +22,205 @@ const block = @import("block.zig");
 const split = @import("split.zig");
 const Splitter = split.Splitter;
 
-/// A block in the making: its sequences, counts and split observations.
-/// The parsers keep the per-symbol state (the literal run, the symbols
-/// since the last split check) in a `Cursor` of their own, in registers.
+/// The bytes past a position that searching it may read: the longest
+/// match, the four bytes a hash of the last position inside it reads, and
+/// the next position, which a lazy parser searches before deciding.
+pub const lookahead = match.max_match + 4;
+
+/// Literals a parser may add between two checks of a full block: the most
+/// a run reaches before its check, and the most a lazy parser adds while it
+/// holds a match.
+const literal_slack = 1024;
+
+/// A block in the making, and where the parse is: its sequences, its
+/// literals when they are kept apart, its counts and split observations.
 pub const Builder = struct {
-    w: *bits.Writer,
-    in: []const u8,
-    kinds: block.Kinds,
     seqs: []block.Sequence,
     n: usize = 0,
+    /// The block's literals as they are parsed, when the bytes will not
+    /// stay at hand until the block is written (streaming).
+    lits: []u8 = &.{},
+    n_lits: usize = 0,
     counts: block.Counts = .{},
     split: Splitter = .{},
-    /// Where the block starts in the input.
-    start: usize = 0,
+    kinds: block.Kinds = .any,
+    /// The longest stored block (level 0).
+    stored_max: usize = 65535,
+    /// Where the block starts in the bytes; negative once a streaming
+    /// window has moved past it.
+    start: isize = 0,
+    /// Literals since the last match, and symbols since the last split
+    /// check.
+    run: u32 = 0,
+    pending: u32 = 0,
+    /// The next position to parse.
+    p: usize = 0,
+    /// A lazy parser's match at `p`, held while the next position waits
+    /// for its bytes; 0 for none.
+    held_len: u32 = 0,
+    held_dist: u32 = 0,
+    /// A block was written since the parser started.
+    ended: bool = false,
 
     /// Nor shorter than this, unless the input ends.
     const min_len = 5000;
 
-    /// Write the block ending at `p`, whose last `run` bytes are literals.
-    pub fn end(b: *Builder, p: usize, run: u32, final: bool) void {
-        block.write(b.w, b.in[b.start..p], b.seqs[0..b.n], run, &b.counts, final, b.kinds);
+    /// Start over at `p`, with nothing in the block.
+    pub fn restart(b: *Builder, p: usize) void {
         b.n = 0;
+        b.n_lits = 0;
         b.counts = .{};
         b.split.startBlock();
-        b.start = p;
+        b.start = @intCast(p);
+        b.run = 0;
+        b.pending = 0;
+        b.p = p;
+        b.held_len = 0;
+        b.held_dist = 0;
+    }
+
+    /// The positions moved back `n`: the bytes slid by `n`.
+    pub fn slide(b: *Builder, n: usize) void {
+        b.p -= n;
+        b.start -= @intCast(n);
     }
 };
 
-/// What a parser carries from symbol to symbol.
-pub const Cursor = struct {
-    b: *Builder,
-    /// Literals since the last match.
-    run: u32 = 0,
-    /// Symbols since the last split check.
-    pending: u32 = 0,
+/// What a parser carries from symbol to symbol, in registers, over the
+/// bytes `in`: `final` when they end there (the input's end, or a flush).
+/// With `keep_literals` the literals are kept in the builder, as a
+/// streaming window moves on before a block is written.
+pub fn Cursor(comptime keep_literals: bool) type {
+    return struct {
+        b: *Builder,
+        w: *bits.Writer,
+        in: []const u8,
+        final: bool,
+        run: u32,
+        pending: u32,
 
-    pub inline fn literal(c: *Cursor, byte: u8) void {
-        c.b.counts.literal(byte);
-        c.b.split.literal(byte);
-        c.run += 1;
-        c.pending += 1;
-    }
+        const Self = @This();
 
-    /// A literal for the fastest parser, which does not split blocks by
-    /// their statistics.
-    pub inline fn literalUnobserved(c: *Cursor, byte: u8) void {
-        c.b.counts.literal(byte);
-        c.run += 1;
-    }
+        pub fn init(b: *Builder, w: *bits.Writer, in: []const u8, final: bool) Self {
+            return .{ .b = b, .w = w, .in = in, .final = final, .run = b.run, .pending = b.pending };
+        }
 
-    pub inline fn matchUnobserved(c: *Cursor, length: u32, distance: u32) void {
-        const b = c.b;
-        b.counts.match(length, distance);
-        b.seqs[b.n] = .{ .literals = c.run, .length = @intCast(length), .distance = @intCast(distance) };
-        b.n += 1;
-        c.run = 0;
-    }
+        /// Put the per-symbol state back in the builder.
+        pub fn save(c: *const Self) void {
+            c.b.run = c.run;
+            c.b.pending = c.pending;
+        }
 
-    /// The fastest parser's blocks: at most 64 KiB of input, or as many
-    /// matches as the buffer holds (8,192), whichever comes first.
-    pub inline fn maybeEndFast(c: *Cursor, p: usize) void {
-        const b = c.b;
-        if (b.n >= b.seqs.len or p - b.start >= 65535) c.endBlock(p);
-    }
+        /// Positions before this may be searched.
+        pub inline fn stop(c: *const Self) usize {
+            return if (c.final) c.in.len else c.in.len -| (lookahead - 1);
+        }
 
-    pub inline fn addMatch(c: *Cursor, length: u32, distance: u32) void {
-        const b = c.b;
-        b.counts.match(length, distance);
-        b.split.match(length);
-        b.seqs[b.n] = .{ .literals = c.run, .length = @intCast(length), .distance = @intCast(distance) };
-        b.n += 1;
-        c.run = 0;
-        c.pending += 1;
-    }
+        pub inline fn literal(c: *Self, byte: u8) void {
+            c.b.counts.literal(byte);
+            c.b.split.literal(byte);
+            c.keep(byte);
+            c.run += 1;
+            c.pending += 1;
+        }
 
-    /// End the block at `p` if it is full, long, or changing. Called after
-    /// every match, and between matches every so many literals.
-    pub inline fn maybeEnd(c: *Cursor, p: usize) void {
-        const b = c.b;
-        const len = p - b.start;
-        if (b.n >= b.seqs.len) return c.endBlock(p);
-        if (c.pending < split.check_every) return;
-        c.pending = 0;
-        if (len >= Builder.min_len and b.in.len - p >= Builder.min_len and b.split.differs()) c.endBlock(p);
-    }
+        /// A literal for the fastest parser, which does not split blocks
+        /// by their statistics.
+        pub inline fn literalUnobserved(c: *Self, byte: u8) void {
+            c.b.counts.literal(byte);
+            c.keep(byte);
+            c.run += 1;
+        }
 
-    /// `maybeEnd` after a literal: only once enough symbols are pending.
-    pub inline fn maybeEndLiteral(c: *Cursor, p: usize) void {
-        if (c.pending >= split.check_every) c.maybeEnd(p);
-    }
+        inline fn keep(c: *Self, byte: u8) void {
+            if (!keep_literals) return;
+            c.b.lits[c.b.n_lits] = byte;
+            c.b.n_lits += 1;
+        }
 
-    fn endBlock(c: *Cursor, p: usize) void {
-        c.b.end(p, c.run, false);
-        c.run = 0;
-        c.pending = 0;
-    }
+        pub inline fn matchUnobserved(c: *Self, length: u32, distance: u32) void {
+            const b = c.b;
+            b.counts.match(length, distance);
+            b.seqs[b.n] = .{ .literals = c.run, .length = @intCast(length), .distance = @intCast(distance) };
+            b.n += 1;
+            c.run = 0;
+        }
 
-    /// The final block, at the end of the input.
-    pub fn finish(c: *Cursor) void {
-        c.b.end(c.b.in.len, c.run, true);
-    }
-};
+        pub inline fn addMatch(c: *Self, length: u32, distance: u32) void {
+            const b = c.b;
+            b.counts.match(length, distance);
+            b.split.match(length);
+            b.seqs[b.n] = .{ .literals = c.run, .length = @intCast(length), .distance = @intCast(distance) };
+            b.n += 1;
+            c.run = 0;
+            c.pending += 1;
+        }
+
+        /// Whether the literals kept are near their room.
+        inline fn literalsFull(c: *const Self) bool {
+            return keep_literals and c.b.n_lits + literal_slack > c.b.lits.len;
+        }
+
+        /// The fastest parser's blocks: at most 64 KiB of input, or as many
+        /// matches as the buffer holds, whichever comes first. Whether the
+        /// block ended at `p`.
+        pub inline fn maybeEndFast(c: *Self, p: usize) bool {
+            const b = c.b;
+            if (b.n >= b.seqs.len or @as(isize, @intCast(p)) - b.start >= 65535 or c.literalsFull()) {
+                c.endBlock(p);
+                return true;
+            }
+            return false;
+        }
+
+        /// End the block at `p` if it is full, long, or changing; whether
+        /// it ended. Called after every match, and between matches every
+        /// so many literals.
+        pub inline fn maybeEnd(c: *Self, p: usize) bool {
+            const b = c.b;
+            if (b.n >= b.seqs.len or c.literalsFull()) {
+                c.endBlock(p);
+                return true;
+            }
+            if (c.pending < split.check_every) return false;
+            c.pending = 0;
+            const len: usize = @intCast(@as(isize, @intCast(p)) - b.start);
+            if (len >= Builder.min_len and c.remaining(p) >= Builder.min_len and b.split.differs()) {
+                c.endBlock(p);
+                return true;
+            }
+            return false;
+        }
+
+        /// `maybeEnd` after a literal: only once enough symbols are pending.
+        pub inline fn maybeEndLiteral(c: *Self, p: usize) bool {
+            if (c.pending >= split.check_every) return c.maybeEnd(p);
+            return false;
+        }
+
+        /// The bytes after `p`, as far as is known: unknown, so many,
+        /// until the input ends.
+        inline fn remaining(c: *const Self, p: usize) usize {
+            return if (c.final) c.in.len - p else std.math.maxInt(usize);
+        }
+
+        fn endBlock(c: *Self, p: usize) void {
+            c.write(p, false);
+            c.b.ended = true;
+        }
+
+        /// Write the block ending at `p`, and start the next there.
+        pub fn write(c: *Self, p: usize, final: bool) void {
+            const b = c.b;
+            const raw: ?[]const u8 = if (b.start >= 0) c.in[@intCast(b.start)..p] else null;
+            const data: block.Data = .{ .bytes = if (keep_literals) b.lits[0..b.n_lits] else raw.?, .raw = raw };
+            block.write(!keep_literals, c.w, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);
+            b.restart(p);
+            c.run = 0;
+            c.pending = 0;
+        }
+    };
+}
 
 /// How a level searches.
 pub const Params = struct {
@@ -138,59 +242,63 @@ inline fn worthIt(len: u32, distance: u32, min_len: u32) bool {
 }
 
 /// Level 1.
-pub fn fastest(comptime dictionary: bool, c: *Cursor, ht: *match.HashTable, h: match.History) void {
+pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype, ht: *match.HashTable, h: match.History) void {
     const n = h.in.len;
-    var p: usize = 0;
-    while (p < n) {
+    const stop = c.stop();
+    var p = c.b.p;
+    defer c.b.p = p;
+    while (p < stop) {
         const max = maxLen(n, p);
         if (max >= 5) {
             var distance: u32 = 0;
-            const len = ht.longestMatch(dictionary, h, @intCast(p), max, &distance);
+            const len = ht.longestMatch(dictionary, full_window, h, @intCast(p), max, &distance);
             if (len >= 3) {
                 c.matchUnobserved(len, distance);
                 ht.skip(h, @intCast(p + 1), @intCast(@min(len - 1, n - 4 - p - 1 + 1)));
                 p += len;
-                c.maybeEndFast(p);
+                if (c.maybeEndFast(p)) return;
                 continue;
             }
         }
         c.literalUnobserved(h.in[p]);
         p += 1;
-        c.maybeEndFast(p);
+        if (c.maybeEndFast(p)) return;
     }
 }
 
 /// Levels 2-3 (and any level's parse under `filtered`, with `min_len` 6).
-pub fn greedy(comptime dictionary: bool, c: *Cursor, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
+pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
     const n = h.in.len;
-    var p: usize = 0;
-    while (p < n) {
+    const stop = c.stop();
+    var p = c.b.p;
+    defer c.b.p = p;
+    while (p < stop) {
         const max = maxLen(n, p);
         if (max >= 4) {
             var distance: u32 = 0;
-            const len = hc.longestMatch(dictionary, h, @intCast(p), 2, max, params.nice, params.depth, &distance);
+            const len = hc.longestMatch(dictionary, full_window, h, @intCast(p), 2, max, params.nice, params.depth, &distance);
             if (worthIt(len, distance, min_len)) {
                 c.addMatch(len, distance);
-                skipInside(hc, h, p, len);
+                skipInside(full_window, hc, h, p, len);
                 p += len;
-                c.maybeEnd(p);
+                if (c.maybeEnd(p)) return;
                 continue;
             }
         }
         c.literal(h.in[p]);
         p += 1;
-        c.maybeEndLiteral(p);
+        if (c.maybeEndLiteral(p)) return;
     }
 }
 
 /// Insert the positions inside a match taken at `p`, as far as four bytes
 /// remain to hash.
-inline fn skipInside(hc: *match.HashChains, h: match.History, p: usize, len: u32) void {
+inline fn skipInside(comptime full_window: bool, hc: *match.HashChains, h: match.History, p: usize, len: u32) void {
     const n = h.in.len;
     if (n < 4) return;
     const last = n - 4;
     if (p + 1 > last) return;
-    hc.skip(h, @intCast(p + 1), @intCast(@min(len - 1, last - p)));
+    hc.skip(full_window, h, @intCast(p + 1), @intCast(@min(len - 1, last - p)));
 }
 
 /// How much better a match is than another: four per byte of length, less
@@ -203,74 +311,117 @@ inline fn score(len: u32, distance: u32) i32 {
 /// Levels 4-9: a match is held while the next position is searched, with
 /// half the depth; a clearly better match there makes the held position a
 /// literal. A match of `nice` bytes is taken at once.
-pub fn lazy(comptime dictionary: bool, c: *Cursor, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
+pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
     const n = h.in.len;
+    const stop = c.stop();
     const look = @max(1, params.depth / 2);
-    var p: usize = 0;
-    while (p < n) {
-        if (maxLen(n, p) < 4) {
-            c.literal(h.in[p]);
-            p += 1;
-            c.maybeEndLiteral(p);
-            continue;
+    var p = c.b.p;
+    var cur_len = c.b.held_len;
+    var cur_dist = c.b.held_dist;
+    defer {
+        c.b.p = p;
+        c.b.held_len = cur_len;
+        c.b.held_dist = cur_dist;
+    }
+    while (true) {
+        if (cur_len == 0) {
+            if (p >= stop) return;
+            if (maxLen(n, p) < 4) {
+                c.literal(h.in[p]);
+                p += 1;
+                if (c.maybeEndLiteral(p)) return;
+                continue;
+            }
+            cur_len = hc.longestMatch(dictionary, full_window, h, @intCast(p), min_len - 1, maxLen(n, p), params.nice, params.depth, &cur_dist);
+            if (!worthIt(cur_len, cur_dist, min_len)) {
+                cur_len = 0;
+                c.literal(h.in[p]);
+                p += 1;
+                if (c.maybeEndLiteral(p)) return;
+                continue;
+            }
         }
-        var cur_dist: u32 = 0;
-        var cur_len = hc.longestMatch(dictionary, h, @intCast(p), min_len - 1, maxLen(n, p), params.nice, params.depth, &cur_dist);
-        if (!worthIt(cur_len, cur_dist, min_len)) {
-            c.literal(h.in[p]);
-            p += 1;
-            c.maybeEndLiteral(p);
-            continue;
-        }
-        while (cur_len < params.nice and p + 1 < n and maxLen(n, p + 1) >= 4) {
-            var next_dist: u32 = 0;
-            const next_len = hc.longestMatch(dictionary, h, @intCast(p + 1), cur_len - 1, maxLen(n, p + 1), params.nice, look, &next_dist);
-            if (next_len < cur_len or score(next_len, next_dist) - score(cur_len, cur_dist) <= 2) {
+        // A match is held at `p`: the next position may have a better one.
+        if (cur_len < params.nice) {
+            // Its bytes are not all here yet: hold the match until they are.
+            if (p + 1 >= stop and !c.final) return;
+            if (p + 1 < n and maxLen(n, p + 1) >= 4) {
+                var next_dist: u32 = 0;
+                const next_len = hc.longestMatch(dictionary, full_window, h, @intCast(p + 1), cur_len - 1, maxLen(n, p + 1), params.nice, look, &next_dist);
+                if (next_len >= cur_len and score(next_len, next_dist) - score(cur_len, cur_dist) > 2) {
+                    c.literal(h.in[p]);
+                    p += 1;
+                    cur_len = next_len;
+                    cur_dist = next_dist;
+                    continue;
+                }
                 // `p + 1` is in the tables now; the rest of the match next.
                 c.addMatch(cur_len, cur_dist);
-                skipInside(hc, h, p + 1, cur_len - 1);
+                skipInside(full_window, hc, h, p + 1, cur_len - 1);
                 p += cur_len;
-                break;
+                cur_len = 0;
+                if (c.maybeEnd(p)) return;
+                continue;
             }
-            c.literal(h.in[p]);
-            p += 1;
-            cur_len = next_len;
-            cur_dist = next_dist;
-        } else {
-            c.addMatch(cur_len, cur_dist);
-            skipInside(hc, h, p, cur_len);
-            p += cur_len;
         }
-        c.maybeEnd(p);
+        c.addMatch(cur_len, cur_dist);
+        skipInside(full_window, hc, h, p, cur_len);
+        p += cur_len;
+        cur_len = 0;
+        if (c.maybeEnd(p)) return;
     }
 }
 
 /// Literals only.
-pub fn huffmanOnly(c: *Cursor) void {
-    for (c.b.in, 0..) |byte, p| {
-        c.literal(byte);
-        c.maybeEndLiteral(p + 1);
+pub fn huffmanOnly(c: anytype, h: match.History) void {
+    const stop = c.stop();
+    var p = c.b.p;
+    defer c.b.p = p;
+    while (p < stop) {
+        c.literal(h.in[p]);
+        p += 1;
+        if (c.maybeEndLiteral(p)) return;
     }
 }
 
-/// Runs: matches at distance one only.
-pub fn rle(c: *Cursor) void {
-    const in = c.b.in;
-    var p: usize = 0;
-    while (p < in.len) {
-        if (p > 0 and in.len - p >= 3) {
+/// Runs: matches at distance one only, never reaching before `first`
+/// (the stream's first byte).
+pub fn rle(c: anytype, h: match.History, first: usize) void {
+    const in = h.in;
+    const stop = c.stop();
+    var p = c.b.p;
+    defer c.b.p = p;
+    while (p < stop) {
+        if (p > first and in.len - p >= 3) {
             const max = maxLen(in.len, p);
             var len: u32 = 0;
             while (len < max and in[p + len] == in[p - 1]) len += 1;
             if (len >= 3) {
                 c.addMatch(len, 1);
                 p += len;
-                c.maybeEnd(p);
+                if (c.maybeEnd(p)) return;
                 continue;
             }
         }
         c.literal(in[p]);
         p += 1;
-        c.maybeEndLiteral(p);
+        if (c.maybeEndLiteral(p)) return;
+    }
+}
+
+/// Stored blocks only (level 0): the bytes as they are, a block every
+/// 65,535.
+pub fn stored(c: anytype) void {
+    const stop = c.stop();
+    var p = c.b.p;
+    defer c.b.p = p;
+    while (p < stop) {
+        const start: usize = @intCast(c.b.start);
+        p = @min(stop, start + c.b.stored_max);
+        // The last block is the final one, however long.
+        if (p - start == c.b.stored_max and p < c.in.len) {
+            c.endBlock(p);
+            return;
+        }
     }
 }

@@ -48,6 +48,11 @@ pub const Compressor = @import("Compressor.zig");
 /// Streaming decoding of raw DEFLATE, zlib and gzip, and its
 /// `std.Io.Reader`.
 pub const Inflate = stream.Inflate;
+/// Streaming compression to raw DEFLATE, zlib or gzip, with flushes, and
+/// its `std.Io.Writer`.
+pub const Deflate = stream.Deflate;
+/// How a streaming compressor's flush ends what is written so far.
+pub const Flush = Deflate.Flush;
 /// How matches are chosen, beside the level: zlib's strategies.
 pub const Strategy = Compressor.Strategy;
 /// Spare output room past the expected length that lets the decoder's fast
