@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) !void {
     addKernels(b, test_module, target, optimize);
     // The differential corpus, captured once from other implementations
     // (pedronaugusto/trials, warp/), and the inputs it names.
-    for ([_][]const u8{ "streams", "sizes", "invalid" }) |name| {
+    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
         test_module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = b.path(b.fmt("testdata/{s}.corpus", .{name})) });
     }
     test_module.addAnonymousImport("gen", .{ .root_source_file = b.path("bench/gen.zig") });

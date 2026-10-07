@@ -11,4 +11,6 @@ test {
     _ = @import("testing/decode_test.zig");
     _ = @import("testing/encode_test.zig");
     _ = @import("testing/api_test.zig");
+    _ = @import("zstd.zig");
+    _ = @import("testing/zstd_decode_test.zig");
 }

@@ -29,6 +29,14 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "engines", .patterns = &.{ "src/inflate.zig", "src/deflate.zig" } },
     .{ .name = "containers", .patterns = &.{ "src/container.zig", "src/gzip.zig" } },
     .{ .name = "frame", .patterns = &.{ "src/Decompressor.zig", "src/Compressor.zig" } },
+    .{ .name = "zstd bits", .patterns = &.{ "src/zstd/bits.zig", "src/zstd/codes.zig", "src/zstd/Diagnostic.zig" } },
+    .{ .name = "zstd fse", .patterns = &.{"src/zstd/fse.zig"} },
+    .{ .name = "zstd huffman", .patterns = &.{"src/zstd/huffman.zig"} },
+    .{ .name = "zstd frame headers", .patterns = &.{"src/zstd/frame.zig"} },
+    .{ .name = "zstd engines", .patterns = &.{"src/zstd/decode.zig"} },
+    .{ .name = "zstd dictionary", .patterns = &.{"src/zstd/Dictionary.zig"} },
+    .{ .name = "zstd frame", .patterns = &.{"src/zstd/Decompressor.zig"} },
+    .{ .name = "zstd", .patterns = &.{"src/zstd.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 
@@ -54,6 +62,10 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "streams.corpus",
         "sizes.corpus",
         "invalid.corpus",
+        "zstd-frames.corpus",
+        "zstd-sizes.corpus",
+        "zstd-invalid.corpus",
+        "zstd-dictionaries.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

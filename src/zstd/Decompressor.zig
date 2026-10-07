@@ -317,7 +317,9 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
     }
     if (header.checksum) {
         const sum_at = source.offset();
-        const sum = source.bytes(4) orelse return fail(options, error.ChecksumMismatch, sum_at, .checksum);
+        // A frame cut inside its checksum is cut, though the reference
+        // decoder calls it a wrong checksum.
+        const sum = source.bytes(4) orelse return fail(options, error.Truncated, sum_at, .truncated);
         if (verify and std.mem.readInt(u32, sum[0..4], .little) != @as(u32, @truncate(hash.final()))) {
             return fail(options, error.ChecksumMismatch, sum_at, .checksum);
         }

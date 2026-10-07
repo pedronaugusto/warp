@@ -86,15 +86,20 @@ pub const Frame = struct {
 
     /// Where a block's literals are and how far the fast loop may read.
     const Literals = struct {
-        /// The literals: in the input, or at the end of the output.
-        ptr: [*]const u8,
+        /// The literals and the readable bytes after them: in the input
+        /// (32 or more follow), or the end of the output (none follow).
+        bytes: []const u8,
         len: usize,
-        /// The literals sit at the end of `out`: the output may not
-        /// overtake the next one unread.
-        in_out: bool,
-        /// The fast loop reads 16 bytes from a literal; up to here that
-        /// stays inside readable memory.
-        read_limit: [*]const u8,
+        /// Where the literals start in `out`, when they are there: the
+        /// output may not overtake the next one unread.
+        in_out: ?usize,
+        /// The end of the output this block may write. Where its literals
+        /// are not in the input and the output has room for a whole block
+        /// and its literals, the reference decoder puts them after the
+        /// block and lets the block write no further than 32 bytes past
+        /// the largest block; so does this decoder, refusing the same
+        /// blocks as too large for the output.
+        limit: usize,
     };
 
     fn literals(f: *Frame, in: []const u8, op: usize, lits: *Literals) Error!usize {
@@ -130,17 +135,17 @@ pub const Frame = struct {
                     if (header + len > in.len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
                     if (header + len + margin <= in.len) {
                         // Read in place: the block's own bytes follow.
-                        lits.* = .{ .ptr = in[header..].ptr, .len = len, .in_out = false, .read_limit = in.ptr + in.len - 16 };
+                        lits.* = .{ .bytes = in[header..], .len = len, .in_out = null, .limit = f.out.len };
                     } else {
                         const dst = f.out[f.out.len - len ..];
                         @memcpy(dst, in[header..][0..len]);
-                        lits.* = f.inOut(len);
+                        lits.* = f.inOut(len, op);
                     }
                     return header + len;
                 }
                 const dst = f.out[f.out.len - len ..];
                 @memset(dst, in[header]);
-                lits.* = f.inOut(len);
+                lits.* = f.inOut(len, op);
                 return header + 1;
             },
             2, 3 => {
@@ -182,14 +187,16 @@ pub const Frame = struct {
                 } else {
                     try f.huffmanDecode(src, dst, single, header);
                 }
-                lits.* = f.inOut(len);
+                lits.* = f.inOut(len, op);
                 return header + csize;
             },
         }
     }
 
-    fn inOut(f: *Frame, len: usize) Literals {
-        return .{ .ptr = f.out[f.out.len - len ..].ptr, .len = len, .in_out = true, .read_limit = f.out.ptr + f.out.len - 16 };
+    fn inOut(f: *Frame, len: usize, op: usize) Literals {
+        const room = f.out.len - op;
+        const limit = if (room > f.block_max + margin + len + margin) op + f.block_max + margin else f.out.len;
+        return .{ .bytes = f.out[f.out.len - len ..], .len = len, .in_out = f.out.len - len, .limit = limit };
     }
 
     fn huffmanTable(f: *Frame, src: []const u8, at: usize, double: bool) Error!void {
@@ -228,8 +235,7 @@ pub const Frame = struct {
             }
         }
         var op = op_start;
-        var lp = lits.ptr;
-        const lit_end = lits.ptr + lits.len;
+        var lp: usize = 0;
         if (count == 0) {
             if (ip != in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
         } else {
@@ -245,9 +251,9 @@ pub const Frame = struct {
             try f.execute(in[ip..], count, &op, &lp, lits, ip);
         }
         // The literals after the last sequence.
-        const last = @intFromPtr(lit_end) - @intFromPtr(lp);
-        if (last > f.out.len - op) return f.fail(error.OutputTooSmall, at, .bad_length);
-        std.mem.copyForwards(u8, f.out[op..][0..last], lp[0..last]);
+        const last = lits.len - lp;
+        if (last > lits.limit - op) return f.fail(error.OutputTooSmall, at, .bad_length);
+        @memmove(f.out[op..][0..last], lits.bytes[lp..][0..last]);
         op += last;
         return op - op_start;
     }
@@ -297,7 +303,7 @@ pub const Frame = struct {
 
     /// Out of line: inlined into the frame loop, the sequence loop loses
     /// registers to it and runs 7-9% slower (measured on large frames).
-    noinline fn execute(f: *Frame, stream: []const u8, count: usize, op: *usize, lp: *[*]const u8, lits: *const Literals, at: usize) Error!void {
+    noinline fn execute(f: *Frame, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
         const ll_cells = &f.entropy.ll.cells;
         const of_cells = &f.entropy.of.cells;
@@ -314,8 +320,9 @@ pub const Frame = struct {
         var rep2 = f.entropy.reps[2];
         const out = f.out;
         const prefix = f.start;
-        const lit_end = lits.ptr + lits.len;
-        const lit_fast_end = @min(@intFromPtr(lit_end), @intFromPtr(lits.read_limit));
+        const lit = lits.bytes.ptr;
+        // The fast loop reads 16 bytes from the last literal it copies.
+        const lit_fast_end = @min(lits.len, lits.bytes.len -| 16);
         var o = op.*;
         var l = lp.*;
         var n = count;
@@ -369,15 +376,15 @@ pub const Frame = struct {
             // ---- execute ----
             const o_lit = o + ll;
             const o_end = o_lit + ml;
-            const l_end = @intFromPtr(l) +| ll;
+            const l_end = l + ll;
             // Writes stop short of the next unread literal and of the end.
-            const write_limit = if (lits.in_out) @intFromPtr(l) - @intFromPtr(out.ptr) + ll else out.len;
+            const write_limit = if (lits.in_out) |base| @min(base + l_end, lits.limit) else lits.limit;
             if (l_end <= lit_fast_end and o_end + margin <= write_limit) {
                 @branchHint(.likely);
                 const dst = out.ptr + o;
-                copy16(dst, l);
-                if (ll > 16) wildCopy16(dst + 16, l + 16, ll - 16);
-                l += ll;
+                copy16(dst, lit + l);
+                if (ll > 16) wildCopy16(dst + 16, lit + l + 16, ll - 16);
+                l = l_end;
                 const m = out.ptr + o_lit;
                 if (offset <= o_lit - prefix) {
                     @branchHint(.likely);
@@ -398,7 +405,8 @@ pub const Frame = struct {
                 o = o_end;
                 continue;
             }
-            l = try f.executeCarefully(o, l, ll, ml, offset, lit_end, at);
+            try f.executeCarefully(o, lits.bytes[l..lits.len], ll, ml, offset, write_limit, at);
+            l = l_end;
             o = o_end;
         }
         if (!r.finished()) return f.fail(error.InvalidStream, at, .bitstream_left);
@@ -407,13 +415,13 @@ pub const Frame = struct {
         lp.* = l;
     }
 
-    /// One sequence with every bound checked and exact copies; returns
-    /// where the next literal is.
-    fn executeCarefully(f: *Frame, o: usize, lp: [*]const u8, ll: usize, ml: usize, offset: usize, lit_end: [*]const u8, at: usize) Error![*]const u8 {
+    /// One sequence with every bound checked and exact copies; `lits` are
+    /// the literals not yet read, `limit` the end of what it may write.
+    fn executeCarefully(f: *Frame, o: usize, lits: []const u8, ll: usize, ml: usize, offset: usize, limit: usize, at: usize) Error!void {
         const out = f.out;
-        if (ll + ml > out.len - o) return f.fail(error.OutputTooSmall, at, .bad_length);
-        if (ll > @intFromPtr(lit_end) - @intFromPtr(lp)) return f.fail(error.InvalidStream, at, .bad_length);
-        std.mem.copyForwards(u8, out[o..][0..ll], lp[0..ll]);
+        if (o > limit or ll + ml > limit - o) return f.fail(error.OutputTooSmall, at, .bad_length);
+        if (ll > lits.len) return f.fail(error.InvalidStream, at, .bad_length);
+        @memmove(out[o..][0..ll], lits[0..ll]);
         const o_lit = o + ll;
         if (offset > o_lit - f.start) {
             // Into the dictionary, maybe on into the frame.
@@ -422,23 +430,19 @@ pub const Frame = struct {
             const first = @min(ml, back);
             @memcpy(out[o_lit..][0..first], f.dict[f.dict.len - back ..][0..first]);
             if (first < ml) repeat(out[o_lit + first ..].ptr, out[f.start..].ptr, ml - first);
-            return lp + ll;
+            return;
         }
         repeat(out[o_lit..].ptr, out[o_lit - offset ..].ptr, ml);
-        return lp + ll;
     }
 };
 
-const V16 = @Vector(16, u8);
-const V8 = @Vector(8, u8);
-
 inline fn copy16(dst: [*]u8, src: [*]const u8) void {
-    const v: V16 = src[0..16].*;
+    const v: @Vector(16, u8) = src[0..16].*;
     dst[0..16].* = v;
 }
 
 inline fn copy8(dst: [*]u8, src: [*]const u8) void {
-    const v: V8 = src[0..8].*;
+    const v: @Vector(8, u8) = src[0..8].*;
     dst[0..8].* = v;
 }
 

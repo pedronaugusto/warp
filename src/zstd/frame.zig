@@ -3,7 +3,6 @@
 //! their length, their content size and a bound on it.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Diagnostic = @import("Diagnostic.zig");
 
 pub const magic: u32 = 0xFD2FB528;
@@ -185,7 +184,7 @@ pub const Block = struct {
 /// The block header at the start of `in` (three bytes).
 pub fn blockHeader(in: *const [3]u8) Block {
     const h = std.mem.readInt(u24, in, .little);
-    const kind: Block.Kind = @enumFromInt(@as(u2, @truncate(h >> 1)));
+    const kind: Block.Kind = @fromBackingInt(@intCast(@as(u2, @truncate(h >> 1))));
     const size: usize = h >> 3;
     return .{
         .last = h & 1 != 0,
