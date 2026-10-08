@@ -84,6 +84,26 @@ export fn warpZstdTrain(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usi
     return @intCast(finalized);
 }
 
+/// Seekable output, table indexing and frame/range reads.
+export fn warpZstdSeekable(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, decoded: [*]u8, decoded_len: usize) isize {
+    const options: warp.zstd.seekable.Writer.Options = .{ .frame_len = 1024, .max_frames = 128 };
+    const size = warp.zstd.seekable.Writer.memory(options);
+    if (size > memory.len) return -1;
+    var sink: std.Io.Writer = .fixed(out[0..out_len]);
+    var writer: warp.zstd.seekable.Writer = .initBuffer(memory[0..size], &sink, options);
+    defer writer.deinit();
+    writer.interface.writeAll(in[0..in_len]) catch return -1;
+    writer.finish() catch return -1;
+    if (writer.err() != null) return -1;
+    _ = warp.zstd.seekable.Index.memory(sink.buffered()) catch return -1;
+    var allocator: std.heap.FixedBufferAllocator = .init(&memory);
+    var index = warp.zstd.seekable.Index.init(allocator.allocator(), sink.buffered()) catch return -1;
+    defer index.deinit();
+    var reader: warp.zstd.seekable.Reader = .init(&index, memory[allocator.end_index..], .{});
+    _ = reader.readFrame(0, decoded[0..decoded_len]) catch return -1;
+    return @intCast(reader.read(0, decoded[0..decoded_len]) catch return -1);
+}
+
 /// Zstd decoding, reader decoding, dictionaries and frame inspection.
 export fn warpZstdDecompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, dict: [*]const u8, dict_len: usize, partial: bool) isize {
     var dictionary = warp.zstd.Dictionary.parse(dict[0..dict_len]) catch return -1;

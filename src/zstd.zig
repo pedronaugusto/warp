@@ -27,6 +27,8 @@ pub const Diagnostic = @import("zstd/Diagnostic.zig");
 pub const Dictionary = @import("zstd/Dictionary.zig");
 /// Dictionary selection, parameter search and entropy finalization.
 pub const train = @import("zstd/train.zig");
+/// Independent frames, indexed ranges and seek table output.
+pub const seekable = @import("zstd/seekable.zig");
 /// Whole-buffer decoding.
 pub const Decompressor = @import("zstd/Decompressor.zig");
 /// Resumable decoding and its reader adapter.

@@ -208,7 +208,13 @@ uses the same decoder, reserving 4 KiB of its buffer for reader buffering.
 (128 MiB by default); `window_log` sets its limit. Whole-buffer and streaming
 encoders share the same long-distance state and block engines.
 
-Parallel compression, seekable streams and latency-oriented
+`zstd.seekable.Writer` writes independent frames and their seek table through
+an output writer. `Index` validates the table and records frame offsets;
+`Reader` decodes a frame directly or copies a range with caller-provided frame
+storage. Frame and table checksums are verified by default. The writer's
+`frame_len` and `max_frames` bound staging and table storage at initialization.
+
+Parallel compression and latency-oriented
 compressed block sizing are still being built.
 
 ## Platforms

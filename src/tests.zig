@@ -16,4 +16,5 @@ test {
     _ = @import("testing/zstd_encode_test.zig");
     _ = @import("testing/zstd_stream_test.zig");
     _ = @import("testing/zstd_train_test.zig");
+    _ = @import("testing/zstd_seekable_test.zig");
 }

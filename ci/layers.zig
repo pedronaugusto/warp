@@ -44,6 +44,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "zstd dictionary training", .patterns = &.{ "src/zstd/cover.zig", "src/zstd/train.zig" } },
     .{ .name = "zstd frame", .patterns = &.{ "src/zstd/Decompressor.zig", "src/zstd/Compressor.zig" } },
     .{ .name = "zstd streams", .patterns = &.{ "src/zstd/Decompress.zig", "src/zstd/Compress.zig" } },
+    .{ .name = "zstd seekable", .patterns = &.{"src/zstd/seekable.zig"} },
     .{ .name = "zstd", .patterns = &.{"src/zstd.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
