@@ -41,6 +41,8 @@ keep_history: bool = false,
 /// Private: the error the stream was refused with; every later call
 /// returns it.
 failed: ?DecodeError = null,
+out_total: u64 = 0,
+at_boundary: bool = false,
 
 pub const Options = struct {
     accept: container.Accept = .zlib,
@@ -100,6 +102,8 @@ pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 /// of `out` past `out_len` may have been written.
 pub fn decode(z: *Inflate, in: []const u8, out: []u8) DecodeError!Step {
     const stepped = try z.step(in, out, 0, 0, z.ringHistory());
+    z.out_total += stepped.op;
+    z.at_boundary = stepped.status == .block_end;
     if (stepped.replaced) {
         // A dictionary, or a new member's empty history, replaced the window.
         z.head = 0;
@@ -125,11 +129,81 @@ pub fn reset(z: *Inflate, keep: Keep) void {
     z.bitsleft = 0;
     z.in_total = 0;
     z.failed = null;
+    z.out_total = 0;
+    z.at_boundary = false;
     z.keep_history = keep == .history;
     if (keep == .nothing) {
         z.head = 0;
         z.filled = 0;
     }
+}
+
+/// A restart at a non-final block boundary. The history is owned by this
+/// value, so it remains valid after the decoder moves on.
+pub const Checkpoint = struct {
+    in_offset: u64,
+    out_offset: u64,
+    window_bits: u4,
+    bits: u3,
+    pending: u8,
+    wrapper: container.Container,
+    check: u32,
+    size: u32,
+    members: u32,
+    history_len: u16,
+    history: [32768]u8 = undefined,
+};
+
+pub const CheckpointError = error{NotAtBoundary};
+pub const ResumeError = error{InvalidCheckpoint};
+
+pub fn checkpoint(z: *const Inflate) CheckpointError!Checkpoint {
+    if (!z.at_boundary or z.failed != null) return error.NotAtBoundary;
+    var point: Checkpoint = .{
+        .in_offset = z.in_total,
+        .out_offset = z.out_total,
+        .window_bits = z.options.window_bits,
+        .bits = @intCast(z.bitsleft),
+        .pending = @truncate(z.bitbuf),
+        .wrapper = z.state.wrapper,
+        .check = z.state.check,
+        .size = z.state.size,
+        .members = z.state.members,
+        .history_len = @intCast(z.filled),
+    };
+    const history = z.ringHistory();
+    history.copyOut(z.filled, point.history[0..z.filled]);
+    return point;
+}
+
+/// The next input starts at `point.in_offset`; use the checkpoint's window
+/// size and a compatible container. A resumed wrapped stream
+/// continues its original checksum, including the bytes before the point.
+pub fn @"resume"(z: *Inflate, point: *const Checkpoint) ResumeError!void {
+    try z.restore(point);
+    z.head = 0;
+    z.filled = 0;
+    z.ringAppend(point.history[0..point.history_len]);
+}
+
+fn restore(z: *Inflate, point: *const Checkpoint) ResumeError!void {
+    const compatible = switch (z.options.accept) {
+        .raw => point.wrapper == .raw,
+        .zlib => point.wrapper == .zlib,
+        .gzip => point.wrapper == .gzip,
+        .zlib_or_raw => point.wrapper != .gzip,
+        .gzip_or_zlib => point.wrapper != .raw,
+    };
+    if (!compatible or point.window_bits != z.options.window_bits or
+        point.history_len > (@as(usize, 1) << point.window_bits) or
+        (@as(u16, point.pending) >> point.bits) != 0) return error.InvalidCheckpoint;
+    z.reset(.nothing);
+    z.state = .{ .phase = .body, .wrapper = point.wrapper, .check = point.check, .size = point.size, .members = point.members };
+    z.bitbuf = point.pending;
+    z.bitsleft = point.bits;
+    z.in_total = point.in_offset;
+    z.out_total = point.out_offset;
+    z.at_boundary = true;
 }
 
 /// One call's result: where the stream stopped and how.
@@ -313,6 +387,18 @@ pub const Reader = struct {
     /// and not the input's.
     pub fn err(r: *const Reader) ?ReadError {
         return r.err_;
+    }
+
+    /// Reposition after the caller has positioned `input` at the point's
+    /// compressed offset. Previously buffered decoded bytes are discarded.
+    pub fn seek(r: *Reader, point: *const Checkpoint) ResumeError!void {
+        try r.inflate.restore(point);
+        @memcpy(r.interface.buffer[0..point.history_len], point.history[0..point.history_len]);
+        r.interface.seek = point.history_len;
+        r.interface.end = point.history_len;
+        r.start = 0;
+        r.history = .{};
+        r.err_ = null;
     }
 
     const vtable: Io.Reader.VTable = .{

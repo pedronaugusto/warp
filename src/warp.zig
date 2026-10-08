@@ -6,6 +6,8 @@ const container = @import("container.zig");
 const inflate = @import("inflate.zig");
 const gzip_ = @import("gzip.zig");
 const stream = @import("stream.zig");
+const IndexType = @import("Index.zig");
+const BgzfType = @import("Bgzf.zig");
 
 /// The wrapper a compressor writes: raw DEFLATE, zlib or gzip.
 pub const Container = container.Container;
@@ -63,6 +65,10 @@ pub const inflate_margin = inflate.margin;
 pub const gzip = struct {
     /// A member header's fields.
     pub const Header = gzip_.Header;
+    /// Validated restart points for seeking and parallel decoding.
+    pub const Index = IndexType;
+    /// The blocked gzip writer and its virtual offsets.
+    pub const Bgzf = BgzfType;
     /// Why a header was not read.
     pub const ParseError = gzip_.ParseError;
     /// A header and its length.
@@ -74,3 +80,9 @@ pub const gzip = struct {
     /// Where a streaming decoder copies a member header's fields.
     pub const Fields = gzip_.Fields;
 };
+
+/// Compression and decompression over ordered chunks.
+pub const parallel = @import("parallel.zig");
+
+/// Zip method 9 decoding with the extended alphabet and 64 KiB window.
+pub const deflate64 = @import("deflate64.zig");

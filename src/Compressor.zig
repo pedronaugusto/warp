@@ -36,6 +36,8 @@ pub const Options = struct {
     /// input still compresses, with tables sized for this one. null sizes
     /// them for any input.
     max_input: ?usize = null,
+    /// Cost-model passes at levels 10-12; null uses the level default.
+    passes: ?u32 = null,
 };
 
 /// The bytes `initBuffer` needs for `options`.
@@ -100,7 +102,7 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8, frame: Frame) Compres
             w.at = header_len;
         },
     }
-    c.engine.compress(in, frame.dictionary, &w, level, c.options.strategy);
+    c.engine.compressPasses(in, frame.dictionary, &w, level, c.options.strategy, c.options.passes);
     w.alignToByte();
     switch (frame.container) {
         .raw => {},

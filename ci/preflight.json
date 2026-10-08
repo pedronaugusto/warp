@@ -14,15 +14,33 @@
   "function_exceptions": {},
   "layout_exceptions": {
     "src/kernels": {
-      "files": ["src/kernels/fold.zig", "src/kernels/arm_crc.zig", "src/kernels/arm_pmull.zig", "src/kernels/arm_eor3.zig", "src/kernels/arm_dotprod.zig", "src/kernels/x86_crc.zig", "src/kernels/x86_sse.zig", "src/kernels/x86_avx2.zig"],
+      "files": [
+        "src/kernels/fold.zig",
+        "src/kernels/arm_crc.zig",
+        "src/kernels/arm_pmull.zig",
+        "src/kernels/arm_eor3.zig",
+        "src/kernels/arm_dotprod.zig",
+        "src/kernels/x86_crc.zig",
+        "src/kernels/x86_sse.zig",
+        "src/kernels/x86_avx2.zig"
+      ],
       "reason": "Each file is the root of a module of its own, built with the CPU features its instructions need (Zig sets features per module); they share no namespace and are imported by module name, so an entry file would publish nothing."
     },
     "src/kernels/arm": {
-      "files": ["src/kernels/arm_crc.zig", "src/kernels/arm_pmull.zig", "src/kernels/arm_eor3.zig", "src/kernels/arm_dotprod.zig"],
+      "files": [
+        "src/kernels/arm_crc.zig",
+        "src/kernels/arm_pmull.zig",
+        "src/kernels/arm_eor3.zig",
+        "src/kernels/arm_dotprod.zig"
+      ],
       "reason": "Separate modules, one per AArch64 feature set; the prefix names the architecture, not a namespace."
     },
     "src/kernels/x86": {
-      "files": ["src/kernels/x86_crc.zig", "src/kernels/x86_sse.zig", "src/kernels/x86_avx2.zig"],
+      "files": [
+        "src/kernels/x86_crc.zig",
+        "src/kernels/x86_sse.zig",
+        "src/kernels/x86_avx2.zig"
+      ],
       "reason": "Separate modules, one per x86-64 feature set; the prefix names the architecture, not a namespace."
     }
   },
@@ -70,9 +88,22 @@
       "zig",
       "build",
       "check-32-bit"
+    ],
+    [
+      "zig",
+      "build",
+      "check-no-crc"
+    ],
+    [
+      "zig",
+      "build",
+      "check-assets"
     ]
   ],
   "unreachable_exceptions": "ci/unreachable-exceptions.json",
   "debug_print_exceptions": "ci/debug-print-exceptions.json",
-  "file_name_exceptions": "ci/file-name-exceptions.json"
+  "file_name_exceptions": "ci/file-name-exceptions.json",
+  "shipped": {
+    "build": "The host source compiled by addCompressedAsset in consumer builds."
+  }
 }

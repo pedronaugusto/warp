@@ -266,7 +266,7 @@ test "a dictionary primes the window, and a zlib stream names it" {
 
 test "context takeover: a reset that keeps the history, on both sides" {
     const gpa = testing.allocator;
-    var d = try Deflate.init(gpa, .{ .container = .raw, .window_bits = 12 });
+    var d = try Deflate.init(gpa, .{ .level = 12, .container = .raw, .window_bits = 12 });
     defer d.deinit();
     var window: [1 << 12]u8 = undefined;
     var z: Inflate = .init(&window, .{ .accept = .raw, .window_bits = 12 });
@@ -300,11 +300,11 @@ test "a level change ends a block where it is asked, and the bytes come out the 
     const gpa = testing.allocator;
     const in = try gen.alloc(gpa, .text, 12, 120_000);
     defer gpa.free(in);
-    const changes = [_]struct { u4, Deflate.Strategy }{ .{ 9, .default }, .{ 0, .default }, .{ 1, .default }, .{ 6, .huffman_only }, .{ 4, .rle }, .{ 2, .filtered } };
+    const changes = [_]struct { u4, Deflate.Strategy }{ .{ 12, .default }, .{ 10, .default }, .{ 9, .default }, .{ 0, .default }, .{ 1, .default }, .{ 6, .huffman_only }, .{ 4, .rle }, .{ 2, .filtered } };
     var expected: ?[]u8 = null;
     defer if (expected) |e| gpa.free(e);
     for ([_]usize{ 0, 1, 17, 5000 }) |in_max| {
-        var d = try Deflate.init(gpa, .{ .level = 6, .container = .gzip });
+        var d = try Deflate.init(gpa, .{ .level = 6, .max_level = 12, .passes = 1, .container = .gzip });
         defer d.deinit();
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
@@ -435,4 +435,39 @@ fn streamAnything(_: void, case: *shakedown.Case) !void {
 
 test "fuzz: any input, options, flushes and cuts round-trip, the same however cut" {
     try shakedown.check(testing.allocator, {}, streamAnything, .{ .cases = 300 });
+}
+
+test "near-optimal streams keep block bytes across small window slides" {
+    const gpa = testing.allocator;
+    const in = try gen.alloc(gpa, .text, 91, 180000);
+    defer gpa.free(in);
+    for ([_]u4{ 8, 10, 15 }) |window_bits| {
+        const options: Deflate.Options = .{ .level = 12, .container = .raw, .window_bits = window_bits };
+        const whole = try compressFed(gpa, in, options, .{});
+        defer gpa.free(whole);
+        try expectDecodes(gpa, whole, in, .raw, window_bits, &.{});
+        const pieces = try compressFed(gpa, in, options, .{ .in_max = 97, .out_max = 73 });
+        defer gpa.free(pieces);
+        try testing.expectEqualSlices(u8, whole, pieces);
+    }
+}
+
+test "changing to a near-optimal level preserves the requested pass budget" {
+    const gpa = testing.allocator;
+    const in = try gen.alloc(gpa, .text, 18, 20000);
+    defer gpa.free(in);
+    const options: Deflate.Options = .{ .level = 12, .max_level = 12, .passes = 1, .container = .raw };
+    const direct = try compressFed(gpa, in, options, .{});
+    defer gpa.free(direct);
+    var low = options;
+    low.level = 6;
+    var d = try Deflate.init(gpa, low);
+    defer d.deinit();
+    var piece: [128]u8 = undefined;
+    const change = d.setLevel(12, .default, &piece);
+    try testing.expect(change.done);
+    try testing.expectEqual(@as(usize, 0), change.out_len);
+    const changed = try compressWith(gpa, &d, in, .{});
+    defer gpa.free(changed);
+    try testing.expectEqualSlices(u8, direct, changed);
 }

@@ -84,7 +84,7 @@ pub const Counts = struct {
 };
 
 /// Which block types a writer may choose.
-pub const Kinds = enum { any, no_dynamic, stored_only };
+pub const Kinds = enum { any, optimal, no_dynamic, stored_only };
 
 /// One code: each symbol's codeword (bit-reversed) and length.
 const Code = struct {
@@ -124,7 +124,7 @@ const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13
 
 /// The dynamic code's lengths for `counts`, its header and its cost in bits;
 /// `codewords` makes the codewords.
-fn dynamicCode(counts: *const Counts, code: *Code, header: *Header) u64 {
+fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_header: bool) u64 {
     var lit_counts = counts.litlen;
     var dist_counts: [32]u32 = @splat(0);
     @memcpy(dist_counts[0..dist_symbols], &counts.dist);
@@ -191,7 +191,8 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header) u64 {
     while (hclen > 4 and header.pre_lens[precode_order[hclen - 1]] == 0) hclen -= 1;
     header.hclen = @intCast(hclen);
 
-    var cost: u64 = 5 + 5 + 4 + 3 * hclen;
+    if (optimize_header and header.n_items > 16) optimizeHeader(header, lens[0..total]);
+    var cost: u64 = 5 + 5 + 4 + 3 * @as(u64, header.hclen);
     for (header.items[0..n]) |item| {
         const sym = item & 0xff;
         cost += header.pre_lens[sym] + @as(u64, switch (sym) {
@@ -203,6 +204,97 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header) u64 {
     }
     return cost + dataCost(counts, code);
 }
+
+/// Price the header's run symbols under its current code, then rebuild
+/// that code. Keep only an exact improvement, including HCLEN's cost.
+fn optimizeHeader(header: *Header, lens: []const u8) void {
+    var pass: usize = 0;
+    while (pass < 3) : (pass += 1) {
+        var cost: [321]u32 = undefined;
+        var item: [320]u16 = undefined;
+        var take: [320]u8 = undefined;
+        cost[lens.len] = 0;
+        var i = lens.len;
+        while (i > 0) {
+            i -= 1;
+            const l = lens[i];
+            cost[i] = preCost(header, l) + cost[i + 1];
+            item[i] = l;
+            take[i] = 1;
+            var run: usize = 1;
+            while (i + run < lens.len and lens[i + run] == l and run < 138) run += 1;
+            if (i != 0 and lens[i - 1] == l) considerRun(header, &cost, &item, &take, i, run, 16, 3, 6, 2);
+            if (l == 0) {
+                considerRun(header, &cost, &item, &take, i, run, 17, 3, 10, 3);
+                considerRun(header, &cost, &item, &take, i, run, 18, 11, 138, 7);
+            }
+        }
+        var candidate = header.*;
+        var counts: [19]u32 = @splat(0);
+        candidate.n_items = 0;
+        i = 0;
+        while (i < lens.len) {
+            candidate.items[candidate.n_items] = item[i];
+            candidate.n_items += 1;
+            counts[item[i] & 255] += 1;
+            i += take[i];
+        }
+        encode.buildLengths(&counts, 7, &candidate.pre_lens);
+        var hclen: usize = 19;
+        while (hclen > 4 and candidate.pre_lens[precode_order[hclen - 1]] == 0) hclen -= 1;
+        candidate.hclen = @intCast(hclen);
+        if (headerCost(&candidate) >= headerCost(header)) return;
+        header.* = candidate;
+    }
+}
+
+fn preCost(header: *const Header, symbol: usize) u32 {
+    const n = header.pre_lens[symbol];
+    return if (n == 0) 8 else n;
+}
+
+fn considerRun(header: *const Header, cost: *[321]u32, items: *[320]u16, takes: *[320]u8, at: usize, run: usize, symbol: u16, min: usize, max: usize, extra: u32) void {
+    if (run < min) return;
+    for (min..@min(run, max) + 1) |n| {
+        const price = preCost(header, symbol) + extra + cost[at + n];
+        if (price < cost[at]) {
+            cost[at] = price;
+            items[at] = symbol | @as(u16, @intCast(n - min)) << 8;
+            takes[at] = @intCast(n);
+        }
+    }
+}
+
+fn headerCost(header: *const Header) u32 {
+    var cost: u32 = 3 * @as(u32, header.hclen);
+    for (header.items[0..header.n_items]) |item| {
+        const symbol = item & 255;
+        cost += header.pre_lens[symbol] + @as(u32, switch (symbol) {
+            16 => 2,
+            17 => 3,
+            18 => 7,
+            else => 0,
+        });
+    }
+    return cost;
+}
+
+/// The code lengths `write` builds for a dynamic block of `counts_in`
+/// (which do not include the end of the block), and the block's cost in
+/// bits after its three header bits.
+pub const Lengths = struct { litlen: [litlen_symbols]u8, dist: [32]u8, cost: u64 };
+
+pub fn dynamicLengths(counts_in: *const Counts) Lengths {
+    var counts = counts_in.*;
+    counts.litlen[end_of_block] += 1;
+    var code: Code = undefined;
+    var header: Header = undefined;
+    const cost = dynamicCode(&counts, &code, &header, true);
+    return .{ .litlen = code.litlen_lens, .dist = code.dist_lens, .cost = cost };
+}
+
+/// The fixed code's lengths.
+pub const fixed_lengths: Lengths = .{ .litlen = fixed.litlen_lens, .dist = fixed.dist_lens, .cost = 0 };
 
 /// The codewords of a dynamic code whose lengths `dynamicCode` chose: made
 /// only for the block that is written with it.
@@ -296,7 +388,7 @@ pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []co
     var code: Code = undefined;
     var header: Header = undefined;
     const fixed_cost = 3 + dataCost(&counts, &fixed);
-    const dynamic_cost = if (kinds == .any) 3 + dynamicCode(&counts, &code, &header) else std.math.maxInt(u64);
+    const dynamic_cost = if (kinds == .any or kinds == .optimal) 3 + dynamicCode(&counts, &code, &header, kinds == .optimal) else std.math.maxInt(u64);
     if (data.raw) |raw| {
         if (storedCost(raw.len, w.bitPosition()) < @min(fixed_cost, dynamic_cost)) return writeStored(w, raw, final);
     }

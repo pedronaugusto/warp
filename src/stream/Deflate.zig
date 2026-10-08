@@ -71,9 +71,13 @@ pub const Flush = enum {
 };
 
 pub const Options = struct {
-    /// 0 stored, 1-9 zlib's scale; 10-12 compress as 9 for now. 13-15
-    /// mean 12.
+    /// 0 stored, 1-9 zlib's scale, 10-12 near-optimal. 13-15 mean 12.
     level: u4 = 6,
+    /// Reserve the iterative parser for later level changes. The initial
+    /// level is always supported; 9 keeps low-level streams small.
+    max_level: u4 = 9,
+    /// Cost-model passes at levels 10-12.
+    passes: ?u32 = null,
     strategy: Strategy = .default,
     container: container.Container = .zlib,
     /// 8-15: the farthest distance written, and the history kept.
@@ -105,8 +109,11 @@ const Layout = struct {
         const hash_bits = options.hash_bits orelse std.math.clamp(@as(u5, options.window_bits) + 1, 10, 15);
         std.debug.assert(hash_bits >= 8);
         std.debug.assert(hash_bits <= 16);
-        const sizes = deflate.Sizes.stream(options.window_bits, hash_bits);
-        const block_bytes = block.bound(sizes.literals, sizes.sequences) / 8 + 1;
+        const sizes = deflate.Sizes.stream(options.window_bits, hash_bits, @max(options.level, options.max_level) >= 10);
+        // The longest block: its literals, and matches of three bytes at most
+        // for the near-optimal parser's, whose sequences are made from them.
+        const matches = if (sizes.nodes != 0) sizes.literals / 3 else sizes.sequences;
+        const block_bytes = block.bound(sizes.literals, matches) / 8 + 1;
         return .{
             .sizes = sizes,
             .window = 2 * sizes.window + deflate.lookahead,
@@ -234,6 +241,7 @@ pub fn reset(d: *Deflate, keep: Keep) void {
 /// (zlib's `deflateParams`). Call until `done`.
 pub fn setLevel(d: *Deflate, level: u4, strategy: Strategy, out: []u8) Drain {
     std.debug.assert(!d.finished);
+    std.debug.assert(level < 10 or d.engine.sizes.nodes != 0);
     if (d.closing == null) d.change = .{ .level = level, .strategy = strategy };
     return d.close(.block, out);
 }
@@ -265,9 +273,11 @@ fn begin(d: *Deflate, keep: Keep) void {
     const h: match.History = .{ .in = d.window[0..d.filled] };
     if (keep == .history) {
         d.engine.b.restart(first);
+        if (d.engine.sizes.nodes != 0) d.engine.opt.restart(first);
         d.engine.first = first;
         d.engine.primed = @intCast(first);
     } else d.engine.start(h, first, std.math.maxInt(usize), d.options.level, d.options.strategy);
+    if (d.options.passes) |passes| d.engine.setPasses(passes);
     d.writeHeader();
 }
 
@@ -349,6 +359,9 @@ fn applyChange(d: *Deflate) void {
         d.engine.start(.{ .in = d.window[0..d.filled] }, p, std.math.maxInt(usize), change.level, change.strategy);
         d.engine.first = first;
     }
+    if (d.options.passes) |passes| d.engine.setPasses(passes);
+    d.options.level = change.level;
+    d.options.strategy = change.strategy;
 }
 
 /// Make room in a full window: move it back 2^w bytes. A stored block

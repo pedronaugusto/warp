@@ -46,14 +46,20 @@ const fast_input = 7 + 8 + 1;
 
 /// Decoding tables for one block at a time, and the code lengths a dynamic
 /// block's header gives for them: about 11 KiB.
-pub const Tables = struct {
-    litlen: [huffman.Alphabet.litlen.enough()]u32 = undefined,
-    dist: [huffman.Alphabet.dist.enough()]u32 = undefined,
-    precode: [huffman.Alphabet.precode.enough()]u32 = undefined,
-    /// The code-length code's lengths, then the litlen and distance codes'.
-    pre: [19]u8 = undefined,
-    lens: [286 + 30]u8 = undefined,
-};
+pub const Tables = TablesFor(false);
+
+/// The extended alphabet changes table capacity only for a Deflate64
+/// decoder; ordinary DEFLATE keeps its original state footprint.
+pub fn TablesFor(comptime extended: bool) type {
+    return struct {
+        pub const wide = extended;
+        litlen: [huffman.Alphabet.litlen.enough()]u32 = undefined,
+        dist: [if (extended) huffman.Alphabet.dist64.enough() else huffman.Alphabet.dist.enough()]u32 = undefined,
+        precode: [huffman.Alphabet.precode.enough()]u32 = undefined,
+        pre: [19]u8 = undefined,
+        lens: [286 + if (extended) @as(usize, 32) else 30]u8 = undefined,
+    };
+}
 
 pub const Error = error{
     /// The stream breaks DEFLATE's rules (zlib's reading of them).
@@ -142,6 +148,7 @@ pub const Stream = struct {
     /// Stop without error when the output is full.
     partial: bool = false,
     diagnostic: ?*Diagnostic = null,
+    deflate64: bool = false,
 
     /// Bits consumed since the start of the input.
     pub fn bitOffset(s: *const Stream) u64 {
@@ -263,8 +270,8 @@ pub const State = struct {
     dbits: u5 = 0,
     /// A match the output had no room for: its bytes still to copy and
     /// its distance.
-    copy_left: u16 = 0,
-    copy_distance: u16 = 0,
+    copy_left: u32 = 0,
+    copy_distance: u32 = 0,
     /// A dynamic block's header so far: its counts, and how many code
     /// lengths are read (they are in the tables').
     hlit: u16 = 0,
@@ -278,9 +285,9 @@ pub const State = struct {
 
 /// Decode until a block ends, the final one ends, or the output is full
 /// (partial decoding). `s.bitbuf` may hold bits of the stream already.
-pub noinline fn decode(t: *Tables, s: *Stream, source: anytype, state: *State) Error!Status {
-    // Each part goes on to the next by a direct jump: one indirect jump
-    // shared by every part would be mispredicted at each.
+pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) Error!Status {
+    s.deflate64 = @TypeOf(t.*).wide;
+    // Each part goes on to the next by a direct jump.
     phase: switch (state.phase) {
         .header => switch (try blockHeader(s, source, state)) {
             .stored => continue :phase .stored,
@@ -305,7 +312,7 @@ pub noinline fn decode(t: *Tables, s: *Stream, source: anytype, state: *State) E
                 source.commit(s);
             }
             const ended = if (state.fixed)
-                try codes(s, source, state, &huffman.Fixed(.litlen).table, huffman.Fixed(.litlen).bits, &huffman.Fixed(.dist).table, huffman.Fixed(.dist).bits)
+                try codes(s, source, state, &huffman.Fixed(if (@TypeOf(t.*).wide) .litlen64 else .litlen).table, huffman.Fixed(.litlen).bits, &huffman.Fixed(if (@TypeOf(t.*).wide) .dist64 else .dist).table, huffman.Fixed(.dist).bits)
             else
                 try codes(s, source, state, &t.litlen, state.lbits, &t.dist, state.dbits);
             if (!ended) return .output_full;
@@ -347,7 +354,7 @@ inline fn blockHeader(s: *Stream, source: anytype, state: *State) Error!State.Ph
             const counts = try s.take(source, 14);
             const hlit: u16 = @intCast((counts & 31) + 257);
             const hdist: u16 = @intCast(((counts >> 5) & 31) + 1);
-            if (hlit > 286 or hdist > 30) return s.fail(.too_many_codes);
+            if (hlit > 286 or hdist > (if (s.deflate64) @as(u16, 32) else 30)) return s.fail(.too_many_codes);
             state.hlit = hlit;
             state.hdist = hdist;
             state.hclen = @intCast(((counts >> 10) & 15) + 4);
@@ -384,7 +391,7 @@ const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13
 
 /// A dynamic block's code-length code: three bits per length, then its
 /// table.
-fn precode(t: *Tables, s: *Stream, source: anytype, state: *State) Error!void {
+fn precode(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     if (state.read == 0) t.pre = @splat(0);
     while (state.read < state.hclen) {
         const len: u8 = @intCast(try s.take(source, 3));
@@ -399,7 +406,7 @@ fn precode(t: *Tables, s: *Stream, source: anytype, state: *State) Error!void {
 
 /// A dynamic block's litlen and distance code lengths through the
 /// code-length code, one length or repeat at a time, then their tables.
-fn lengths(t: *Tables, s: *Stream, source: anytype, state: *State) Error!void {
+fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     const total = state.hlit + state.hdist;
     const lens = &t.lens;
     while (state.read < total) {
@@ -443,8 +450,8 @@ fn lengths(t: *Tables, s: *Stream, source: anytype, state: *State) Error!void {
     }
     if (lens[256] == 0) return s.fail(.no_end_code);
     const hlit = state.hlit;
-    state.lbits = huffman.build(.litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
-    state.dbits = huffman.build(.dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
+    state.lbits = huffman.build(if (@TypeOf(t.*).wide) .litlen64 else .litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
+    state.dbits = huffman.build(if (@TypeOf(t.*).wide) .dist64 else .dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
     state.fixed = false;
     state.phase = .codes;
 }
@@ -481,7 +488,7 @@ inline fn codes(s: *Stream, source: anytype, state: *State, litlen: []const u32,
 /// Whether the fast loop can run: sixteen real input bytes and `margin`
 /// output bytes remain. It never runs on virtual input.
 inline fn fastReady(s: *const Stream) bool {
-    return s.virtual == 0 and s.ip + fast_input <= s.in.len and s.op + margin <= s.out.len;
+    return !s.deflate64 and s.virtual == 0 and s.ip + fast_input <= s.in.len and s.op + margin <= s.out.len;
 }
 
 /// Decode while `fastReady`; whether the block ended. Every bit this reads

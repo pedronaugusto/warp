@@ -100,6 +100,7 @@ pub fn Cursor(comptime keep_literals: bool) type {
         pending: u32,
 
         const Self = @This();
+        pub const keeps_literals = keep_literals;
 
         pub fn init(b: *Builder, w: *bits.Writer, in: []const u8, final: bool) Self {
             return .{ .b = b, .w = w, .in = in, .final = final, .run = b.run, .pending = b.pending };
@@ -211,11 +212,23 @@ pub fn Cursor(comptime keep_literals: bool) type {
 
         /// Write the block ending at `p`, and start the next there.
         pub fn write(c: *Self, p: usize, final: bool) void {
+            c.emit(p, final);
+            c.b.restart(p);
+        }
+
+        /// Write the block from its start to `end` with what the builder
+        /// holds (its sequences, counts and literals, and `run` literals
+        /// after the last match); the next block starts at `end`, and the
+        /// parse position and statistics are the parser's.
+        pub fn emit(c: *Self, end: usize, final: bool) void {
             const b = c.b;
-            const raw: ?[]const u8 = if (b.start >= 0) c.in[@intCast(b.start)..p] else null;
+            const raw: ?[]const u8 = if (b.start >= 0) c.in[@intCast(b.start)..end] else null;
             const data: block.Data = .{ .bytes = if (keep_literals) b.lits[0..b.n_lits] else raw.?, .raw = raw };
             block.write(!keep_literals, c.w, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);
-            b.restart(p);
+            b.n = 0;
+            b.n_lits = 0;
+            b.counts = .{};
+            b.start = @intCast(end);
             c.run = 0;
             c.pending = 0;
         }

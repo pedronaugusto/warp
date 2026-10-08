@@ -16,4 +16,8 @@ test {
     _ = @import("testing/api_test.zig");
     _ = @import("testing/inflate_test.zig");
     _ = @import("testing/deflate_test.zig");
+    _ = @import("testing/parallel_test.zig");
+    _ = @import("testing/index_test.zig");
+    _ = @import("testing/deflate64_test.zig");
+    _ = @import("testing/c_test.zig");
 }
