@@ -109,6 +109,7 @@
   "debug_print_exceptions": "ci/debug-print-exceptions.json",
   "file_name_exceptions": "ci/file-name-exceptions.json",
   "shipped": {
-    "build": "The host source compiled by addCompressedAsset in consumer builds."
+    "build": "The host source compiled by addCompressedAsset in consumer builds.",
+    "docs": "The package architecture and ownership guide linked from README for consumers."
   }
 }
