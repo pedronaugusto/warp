@@ -133,20 +133,41 @@ test "zstd parallel: formatted dictionaries across jobs and long-distance primin
 
 test "zstd parallel: canceled jobs are joined and the compressor can be reused" {
     const gpa = testing.allocator;
-    const fio = try shakedown.FaultIo.init(gpa, testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }} });
-    defer fio.deinit();
-    var p = try zstd.parallel.Compressor.init(gpa, .{ .job_len = 128, .concurrency = 3, .tuning = .{ .window_log = 10 } });
-    defer p.deinit();
     var input: [1000]u8 = @splat('a');
     var bytes: [4096]u8 = undefined;
-    var sink: std.Io.Writer = .fixed(&bytes);
-    try testing.expectError(error.Canceled, p.compress(fio.io(), &input, &sink));
-    sink = .fixed(&bytes);
-    try p.compress(testing.io, &input, &sink);
-    var decoded: [1000]u8 = undefined;
-    var d: zstd.Decompressor = .init;
-    _ = try d.decompress(sink.buffered(), &decoded, .{});
-    try testing.expectEqualSlices(u8, &input, &decoded);
+    // A native scheduler may finish all jobs before Group.await, which
+    // then bypasses the Io call. Deferred starts guarantee outstanding
+    // jobs at the injected cancellation, for both batch and ring paths.
+    for ([_]usize{ 256, 1000 }) |length| for ([_]bool{ false, true }) |read| {
+        var p = try zstd.parallel.Compressor.init(gpa, .{ .job_len = 128, .concurrency = 3, .tuning = .{ .window_log = 10 } });
+        defer p.deinit();
+        const sim = try shakedown.Sim.init(gpa, .{
+            .async_start = .deferred,
+            .faults = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }},
+        });
+        defer sim.deinit();
+        const outcome = sim.run(canceledCompression, .{ sim.io(), &p, input[0..length], &bytes, read });
+        switch (outcome) {
+            .finished => {},
+            .failed => |err| return err,
+            else => return error.UnfinishedCancellation,
+        }
+        try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.groupAwait));
+        var sink: std.Io.Writer = .fixed(&bytes);
+        var reader: std.Io.Reader = .fixed(input[0..length]);
+        if (read) try p.compressReader(testing.io, &reader, &sink) else try p.compress(testing.io, input[0..length], &sink);
+        var decoded: [1000]u8 = undefined;
+        var d: zstd.Decompressor = .init;
+        const result = try d.decompress(sink.buffered(), &decoded, .{});
+        try testing.expectEqual(length, result.out_len);
+        try testing.expectEqualSlices(u8, input[0..length], decoded[0..result.out_len]);
+    };
+}
+
+fn canceledCompression(io: std.Io, p: *zstd.parallel.Compressor, input: []const u8, bytes: []u8, read: bool) !void {
+    var sink: std.Io.Writer = .fixed(bytes);
+    var reader: std.Io.Reader = .fixed(input);
+    if (read) try testing.expectError(error.Canceled, p.compressReader(io, &reader, &sink)) else try testing.expectError(error.Canceled, p.compress(io, input, &sink));
 }
 
 test "zstd parallel: output failure joins jobs and allows both APIs to be reused" {

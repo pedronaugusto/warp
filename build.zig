@@ -205,16 +205,6 @@ pub fn build(b: *std.Build) !void {
         // A project that depends on warp by path, with no packages to
         // fetch: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "warp", .program = b.path("ci/consumer.zig") });
-        if (b.dependencyLazy("preflight", .{})) |dependency| {
-            const plan = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file" });
-            plan.addFileArg(dependency.path("build.zig"));
-            plan.addArg(b.fmt("-Drepo-root={s}", .{b.root.joinString(b.allocator, "") catch @panic("OOM")}));
-            plan.addArg("plan");
-            plan.addArg("--");
-            plan.addPassthruArgs();
-            plan.setCwd(b.path("."));
-            b.step("plan", "Generate the hosted CI matrices").dependOn(&plan.step);
-        } else |err| needed = err;
     }
     return needed;
 }
