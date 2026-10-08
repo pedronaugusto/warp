@@ -474,3 +474,21 @@ test "changing to a near-optimal level preserves the requested pass budget" {
     defer gpa.free(changed);
     try testing.expectEqualSlices(u8, direct, changed);
 }
+
+test "near-optimal repeated matches crossing a small window and flush" {
+    const gpa = testing.allocator;
+    const input = try gpa.alloc(u8, 69998);
+    defer gpa.free(input);
+    @memset(input, 201);
+    const options: Deflate.Options = .{ .level = 12, .strategy = .filtered, .container = .raw, .window_bits = 10 };
+    const feed: Feed = .{ .in_max = 99, .out_max = 1999, .seed = 3140053807, .flush_every = 9878, .flush = .partial };
+    const stream = try compressFed(gpa, input, options, feed);
+    defer gpa.free(stream);
+    try expectDecodes(gpa, stream, input, .raw, 10, &.{});
+    var whole = feed;
+    whole.in_max = 0;
+    whole.out_max = 0;
+    const again = try compressFed(gpa, input, options, whole);
+    defer gpa.free(again);
+    try testing.expectEqualSlices(u8, stream, again);
+}

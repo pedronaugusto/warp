@@ -446,7 +446,9 @@ pub const Engine = struct {
     pub fn endBlock(e: *Engine, w: *bits.Writer, h: match.History) void {
         var c: parse_.Cursor(true) = .init(&e.b, w, h.in, false);
         defer c.save();
-        if (@as(isize, @intCast(e.b.p)) > e.b.start) c.write(e.b.p, false);
+        if (e.level.parser == .optimal and e.strategy != .huffman_only and e.strategy != .rle) {
+            optimal.finish(&c, &e.opt, h, false, e.level.optimal);
+        } else if (@as(isize, @intCast(e.b.p)) > e.b.start) c.write(e.b.p, false);
     }
 
     fn run(e: *Engine, comptime dictionary: bool, comptime full_window: bool, c: anytype, h: match.History) void {

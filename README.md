@@ -197,7 +197,9 @@ and decodes blocks concurrently before their history is known. The coordinator
 accepts only boundaries reached from the real header, resolves unknown-window
 references, and validates the original wrapper checksums. Raw DEFLATE, zlib,
 dictionaries and concatenated gzip members use the same call. No index pass is
-required. `speculative.chunk_len`, `search_len`, `max_blocks` and `work_limit`
+required. The default search partition is 256 KiB compressed, with 4 MiB of
+decoded marker capacity per worker (about 8 MiB of workspace).
+`speculative.chunk_len`, `search_len`, `max_blocks` and `work_limit`
 bound retained output, search partitions, descriptors and failed-candidate work.
 Large single blocks, exhausted searches and partial requests use the native
 engine. `speculative = null` keeps the compact indexed allocation; `inflate`

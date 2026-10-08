@@ -14,6 +14,8 @@ options: Options,
 
 pub const Statistics = struct {
     searched_bits: usize = 0,
+    decoded_bytes: usize = 0,
+    salvaged_blocks: usize = 0,
     candidates: usize = 0,
     rejected: usize = 0,
     speculative_bytes: usize = 0,
@@ -24,10 +26,10 @@ pub const Statistics = struct {
 
 pub const Options = struct {
     /// Maximum decoded bytes retained per worker, in two-byte marker form.
-    chunk_len: u32 = 1 << 20,
+    chunk_len: u32 = 4 << 20,
     /// Compressed bytes per search partition. Large ratios may need a
     /// larger chunk_len or smaller search_len; exhausted jobs fall back.
-    search_len: u32 = 32 << 10,
+    search_len: u32 = 256 << 10,
     /// Work on false candidates is bounded by this multiple of chunk_len.
     work_limit: u8 = 4,
     /// Maximum block descriptors per worker, including empty blocks.
@@ -89,7 +91,9 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     // progress and diagnostics without launching speculative work.
     if (options.partial or input.len <= p.options.search_len or input.len > std.math.maxInt(usize) / 8) {
         var native: Native = .init;
-        return native.inflate(input, output, options);
+        const result = try native.inflate(input, output, options);
+        if (p.options.statistics) |stats| stats.serial_bytes = result.out_len;
+        return result;
     }
     var tables: engine.Tables = .{};
     var state: unwrap.State = .{};
@@ -128,6 +132,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
                         continue;
                     }
                     if (first < candidate.count) {
+                        if (first > 0) w.stats.salvaged_blocks += candidate.count - first;
                         for (w.blocks[first..candidate.count]) |block| {
                             if (block.required > stream.op - stream.start + stream.history.len() or
                                 block.max_distance > stream.window or block.len > output.len - stream.op) break;
@@ -191,10 +196,22 @@ fn resolve(tokens: []const u16, s: *engine.Stream, required: usize) void {
         if (dict > 0) s.history.copyOut(dict, history[engine.max_distance - n - dict ..][0..dict]);
         @memcpy(history[engine.max_distance - n ..], s.out[s.op - n .. s.op]);
     }
-    for (tokens, s.out[s.op..][0..tokens.len]) |token, *byte| {
+    const out = s.out[s.op..][0..tokens.len];
+    var at: usize = 0;
+    while (tokens.len - at >= 16) : (at += 16) {
+        const values: @Vector(16, u16) = tokens[at..][0..16].*;
+        if (!@reduce(.Or, values >= @as(@Vector(16, u16), @splat(256)))) {
+            out[at..][0..16].* = @as(@Vector(16, u8), @truncate(values)); // safe: this vector has only byte symbols
+        } else resolveBytes(tokens[at..][0..16], out[at..][0..16], &history);
+    }
+    resolveBytes(tokens[at..], out[at..], &history);
+    s.op += tokens.len;
+}
+
+fn resolveBytes(tokens: []const u16, out: []u8, history: *const [engine.max_distance]u8) void {
+    for (tokens, out) |token, *byte| {
         byte.* = if (token < 256) @intCast(token) else history[token - 256]; // safe: byte symbols are 0-255; markers reference the validated history
     }
-    s.op += tokens.len;
 }
 
 fn submit(p: *Speculative, io: Io, w: *Worker, input: []const u8, next: *usize) void {
@@ -214,6 +231,8 @@ fn submit(p: *Speculative, io: Io, w: *Worker, input: []const u8, next: *usize) 
 fn collect(p: *Speculative, w: *const Worker) void {
     if (p.options.statistics) |s| {
         s.searched_bits += w.stats.searched_bits;
+        s.decoded_bytes += w.stats.decoded_bytes;
+        s.salvaged_blocks += w.stats.salvaged_blocks;
         s.candidates += w.stats.candidates;
         s.rejected += w.stats.rejected;
         s.speculative_bytes += w.stats.speculative_bytes;
@@ -243,15 +262,18 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
                 const status = decoder.block(io) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.OutputTooSmall) w.stats.limited += 1;
+                    written += decoder.written;
                     break;
                 };
                 const end: usize = @intCast(decoder.stream.bitOffset()); // safe: successful decode consumed real bits from input
                 w.blocks[count] = .{ .start = begin, .end = end, .token = written, .len = decoder.written, .final = status == .done, .required = decoder.required, .max_distance = decoder.max_distance };
                 written += decoder.written;
+                decoder.written = 0;
                 count += 1;
                 if (end >= w.until or status == .done) {
                     if (status == .done and end < w.until and w.until < w.input.len * 8) break;
                     w.candidate = .{ .count = count };
+                    w.stats.decoded_bytes += written;
                     return;
                 }
                 // Each block has its own symbolic predecessor window. That
@@ -261,7 +283,9 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
                 decoder.required = 0;
                 decoder.max_distance = 0;
             }
-            budget -|= @max(written + decoder.written, 1);
+            w.stats.decoded_bytes += written;
+            if (count == w.blocks.len) w.stats.limited += 1;
+            budget -|= @max(written, 1);
             w.stats.rejected += 1;
         }
     }

@@ -4,7 +4,7 @@
 //! row times warp beside the code it replaces in the family
 //! (bench/baseline/), interleaved, best and median of the runs.
 //!
-//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket|parallel]...
+//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket|parallel|speculative]...
 //!
 //! `--smoke` runs every row once on tiny inputs; `zig build test` does that.
 

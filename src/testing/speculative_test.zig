@@ -266,3 +266,31 @@ fn validAndMutated(_: void, case: *shakedown.Case) !void {
 test "speculative fuzz: valid streams and mutated streams agree with the reference" {
     try shakedown.check(testing.allocator, {}, validAndMutated, .{ .cases = 100 });
 }
+
+test "speculative cancellation joins workers and preserves decoder reuse" {
+    const a = testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const input = try gen.alloc(a, .text, 5, 1 << 20);
+    defer a.free(input);
+    const stream = try compressed(input, .gzip, .default);
+    defer a.free(stream);
+    const back = try a.alloc(u8, input.len);
+    defer a.free(back);
+    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 4, .speculative = .{ .chunk_len = 65536, .search_len = 1024 } });
+    defer decoder.deinit();
+    var ready: std.Io.Event = .unset;
+    const Task = struct {
+        fn run(task_io: std.Io, p: *parallel.Decompressor, in: []const u8, out: []u8, started: *std.Io.Event) !Native.Result {
+            started.set(task_io);
+            return p.inflate(task_io, in, out, .{ .accept = .gzip });
+        }
+    };
+    var future = try io.concurrent(Task.run, .{ io, &decoder, stream, back, &ready });
+    try ready.wait(io);
+    try testing.expectError(error.Canceled, future.cancel(io));
+    const result = try decoder.inflate(io, stream, back, .{ .accept = .gzip });
+    try testing.expectEqual(input.len, result.out_len);
+    try testing.expectEqualSlices(u8, input, back);
+}

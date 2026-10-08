@@ -364,13 +364,14 @@ fn applyChange(d: *Deflate) void {
     d.options.strategy = change.strategy;
 }
 
-/// Make room in a full window: move it back 2^w bytes. A stored block
-/// (level 0) needs its bytes when it is written, so it ends first; whether
-/// that wrote a block (drain it, then slide).
+/// Make room in a full window: move it back 2^w bytes. Stored blocks and
+/// near-optimal parse caches need their original bytes, so end them before
+/// those bytes expire; drain any output before sliding.
 fn slide(d: *Deflate) bool {
     const window = @as(usize, 1) << d.options.window_bits;
     const b = &d.engine.b;
-    if (b.kinds == .stored_only and b.start < window) {
+    const cached = d.engine.level.parser == .optimal and d.engine.strategy != .huffman_only and d.engine.strategy != .rle;
+    if ((b.kinds == .stored_only or cached) and b.start < window) {
         var w = d.writer();
         d.engine.endBlock(&w, .{ .in = d.window[0..d.filled] });
         d.keepWriter(&w);

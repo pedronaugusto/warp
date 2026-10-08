@@ -87,7 +87,7 @@ pub const Decoder = struct {
 
 /// Cheap rejection before constructing tables. Fixed codes are searched in
 /// a second pass, so the plentiful false fixed headers do not delay dynamic ones.
-pub fn plausible(input: []const u8, bit: usize, fixed: bool) bool {
+pub inline fn plausible(input: []const u8, bit: usize, fixed: bool) bool {
     if (bit / 8 + 16 > input.len) return true;
     const byte = bit / 8;
     const shift: u3 = @intCast(bit % 8); // safe: bit position within one byte
@@ -103,16 +103,22 @@ pub fn plausible(input: []const u8, bit: usize, fixed: bool) bool {
     }
     if ((field >> 3) & 31 > 29 or (field >> 8) & 31 > 29) return false;
     const n = ((field >> 13) & 15) + 4;
-    var lengths = std.mem.readInt(u128, input[byte..][0..16], .little) >> @as(u7, @intCast(17 + bit % 8)); // safe: at most 24 bits skipped
-    var count: [8]u8 = @splat(0);
-    for (0..@intCast(n)) |_| {
-        count[@as(usize, @truncate(lengths & 7))] += 1;
-        lengths >>= 3;
-    }
-    var left: i32 = 1;
-    for (1..8) |len| {
-        left = (left << 1) - count[len];
-        if (left < 0) return false;
-    }
-    return left == 0;
+    const pre_bits = std.mem.readInt(u128, input[byte..][0..16], .little) >> @as(u7, @intCast(17 + bit % 8)); // safe: at most 24 bits skipped
+    const mask = (@as(u64, 1) << @as(u6, @intCast(n * 3))) - 1; // safe: 4-19 lengths occupy at most 57 bits
+    const lengths: u64 = @as(u64, @truncate(pre_bits)) & mask;
+    const sum = precode_weights[lengths & 4095] + precode_weights[(lengths >> 12) & 4095] +
+        precode_weights[(lengths >> 24) & 4095] + precode_weights[(lengths >> 36) & 4095] + precode_weights[(lengths >> 48) & 4095];
+    return sum == 128;
 }
+
+// Kraft weights at depth seven: zero-length symbols contribute nothing.
+// Four lengths at once keep candidate screening independent of table builds.
+const precode_weights: [4096]u16 = blk: {
+    @setEvalBranchQuota(100000);
+    const weights = [_]u16{ 0, 64, 32, 16, 8, 4, 2, 1 };
+    var sums: [4096]u16 = undefined;
+    for (&sums, 0..) |*sum, i| {
+        sum.* = weights[i & 7] + weights[(i >> 3) & 7] + weights[(i >> 6) & 7] + weights[(i >> 9) & 7];
+    }
+    break :blk sums;
+};
