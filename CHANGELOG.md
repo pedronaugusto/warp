@@ -60,6 +60,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Fixed
 
+- Captured header verdicts retain static reason storage across later calls.
 - Explicitly disabling CRC in the target CPU no longer prevents checksum
   kernel modules from assembling; an AArch64 cross-build checks this.
 - Near-optimal streaming blocks retain their source bytes across small-window

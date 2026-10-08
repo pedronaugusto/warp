@@ -189,3 +189,12 @@ test "an output one byte short is OutputTooSmall, without partial" {
         try testing.expectError(error.OutputTooSmall, d.inflate(r.fields[5], out, .{ .accept = accept(r.fields[4]) }));
     }
 }
+
+test "captured header verdict reasons survive later calls" {
+    for ([_][]const u8{ "incorrect header check", "unknown compression method" }) |message| {
+        const first = @call(.never_inline, corpus.expected, .{ message, container.Container.zlib });
+        const second = @call(.never_inline, corpus.expected, .{ message, container.Container.gzip });
+        try testing.expectEqualSlices(Diagnostic.Reason, &.{.bad_zlib_header}, first.reasons);
+        try testing.expectEqualSlices(Diagnostic.Reason, &.{.bad_gzip_header}, second.reasons);
+    }
+}

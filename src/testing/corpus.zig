@@ -22,13 +22,13 @@ pub const Expected = struct { err: anyerror, reasons: []const Diagnostic.Reason 
 
 pub fn expected(msg: []const u8, kind: container.Container) Expected {
     const Map = struct { []const u8, anyerror, []const Diagnostic.Reason };
-    const header: Diagnostic.Reason = if (kind == .gzip) .bad_gzip_header else .bad_zlib_header;
+    const header: []const Diagnostic.Reason = if (kind == .gzip) &.{.bad_gzip_header} else &.{.bad_zlib_header};
     const table = [_]Map{
         .{ "incorrect data check", error.ChecksumMismatch, &.{ .adler32, .crc32 } },
         .{ "incorrect length check", error.ChecksumMismatch, &.{.size} },
         .{ "header crc mismatch", error.ChecksumMismatch, &.{.header_crc} },
-        .{ "incorrect header check", error.InvalidStream, &.{header} },
-        .{ "unknown compression method", error.InvalidStream, &.{header} },
+        .{ "incorrect header check", error.InvalidStream, header },
+        .{ "unknown compression method", error.InvalidStream, header },
         .{ "invalid window size", error.InvalidStream, &.{.bad_zlib_header} },
         .{ "unknown header flags set", error.InvalidStream, &.{.reserved_flags} },
         .{ "invalid block type", error.InvalidStream, &.{.bad_block_type} },
