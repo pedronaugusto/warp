@@ -223,7 +223,8 @@ pub const Sizes = struct {
     }
 
     pub fn memory(s: Sizes) usize {
-        return s.finderMemory() + s.sequences * @sizeOf(block.Sequence) + s.cache * @sizeOf(optimal.Match) + s.nodes * @sizeOf(optimal.Node) + s.literals;
+        const state: usize = if (s.nodes != 0) @sizeOf(optimal.State) else 0;
+        return s.finderMemory() + state + s.sequences * @sizeOf(block.Sequence) + s.cache * @sizeOf(optimal.Match) + s.nodes * @sizeOf(optimal.Node) + s.literals;
     }
 };
 
@@ -247,7 +248,8 @@ pub const Engine = struct {
     hc: match.HashChains,
     ht: match.HashTable,
     bt: match.BinaryTrees,
-    opt: optimal.State,
+    /// Present in caller storage only when near-optimal parsing is available.
+    opt: *optimal.State,
     b: parse_.Builder,
     level: Level = levels[6],
     strategy: Strategy = .default,
@@ -290,8 +292,9 @@ pub const Engine = struct {
         }
         var at = sizes.finderMemory();
         if (sizes.nodes != 0) {
+            e.opt = &take(optimal.State, buffer, &at, 1)[0];
             const nodes = take(optimal.Node, buffer, &at, sizes.nodes);
-            e.opt = .{
+            e.opt.* = .{
                 .nodes = nodes,
                 .cache = take(optimal.Match, buffer, &at, sizes.cache),
                 .cache_limit = sizes.cacheLimit(),
@@ -431,7 +434,7 @@ pub const Engine = struct {
         } else if (full) e.run(false, true, &c, h) else e.run(false, false, &c, h);
         if (e.b.ended) return .block;
         if (e.level.parser == .optimal and e.strategy != .huffman_only and e.strategy != .rle) {
-            if (end != .more) optimal.finish(&c, &e.opt, h, end == .final, e.level.optimal);
+            if (end != .more) optimal.finish(&c, e.opt, h, end == .final, e.level.optimal);
             return .done;
         }
         switch (end) {
@@ -447,7 +450,7 @@ pub const Engine = struct {
         var c: parse_.Cursor(true) = .init(&e.b, w, h.in, false);
         defer c.save();
         if (e.level.parser == .optimal and e.strategy != .huffman_only and e.strategy != .rle) {
-            optimal.finish(&c, &e.opt, h, false, e.level.optimal);
+            optimal.finish(&c, e.opt, h, false, e.level.optimal);
         } else if (@as(isize, @intCast(e.b.p)) > e.b.start) c.write(e.b.p, false);
     }
 
@@ -467,7 +470,7 @@ pub const Engine = struct {
             .fastest => parse_.fastest(dictionary, full_window, c, &e.ht, h),
             .greedy => parse_.greedy(dictionary, full_window, c, &e.hc, h, params, min_len),
             .lazy => parse_.lazy(dictionary, full_window, c, &e.hc, h, params, min_len),
-            .optimal => optimal.parse(dictionary, full_window, c, &e.opt, &e.bt, h, lv.optimal),
+            .optimal => optimal.parse(dictionary, full_window, c, e.opt, &e.bt, h, lv.optimal),
         }
     }
 

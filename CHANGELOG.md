@@ -60,6 +60,8 @@ All notable changes to warp are documented here. The format follows
 
 ### Fixed
 
+- DEFLATE compressors keep optimal-parser state in their initialization buffer
+  only when the configured levels can use it, reducing low-level value size.
 - Captured header verdicts retain static reason storage across later calls.
 - Explicitly disabling CRC in the target CPU no longer prevents checksum
   kernel modules from assembling; an AArch64 cross-build checks this.

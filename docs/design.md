@@ -22,6 +22,8 @@ once. Training is an allocation-taking operation outside codec calls.
 Each whole-buffer decoder owns its tables; its output supplies history. Each
 streaming decoder owns progress and borrows its caller window. Encoders own
 match tables, sequences, entropy and virtual positions in initialization memory.
+DEFLATE optimal-parser state occupies that memory only when the configured levels
+can use it; lower levels retain no unused optimal costs or observations.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 
