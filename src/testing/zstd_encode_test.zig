@@ -111,6 +111,15 @@ test "zstd encoder: bounds saturate at the address space limit" {
     try testing.expectEqual(std.math.maxInt(usize), Compressor.bound(std.math.maxInt(usize)));
 }
 
+test "zstd encoder: unrepresentable table storage fails before allocation on 32-bit targets" {
+    if (@sizeOf(usize) != 4) return;
+    const tuning: zstd.Tuning = .{ .hash_log = 30, .chain_log = 29 };
+    try testing.expectEqual(std.math.maxInt(usize), Compressor.memory(.{ .tuning = tuning }));
+    try testing.expectError(error.OutOfMemory, Compressor.init(testing.failing_allocator, .{ .tuning = tuning }));
+    try testing.expectEqual(std.math.maxInt(usize), zstd.Compress.memory(.{ .tuning = tuning }));
+    try testing.expectError(error.OutOfMemory, zstd.Compress.init(testing.failing_allocator, .{ .tuning = tuning }));
+}
+
 fn roundTrip(gpa: std.mem.Allocator, c: *Compressor, in: []const u8, f: Compressor.Frame) !void {
     const out = try gpa.alloc(u8, Compressor.bound(in.len));
     defer gpa.free(out);

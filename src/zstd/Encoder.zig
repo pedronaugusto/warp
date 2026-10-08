@@ -109,10 +109,10 @@ pub fn resolve(options: Options, size: ?u64) Params {
         changed = true;
     }
     if (t.chain_log) |v| {
-        p.chain_log = std.math.clamp(v, 6, 30);
+        p.chain_log = std.math.clamp(v, 6, if (@sizeOf(usize) == 4) 29 else 30);
         changed = true;
     }
-    if (t.search_log) |v| p.search_log = std.math.clamp(v, 1, 30);
+    if (t.search_log) |v| p.search_log = std.math.clamp(v, 1, params_.window_log_max - 1);
     if (t.min_match) |v| p.min_match = std.math.clamp(v, 3, 7);
     if (t.target_length) |v| p.target_length = v;
     if (t.strategy) |v| {
@@ -192,17 +192,22 @@ const Layout = struct {
     }
 
     fn bytes(l: Layout) usize {
-        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.hash3 * 4 + l.opt + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (l.dict_heads + l.dict_chain) + @sizeOf(encode.Sequence) * l.dict_sequences + l.long_entries * @sizeOf(long_match.Entry) + l.long_matches * @sizeOf(long_match.Match) + l.long_heads, 64);
+        const size = @as(u64, l.hash) * 4 + @as(u64, l.chain) * 4 + l.tags + @as(u64, l.hash3) * 4 + l.opt + @as(u64, l.seqs) * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (@as(u64, l.dict_heads) + l.dict_chain) + @sizeOf(encode.Sequence) * @as(u64, l.dict_sequences) + @as(u64, l.long_entries) * @sizeOf(long_match.Entry) + @as(u64, l.long_matches) * @sizeOf(long_match.Match) + l.long_heads;
+        if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
+        return std.mem.alignForward(usize, @intCast(size), 64);
     }
 };
 
-/// The bytes `initBuffer` needs for `options`.
+/// The bytes `initBuffer` needs, or maxInt(usize) when they do not fit the
+/// address space. `init` returns OutOfMemory for that configuration.
 pub fn memory(options: Options) usize {
     return Layout.of(options).bytes();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
+    const size = memory(options);
+    if (size == std.math.maxInt(usize)) return error.OutOfMemory;
+    const buffer = try gpa.alignedAlloc(u8, .@"64", size);
     var c = initBuffer(buffer, options);
     c.owned = buffer;
     c.gpa = gpa;

@@ -189,12 +189,16 @@ pub const Writer = struct {
 
     pub fn memory(options: Options) usize {
         const len: usize = @max(1, options.frame_len);
-        return std.mem.alignForward(usize, Compressor.memory(encoderOptions(options)) + @as(usize, options.max_frames) * @sizeOf(Record) + len + Compressor.bound(len), 64);
+        const size = Compressor.memory(encoderOptions(options)) +| (@as(usize, options.max_frames) *| @sizeOf(Record)) +| len +| Compressor.bound(len);
+        if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
+        return std.mem.alignForward(usize, size, 64);
     }
 
     pub fn init(gpa: Allocator, output: *Io.Writer, options: Options) (Allocator.Error || error{InvalidOptions})!Writer {
         if (options.frame_len == 0 or options.frame_len > 1 << 30 or options.max_frames > (std.math.maxInt(u32) - 9) / 12) return error.InvalidOptions;
-        const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
+        const size = memory(options);
+        if (size == std.math.maxInt(usize)) return error.OutOfMemory;
+        const buffer = try gpa.alignedAlloc(u8, .@"64", size);
         var w = initBuffer(buffer, output, options);
         w.owned = buffer;
         w.gpa = gpa;

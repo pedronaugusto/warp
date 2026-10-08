@@ -56,11 +56,15 @@ fn blockMax(p: Encoder.Params) usize {
 pub fn memory(options: Options) usize {
     const p = Encoder.resolve(encoderOptions(options), options.pledged_size);
     const block = blockMax(p);
-    return std.mem.alignForward(usize, Encoder.memory(encoderOptions(options)) + (@as(usize, 1) << p.window_log) + 2 * block + 3 * 197 + 22, 64);
+    const size = Encoder.memory(encoderOptions(options)) +| (@as(usize, 1) << p.window_log) +| (2 * block + 3 * 197 + 22);
+    if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
+    return std.mem.alignForward(usize, size, 64);
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compress {
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
+    const size = memory(options);
+    if (size == std.math.maxInt(usize)) return error.OutOfMemory;
+    const buffer = try gpa.alignedAlloc(u8, .@"64", size);
     var s = initBuffer(buffer, options);
     s.owned = buffer;
     s.gpa = gpa;

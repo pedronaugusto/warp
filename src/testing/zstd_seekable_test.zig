@@ -133,3 +133,29 @@ test "zstd seekable: output and frame-capacity failures are sticky" {
     try testing.expectError(error.WriteFailed, capped.interface.writeAll("three"));
     try testing.expectEqual(error.TooManyFrames, capped.err().?);
 }
+
+fn property(_: void, case: *shakedown.Case) !void {
+    const in = try shakedown.gen.string(case.source, case.gpa, .{ .kind = .bytes, .min_len = 0, .max_len = 8192, .average = 2048 });
+    const encoded = try encode(case.gpa, in, shakedown.gen.boolean(case.source), shakedown.gen.intRange(case.source, usize, 1, 128));
+    var index = try zstd.seekable.Index.init(case.gpa, encoded);
+    defer index.deinit();
+    const reader = try case.gpa.create(zstd.seekable.Reader);
+    var window: [1024]u8 = undefined;
+    reader.* = .init(&index, &window, .{});
+    var out: [2048]u8 = undefined;
+    for (0..20) |_| {
+        const offset = shakedown.gen.intRange(case.source, usize, 0, in.len + 32);
+        const capacity = shakedown.gen.intRange(case.source, usize, 0, out.len);
+        const n = try reader.read(offset, out[0..capacity]);
+        if (offset >= in.len) {
+            try testing.expectEqual(@as(usize, 0), n);
+        } else {
+            try testing.expectEqual(@min(capacity, in.len - offset), n);
+            try testing.expectEqualSlices(u8, in[offset..][0..n], out[0..n]);
+        }
+    }
+}
+
+test "zstd seekable: seeded generated ranges agree with uncompressed input" {
+    try shakedown.check(testing.allocator, {}, property, .{ .cases = 100, .seed = 0x687342 });
+}

@@ -78,7 +78,7 @@ const table = [4][23]Params{
 /// The parameters for `level` on an input of `size` bytes (null: any
 /// size) with a dictionary of `dict` bytes, as the reference picks them.
 pub fn forLevel(level: i32, size: ?u64, dict: u64) Params {
-    const row_size: ?u64 = if (size) |n| n + dict else if (dict > 0) dict + 500 else null;
+    const row_size: ?u64 = if (size) |n| n +| dict else if (dict > 0) dict +| 500 else null;
     const class: usize = if (row_size) |r| @as(usize, @intFromBool(r <= 256 * 1024)) + @intFromBool(r <= 128 * 1024) + @intFromBool(r <= 16 * 1024) else 0;
     const index: usize = if (level == 0) default_level else if (level < 0) 0 else @intCast(@min(level, max_level));
     var p = table[class][index];
@@ -98,7 +98,8 @@ pub fn adjust(p_: Params, size: ?u64, dict: u64) Params {
         }
         const dict_window = dictAndWindowLog(p.window_log, n, dict);
         const cycle = cycleLog(p.chain_log, p.strategy);
-        if (p.hash_log > dict_window + 1) p.hash_log = dict_window + 1;
+        const hash_limit = @as(u6, dict_window) + 1;
+        if (p.hash_log > hash_limit) p.hash_log = @intCast(hash_limit);
         if (cycle > dict_window) p.chain_log -= cycle - dict_window;
     }
     if (p.window_log < window_log_min) p.window_log = window_log_min;
@@ -113,8 +114,8 @@ pub fn adjust(p_: Params, size: ?u64, dict: u64) Params {
 fn dictAndWindowLog(window_log: u5, size: u64, dict: u64) u5 {
     if (dict == 0) return window_log;
     const window = @as(u64, 1) << window_log;
-    if (window >= dict + size) return window_log;
-    const both = dict + window;
+    if (window >= dict +| size) return window_log;
+    const both = dict +| window;
     if (both >= @as(u64, 1) << window_log_max) return window_log_max;
     return @intCast(std.math.log2_int(u64, both - 1) + 1);
 }
@@ -141,4 +142,10 @@ test "levels on small and unknown inputs pick the reference's rows" {
     const fast = forLevel(-5, null, 0);
     try std.testing.expectEqual(@as(u32, 5), fast.target_length);
     try std.testing.expectEqual(Strategy.btultra2, forLevel(19, null, 0).strategy);
+}
+
+test "parameter selection saturates combined sizes and permits the maximum dictionary window" {
+    const p = forLevel(3, std.math.maxInt(u64), std.math.maxInt(u64));
+    try std.testing.expectEqual(@as(u5, 17), p.hash_log);
+    try std.testing.expectEqual(@as(u5, 21), p.window_log);
 }
