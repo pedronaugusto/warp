@@ -85,7 +85,8 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
     const p = Encoder.resolve(enc_options, options.pledged_size);
     const block = blockMax(p);
     const window_size = (@as(usize, 1) << p.window_log) + staging(p);
-    var s: Compress = .{ .options = options, .encoder = Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = block, .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
+    const s_block = @min(block, if (options.pledged_size) |n| @max(1024, n) else block);
+    var s: Compress = .{ .options = options, .encoder = Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
     s.startFrame();
     return s;
 }

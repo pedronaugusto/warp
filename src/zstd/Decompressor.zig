@@ -1,8 +1,8 @@
 //! Whole-buffer zstd decoding: frames decoded straight into the caller's
 //! output, which is their own history.
 //!
-//! A `Decompressor` holds only decoding tables (about 30 KiB), no stream:
-//! one serves any number of calls. Nothing is allocated. Acceptance is the
+//! A `Decompressor` holds decoding tables and literal scratch (under 96 KiB),
+//! no stream: one serves any number of calls. Nothing is allocated. Acceptance is the
 //! format's reference decoder's (zstd 1.5.7): what it decodes, this
 //! decodes, and what it refuses, this refuses for the same reason.
 
@@ -17,8 +17,9 @@ const Diagnostic = @import("Diagnostic.zig");
 
 /// Private: the tables of the block being decoded.
 tables: decode.Tables,
+literals: [(64 << 10) + decode.margin]u8,
 
-pub const init: Decompressor = .{ .tables = undefined };
+pub const init: Decompressor = .{ .tables = undefined, .literals = undefined };
 
 /// How many frames a decoder reads.
 pub const Frames = enum {
@@ -256,6 +257,7 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
     const start = op.*;
     var f: decode.Frame = .{
         .tables = &d.tables,
+        .literal_buffer = &d.literals,
         .entropy = if (dict) |x| x.startEntropy() else .{},
         .out = out,
         .start = start,

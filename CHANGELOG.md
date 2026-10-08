@@ -26,7 +26,8 @@ All notable changes to warp are documented here. The format follows
 - `zstd.parallel.Decompressor`: entropy workers with ordered match execution
   and checksums, caller storage and cancellation.
 - `zstd.parallel`: ordered compression jobs in one frame, overlap priming,
-  rsyncable cuts, reader input and output independent of concurrency.
+  rsyncable cuts, reader input and output independent of concurrency;
+  parallel independent-frame writers with a bounded seek table.
 - `zstd.seekable`: independent-frame output, seek-table validation, frame
   indexing and range reads, with caller storage and checksum verification.
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every

@@ -55,6 +55,8 @@ pub const Entropy = struct {
 /// One frame being decoded into a buffer.
 pub const Frame = struct {
     tables: *Tables,
+    /// Optional literal scratch for blocks decoded into an exact output buffer.
+    literal_buffer: []u8 = &.{},
     entropy: Entropy,
     /// The whole output; this frame's content starts at `start`.
     out: []u8,
@@ -204,15 +206,13 @@ pub const Frame = struct {
                         // Read in place: the block's own bytes follow.
                         lits.* = .{ .bytes = in[header..], .len = len, .in_out = null, .limit = f.out.len };
                     } else {
-                        const dst = f.out[f.out.len - len ..];
-                        @memcpy(dst, in[header..][0..len]);
-                        lits.* = f.inOut(len, op);
+                        lits.* = f.literalStorage(len, op);
+                        @memcpy(@constCast(lits.bytes[0..len]), in[header..][0..len]); // safe: literalStorage returns this decoder's writable scratch or output.
                     }
                     return header + len;
                 }
-                const dst = f.out[f.out.len - len ..];
-                @memset(dst, in[header]);
-                lits.* = f.inOut(len, op);
+                lits.* = f.literalStorage(len, op);
+                @memset(@constCast(lits.bytes[0..len]), in[header]); // safe: literalStorage returns this decoder's writable scratch or output.
                 return header + 1;
             },
             2, 3 => {
@@ -245,7 +245,8 @@ pub const Frame = struct {
                 if (csize + header > in.len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
                 if (expected < len) return f.fail(error.OutputTooSmall, 0, .bad_literals_header);
                 const src = in[header..][0..csize];
-                const dst = f.out[f.out.len - len ..];
+                lits.* = f.literalStorage(len, op);
+                const dst = @constCast(lits.bytes[0..len]); // safe: literalStorage returns this decoder's writable scratch or output.
                 if (kind == 2) {
                     try f.huffmanTable(src, header, !single and huffman.chooseDouble(len, csize));
                     const used = f.tables.weights.len;
@@ -254,10 +255,18 @@ pub const Frame = struct {
                 } else {
                     try f.huffmanDecode(src, dst, single, header);
                 }
-                lits.* = f.inOut(len, op);
                 return header + csize;
             },
         }
+    }
+
+    fn literalStorage(f: *Frame, len: usize, op: usize) Literals {
+        const room = f.out.len - op;
+        if (room <= f.block_max + 2 * margin + len and len + margin <= f.literal_buffer.len) {
+            @memset(f.literal_buffer[len..][0..margin], 0);
+            return .{ .bytes = f.literal_buffer, .len = len, .in_out = null, .limit = f.out.len };
+        }
+        return f.inOut(len, op);
     }
 
     fn inOut(f: *Frame, len: usize, op: usize) Literals {

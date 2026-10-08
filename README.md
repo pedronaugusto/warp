@@ -217,7 +217,10 @@ storage. Frame and table checksums are verified by default. The writer's
 `zstd.parallel.Compressor` writes ordered jobs into one frame, with overlap
 priming and optional `rsyncable` cuts. `compress` and `compressReader` take
 `Io` per call; concurrency does not change the encoded bytes. Job and overlap
-storage are reserved at initialization. Invalid job sizes are `InvalidOptions`.
+storage are reserved at initialization. Default jobs are capped at 1 GiB
+(512 MiB on 32-bit targets); invalid explicit job sizes are `InvalidOptions`.
+`writeSeekable` and `writeSeekableReader` reuse the workers for independent
+frames followed by a seek table; caller records bound the table's storage.
 `zstd.parallel.Decompressor` decodes block entropy in workers while executing
 matches and verifying checksums in order. It reserves worker storage at
 initialization and takes `Io` per call; short inputs and partial output use

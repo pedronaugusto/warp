@@ -21,6 +21,31 @@ pub const Entry = struct {
     checksum: ?u32,
 };
 
+/// Frame sizes and the low 32 bits of the content's XXH64 for a seek table.
+pub const Record = struct { compressed: u32, decompressed: u32, checksum: u32 };
+
+/// Append a seek table after its independent frames. Checksums may be omitted.
+pub fn writeTable(out: *Io.Writer, records: []const Record, checksum: bool) (Io.Writer.Error || error{TooManyFrames})!void {
+    const stride: usize = if (checksum) 12 else 8;
+    if (records.len > (std.math.maxInt(u32) - 9) / stride) return error.TooManyFrames;
+    var header: [8]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], skippable_magic, .little);
+    std.mem.writeInt(u32, header[4..8], @intCast(records.len * stride + 9), .little);
+    try out.writeAll(&header);
+    var bytes: [12]u8 = undefined;
+    for (records) |entry| {
+        std.mem.writeInt(u32, bytes[0..4], entry.compressed, .little);
+        std.mem.writeInt(u32, bytes[4..8], entry.decompressed, .little);
+        std.mem.writeInt(u32, bytes[8..12], entry.checksum, .little);
+        try out.writeAll(bytes[0..stride]);
+    }
+    var end: [9]u8 = undefined;
+    std.mem.writeInt(u32, end[0..4], @intCast(records.len), .little);
+    end[4] = if (checksum) 0x80 else 0;
+    std.mem.writeInt(u32, end[5..9], magic, .little);
+    try out.writeAll(&end);
+}
+
 pub const Index = struct {
     input: []const u8,
     entries: []Entry,
@@ -181,7 +206,6 @@ pub const Writer = struct {
         frame_checksum: bool = true,
     };
     pub const WriteError = error{ TooManyFrames, Finished, OutputFailed };
-    const Record = struct { compressed: u32, decompressed: u32, checksum: u32 };
 
     fn encoderOptions(options: Options) Compressor.Options {
         return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = @max(1, options.frame_len) };
@@ -278,23 +302,10 @@ pub const Writer = struct {
             w.failure = error.OutputFailed;
         };
         if (w.have != 0 or w.count == 0) try w.emit();
-        const stride: usize = if (w.checksum) 12 else 8;
-        var header: [8]u8 = undefined;
-        std.mem.writeInt(u32, header[0..4], skippable_magic, .little);
-        std.mem.writeInt(u32, header[4..8], @intCast(w.count * stride + 9), .little);
-        try w.output.writeAll(&header);
-        var bytes: [12]u8 = undefined;
-        for (w.entries[0..w.count]) |entry| {
-            std.mem.writeInt(u32, bytes[0..4], entry.compressed, .little);
-            std.mem.writeInt(u32, bytes[4..8], entry.decompressed, .little);
-            std.mem.writeInt(u32, bytes[8..12], entry.checksum, .little);
-            try w.output.writeAll(bytes[0..stride]);
-        }
-        var end: [9]u8 = undefined;
-        std.mem.writeInt(u32, end[0..4], @intCast(w.count), .little);
-        end[4] = if (w.checksum) 0x80 else 0;
-        std.mem.writeInt(u32, end[5..9], magic, .little);
-        try w.output.writeAll(&end);
+        writeTable(w.output, w.entries[0..w.count], w.checksum) catch |err_| {
+            if (err_ == error.TooManyFrames) w.failure = error.TooManyFrames;
+            return error.WriteFailed;
+        };
         w.finished = true;
     }
 };

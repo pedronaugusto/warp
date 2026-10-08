@@ -88,6 +88,12 @@ fn allocationFailures(gpa: std.mem.Allocator) !void {
     var reader: std.Io.Reader = .fixed("hello");
     sink = .fixed(&bytes);
     try p.compressReader(testing.io, &reader, &sink);
+    var records: [1]zstd.seekable.Record = undefined;
+    sink = .fixed(&bytes);
+    _ = try p.writeSeekable(testing.io, "hello", &sink, &records, 128, true);
+    reader = .fixed("hello");
+    sink = .fixed(&bytes);
+    _ = try p.writeSeekableReader(testing.io, &reader, &sink, &records, 128, true);
     var tiny: std.Io.Writer = .fixed(bytes[0..2]);
     try testing.expectError(error.WriteFailed, p.compress(testing.io, "hello", &tiny));
     try testing.expectEqual(allocations, counter.allocations);
@@ -236,4 +242,71 @@ test "zstd parallel decode: exact storage, allocation failures and canceled work
     _ = try p.decompress(testing.io, encoded[0..n], decoded, .{});
     try testing.expectEqualSlices(u8, input, decoded);
     try testing.expectError(error.InvalidOptions, zstd.parallel.Decompressor.init(gpa, .{ .concurrency = 0 }));
+}
+
+test "zstd parallel seekable: independent dictionary frames, reader parity and concurrency" {
+    const gpa = testing.allocator;
+    const input = try gen.alloc(gpa, .text, 413, 20_000);
+    defer gpa.free(input);
+    const dictionary = try gpa.create(zstd.Dictionary);
+    defer gpa.destroy(dictionary);
+    dictionary.* = try .parse(input[0..4096]);
+    var reference: ?[]u8 = null;
+    defer if (reference) |bytes| gpa.free(bytes);
+    for ([_]u16{ 1, 2, 7 }) |concurrency| {
+        var p = try zstd.parallel.Compressor.init(gpa, .{ .job_len = 4096, .concurrency = concurrency, .dictionary = dictionary, .tuning = .{ .window_log = 12 }, .frame = .{ .format = .magicless } });
+        defer p.deinit();
+        var records: [20]zstd.seekable.Record = undefined;
+        var sink: std.Io.Writer.Allocating = .init(gpa);
+        defer sink.deinit();
+        const count = try p.writeSeekable(testing.io, input, &sink.writer, &records, 1024, true);
+        try testing.expectEqual(@as(usize, 20), count);
+        if (reference) |bytes| try testing.expectEqualSlices(u8, bytes, sink.written()) else reference = try gpa.dupe(u8, sink.written());
+        var index = try zstd.seekable.Index.init(gpa, sink.written());
+        defer index.deinit();
+        const reader = try gpa.create(zstd.seekable.Reader);
+        defer gpa.destroy(reader);
+        var window: [1024]u8 = undefined;
+        reader.* = .init(&index, &window, .{ .dictionaries = &.{dictionary} });
+        var output: [2000]u8 = undefined;
+        try testing.expectEqual(output.len, try reader.read(957, &output));
+        try testing.expectEqualSlices(u8, input[957..][0..output.len], &output);
+        var streamed: std.Io.Writer.Allocating = .init(gpa);
+        defer streamed.deinit();
+        var source: std.Io.Reader = .fixed(input);
+        try testing.expectEqual(count, try p.writeSeekableReader(testing.io, &source, &streamed.writer, &records, 1024, true));
+        try testing.expectEqualSlices(u8, sink.written(), streamed.written());
+        try testing.expectError(error.TooManyFrames, p.writeSeekable(testing.io, input, &streamed.writer, records[0..19], 1024, true));
+    }
+}
+
+test "zstd parallel seekable: cancellation, output errors, empty input and reuse" {
+    const gpa = testing.allocator;
+    var p = try zstd.parallel.Compressor.init(gpa, .{ .job_len = 128, .concurrency = 3, .tuning = .{ .window_log = 10 } });
+    defer p.deinit();
+    const fio = try shakedown.FaultIo.init(gpa, testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }} });
+    defer fio.deinit();
+    var records: [4]zstd.seekable.Record = undefined;
+    var output: [4096]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&output);
+    try testing.expectError(error.Canceled, p.writeSeekable(fio.io(), "four frames of borrowed content", &sink, &records, 8, false));
+    sink = .fixed(output[0..0]);
+    try testing.expectError(error.WriteFailed, p.writeSeekable(testing.io, "content", &sink, &records, 8, false));
+    for ([_]bool{ true, false }) |stream| {
+        sink = .fixed(&output);
+        var source: std.Io.Reader = .fixed("");
+        const n = if (stream) try p.writeSeekableReader(testing.io, &source, &sink, &records, 8, false) else try p.writeSeekable(testing.io, "", &sink, &records, 8, false);
+        try testing.expectEqual(@as(usize, 1), n);
+        var index = try zstd.seekable.Index.init(gpa, sink.buffered());
+        defer index.deinit();
+        try testing.expectEqual(@as(u64, 0), index.content_size);
+        try testing.expectEqual(@as(usize, 1), index.entries.len);
+    }
+}
+
+test "zstd parallel: large windows use bounded default jobs" {
+    for ([_]u5{ 28, 29, 30, 31 }) |log| {
+        const size = zstd.parallel.Compressor.memory(.{ .concurrency = 1, .tuning = .{ .window_log = log } });
+        if (@bitSizeOf(usize) == 64) try testing.expect(size != std.math.maxInt(usize));
+    }
 }

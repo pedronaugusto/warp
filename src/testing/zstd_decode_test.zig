@@ -73,6 +73,7 @@ test "every frame the reference wrote decodes to its input, with an exact output
     const gpa = testing.allocator;
     var dicts: Dictionaries = try .load(gpa);
     defer dicts.deinit(gpa);
+    try testing.expect(@sizeOf(Decompressor) <= 96 << 10);
     const d = try gpa.create(Decompressor);
     defer gpa.destroy(d);
     d.* = .init;

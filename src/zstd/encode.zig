@@ -84,9 +84,9 @@ pub fn estimateDetailed(store: *SeqStore, prev: *const Entropy, next: *Entropy, 
     store.toCodes(&counts);
     const original = counts;
     var description: [128]u8 = undefined;
-    const ll = codeTable(LlTable, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
-    const of = codeTable(OfTable, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
-    const ml = codeTable(MlTable, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
+    const ll = codeTable(LlTable, &codes.ll_default, codes.ll_default_log, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
+    const of = codeTable(OfTable, &codes.of_default, codes.of_default_log, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
+    const ml = codeTable(MlTable, &codes.ml_default, codes.ml_default_log, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
     const ll_size = estimateSymbols(ll.mode, &next.ll, &original.ll, &codes.ll_bits, &codes.ll_default, codes.ll_default_log);
     const of_size = estimateSymbols(of.mode, &next.of, &original.of, &codes.of_bits, &codes.of_default, codes.of_default_log);
     const ml_size = estimateSymbols(ml.mode, &next.ml, &original.ml, &codes.ml_bits, &codes.ml_default, codes.ml_default_log);
@@ -166,13 +166,13 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
     const modes_at = o;
     o += 1;
     var last_table: usize = 0;
-    const ll = codeTable(LlTable, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, out[o..]) orelse return null;
+    const ll = codeTable(LlTable, &codes.ll_default, codes.ll_default_log, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, out[o..]) orelse return null;
     o += ll.len;
     if (ll.mode == .compressed) last_table = ll.len;
-    const of = codeTable(OfTable, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, out[o..]) orelse return null;
+    const of = codeTable(OfTable, &codes.of_default, codes.of_default_log, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, out[o..]) orelse return null;
     o += of.len;
     if (of.mode == .compressed) last_table = of.len;
-    const ml = codeTable(MlTable, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, out[o..]) orelse return null;
+    const ml = codeTable(MlTable, &codes.ml_default, codes.ml_default_log, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, out[o..]) orelse return null;
     o += ml.len;
     if (ml.mode == .compressed) last_table = ml.len;
     out[modes_at] = @as(u8, @backingInt(ll.mode)) << 6 | @as(u8, @backingInt(of.mode)) << 4 | @as(u8, @backingInt(ml.mode)) << 2;
@@ -249,13 +249,13 @@ pub const Target = struct {
         const added: usize = @intFromBool(counts.of[0] == 0) + @as(usize, @intFromBool(counts.of[1] == 0));
         counts.of[0] = @max(1, counts.of[0]);
         counts.of[1] = @max(1, counts.of[1]);
-        const ll = codeTable(LlTable, &counts.ll, store.ll_codes[n - 1], n, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, .none, &plan.tables.ll, &plan.tables.ll_repeat, strategy, &plan.sequence_description) orelse return;
+        const ll = codeTable(LlTable, &codes.ll_default, codes.ll_default_log, &counts.ll, store.ll_codes[n - 1], n, codes.max_ll, codes.max_ll_log, null, &prev.ll, .none, &plan.tables.ll, &plan.tables.ll_repeat, strategy, &plan.sequence_description) orelse return;
         var at = ll.len;
         if (ll.mode == .compressed) plan.last_table = ll.len;
-        const of = codeTable(OfTable, &counts.of, store.of_codes[n - 1], n + added, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, .none, &plan.tables.of, &plan.tables.of_repeat, strategy, plan.sequence_description[at..]) orelse return;
+        const of = codeTable(OfTable, &codes.of_default, codes.of_default_log, &counts.of, store.of_codes[n - 1], n + added, codes.max_of, codes.max_of_log, 28, &prev.of, .none, &plan.tables.of, &plan.tables.of_repeat, strategy, plan.sequence_description[at..]) orelse return;
         at += of.len;
         if (of.mode == .compressed) plan.last_table = of.len;
-        const ml = codeTable(MlTable, &counts.ml, store.ml_codes[n - 1], n, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, .none, &plan.tables.ml, &plan.tables.ml_repeat, strategy, plan.sequence_description[at..]) orelse return;
+        const ml = codeTable(MlTable, &codes.ml_default, codes.ml_default_log, &counts.ml, store.ml_codes[n - 1], n, codes.max_ml, codes.max_ml_log, null, &prev.ml, .none, &plan.tables.ml, &plan.tables.ml_repeat, strategy, plan.sequence_description[at..]) orelse return;
         at += ml.len;
         if (ml.mode == .compressed) plan.last_table = ml.len;
         plan.sequence_len = at;
@@ -525,13 +525,13 @@ const TableResult = struct { mode: Mode, len: usize };
 /// `default_max` (null: always).
 fn codeTable(
     comptime T: type,
+    comptime default_norm: []const i16,
+    comptime default_log: u4,
     counts: *[64]u32,
     last: u8,
     total_: usize,
     max: u8,
     max_log: u4,
-    default_norm: []const i16,
-    default_log: u4,
     default_max: ?u8,
     prev: *const T,
     prev_repeat: Repeat,
@@ -563,7 +563,7 @@ fn codeTable(
             return .{ .mode = .repeat, .len = 0 };
         },
         .predefined => {
-            next.build(default_norm, default_log);
+            next.* = comptime defaultEncode(T, default_norm, default_log);
             return .{ .mode = .predefined, .len = 0 };
         },
         .compressed => {
@@ -584,6 +584,13 @@ fn codeTable(
             return .{ .mode = .compressed, .len = n };
         },
     }
+}
+
+fn defaultEncode(comptime T: type, comptime norm: []const i16, comptime log: u4) T {
+    @setEvalBranchQuota(100000);
+    var table: T = undefined;
+    table.build(norm, log);
+    return table;
 }
 
 const inverse_probability_log256 = [256]u32{

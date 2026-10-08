@@ -4,7 +4,7 @@ const std = @import("std");
 const Io = std.Io;
 const Encoder = @import("Encoder.zig");
 const Dictionary = @import("Dictionary.zig");
-const encode = @import("encode.zig");
+const seekable = @import("seekable.zig");
 
 /// Pipelined entropy decoding with ordered history execution.
 pub const Decompressor = @import("parallel/Decompressor.zig");
@@ -34,8 +34,8 @@ fn config(options: Options) error{InvalidOptions}!Config {
     const encoder: Encoder.Options = .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary };
     const p = Encoder.resolve(encoder, null);
     const job_log = @max(20, @as(u6, p.window_log) + 2);
-    if (options.job_len == null and job_log >= 30) return error.InvalidOptions;
-    const job: usize = options.job_len orelse (@as(u32, 1) << @intCast(job_log));
+    const max_job_log: u6 = if (@bitSizeOf(usize) == 32) 29 else 30;
+    const job: usize = options.job_len orelse (@as(u32, 1) << @intCast(@min(job_log, max_job_log)));
     const default_overlap: u4 = switch (p.strategy) {
         .btultra2 => 9,
         .btultra, .btopt => 8,
@@ -44,9 +44,9 @@ fn config(options: Options) error{InvalidOptions}!Config {
     };
     const log = if (options.overlap_log == 0) default_overlap else options.overlap_log;
     const overlap: usize = if (log == 1) 0 else @as(usize, 1) << (p.window_log -| (9 - log));
-    if (job == 0 or @as(u64, job) + overlap >= (1 << 30) - encode.block_max) return error.InvalidOptions;
+    if (job == 0 or job > @as(usize, 1) << max_job_log or @as(u64, job) + overlap > std.math.maxInt(u32) - 3) return error.InvalidOptions;
     const blocks = std.math.divCeil(usize, job, @min(8 << 10, @as(usize, 1) << p.window_log)) catch unreachable; // unreachable: the block size is nonzero
-    return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = job + 591 * blocks };
+    return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = @max(job + 591 * blocks, Encoder.bound(job)) };
 }
 
 const Worker = struct {
@@ -57,6 +57,10 @@ const Worker = struct {
     prefix: usize = 0,
     first: bool = false,
     result: usize = 0,
+
+    fn frame(w: *Worker, options: Encoder.Frame) void {
+        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // unreachable: output holds the whole-buffer bound
+    }
 
     fn run(w: *Worker, params: Encoder.Params) void {
         w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // unreachable: each block reserves raw bytes plus all possible partition headers
@@ -82,7 +86,7 @@ const Cuts = struct {
             c.count += n;
             return n;
         }
-        const mask = std.math.ceilPowerOfTwo(usize, @max(2, cfg.job_len / 2)) catch unreachable; // unreachable: job lengths are below 2^30
+        const mask = std.math.ceilPowerOfTwo(usize, @max(2, cfg.job_len / 2)) catch unreachable; // unreachable: job lengths are at most 2^30
         for (in[0..n], 0..) |byte, i| {
             c.rolling = std.math.rotl(u64, c.rolling, 1) ^ value(byte) ^ value(c.ring[c.at]);
             c.ring[c.at] = byte;
@@ -213,6 +217,74 @@ pub const Compressor = struct {
         try p.trailer(out, &hash);
     }
 
+    /// Write independent frames and their seek table, reusing these workers.
+    /// `frame_len` is at most the configured job length; `records` holds every
+    /// frame (including one empty frame for empty input). Returns their count.
+    pub fn writeSeekable(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer, records: []seekable.Record, frame_len: u32, checksum: bool) (Error || error{TooManyFrames})!usize {
+        if (frame_len == 0 or frame_len > p.cfg.job_len) return error.InvalidOptions;
+        const total = @max(1, std.math.divCeil(usize, in.len, frame_len) catch unreachable); // unreachable: frame_len is nonzero
+        if (total > records.len or total > (std.math.maxInt(u32) - 9) / 12) return error.TooManyFrames;
+        var group: Io.Group = .init;
+        defer group.cancel(io);
+        var at: usize = 0;
+        var count: usize = 0;
+        var frame_options = p.options.frame;
+        frame_options.format = .standard;
+        frame_options.content_size = true;
+        while (count < total) {
+            const batch = @min(p.workers.len, total - count);
+            for (p.workers[0..batch]) |*w| {
+                const n = @min(in.len - at, frame_len);
+                w.bytes = in[at..][0..n];
+                if (p.workers.len == 1) w.frame(frame_options) else group.async(io, Worker.frame, .{ w, frame_options });
+                at += n;
+            }
+            try group.await(io);
+            for (p.workers[0..batch], records[count..][0..batch]) |*w, *record| {
+                try out.writeAll(w.output[0..w.result]);
+                record.* = .{ .compressed = @intCast(w.result), .decompressed = @intCast(w.bytes.len), .checksum = if (checksum) @truncate(std.hash.XxHash64.hash(0, w.bytes)) else 0 };
+            }
+            count += batch;
+        }
+        try seekable.writeTable(out, records[0..count], checksum);
+        return count;
+    }
+
+    /// Stream independent frames and a seek table into `out`, using bounded
+    /// worker input buffers. Returns the number of records written.
+    pub fn writeSeekableReader(p: *Compressor, io: Io, in: *Io.Reader, out: *Io.Writer, records: []seekable.Record, frame_len: u32, checksum: bool) (Error || error{ TooManyFrames, ReadFailed })!usize {
+        if (frame_len == 0 or frame_len > p.cfg.job_len) return error.InvalidOptions;
+        var group: Io.Group = .init;
+        defer group.cancel(io);
+        var count: usize = 0;
+        var eof = false;
+        var frame_options = p.options.frame;
+        frame_options.format = .standard;
+        frame_options.content_size = true;
+        while (!eof) {
+            var batch: usize = 0;
+            while (batch < p.workers.len) {
+                const w = &p.workers[batch];
+                const n = try in.readSliceShort(w.input[0..frame_len]);
+                eof = n < frame_len;
+                if (n == 0 and count + batch != 0) break;
+                if (count + batch >= records.len or count + batch >= (std.math.maxInt(u32) - 9) / 12) return error.TooManyFrames;
+                w.bytes = w.input[0..n];
+                if (p.workers.len == 1) w.frame(frame_options) else group.async(io, Worker.frame, .{ w, frame_options });
+                batch += 1;
+                if (eof) break;
+            }
+            try group.await(io);
+            for (p.workers[0..batch], records[count..][0..batch]) |*w, *record| {
+                try out.writeAll(w.output[0..w.result]);
+                record.* = .{ .compressed = @intCast(w.result), .decompressed = @intCast(w.bytes.len), .checksum = if (checksum) @truncate(std.hash.XxHash64.hash(0, w.bytes)) else 0 };
+            }
+            count += batch;
+        }
+        try seekable.writeTable(out, records[0..count], checksum);
+        return count;
+    }
+
     /// Stream jobs from a reader; its frame omits the unknown content size.
     pub fn compressReader(p: *Compressor, io: Io, in: *Io.Reader, out: *Io.Writer) (Error || error{ReadFailed})!void {
         try p.header(out, null);
@@ -262,7 +334,7 @@ pub const Compressor = struct {
             @memcpy(out[at..][0..n], bytes[0..n]);
             source.at += n;
             if (p.options.rsyncable and cuts.count >= @max(64, p.cfg.job_len / 2)) {
-                const mask = std.math.ceilPowerOfTwo(usize, @max(2, p.cfg.job_len / 2)) catch unreachable; // unreachable: job lengths are below 2^30
+                const mask = std.math.ceilPowerOfTwo(usize, @max(2, p.cfg.job_len / 2)) catch unreachable; // unreachable: job lengths are at most 2^30
                 if (cuts.rolling & (mask - 1) == 0) break;
             }
         }

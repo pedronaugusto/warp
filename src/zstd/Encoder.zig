@@ -145,8 +145,8 @@ const Layout = struct {
     long_heads: usize = 0,
     long_matches: usize = 0,
 
-    fn fromParams(p: Params) Layout {
-        const block: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    fn fromParams(p: Params, max_input: ?usize) Layout {
+        const block: usize = @min(encode.block_max, @as(usize, 1) << p.window_log, if (max_input) |n| @max(1024, n) else encode.block_max);
         const with_rows = rows(p);
         // Rows serve large inputs; an input under 16 KiB is searched by
         // chains, which never need more than 2^15 entries there.
@@ -163,13 +163,13 @@ const Layout = struct {
     }
 
     fn of(options: Options) Layout {
-        var l = fromParams(resolve(options, if (options.max_input) |n| n else null));
+        var l = fromParams(resolve(options, if (options.max_input) |n| n else null), options.max_input);
         // Smaller size classes can select another strategy at the same
         // level. Reserve all tables those calls may use, not only the
         // strategy selected for the largest input.
         for ([_]usize{ 0, 16 << 10, 128 << 10, 256 << 10 }) |n| {
             if (options.max_input) |max| if (n > max) continue;
-            var small = fromParams(resolve(options, n));
+            var small = fromParams(resolve(options, n), options.max_input);
             // Hashing smaller inputs uses at most the largest input's
             // table. Other roles must exist when a size class changes
             // strategy, but do not need a larger hash table.
@@ -318,7 +318,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
     if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
     var o = try c.header(out, p, in.len, f);
-    const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
     var prev: usize = 0;
     c.startEntropy();
@@ -380,7 +380,7 @@ pub fn compressLong(c: *Encoder, in: []const u8, out: []u8, f: Frame, limit: u32
     var base: u32 = first_index;
     c.prepare(p, base);
     var o = try c.header(out, p, in.len, f);
-    const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
     var prev: usize = 0;
     var pos: usize = 0;
@@ -445,7 +445,7 @@ pub fn normalize(c: *Encoder, base: *u32, p: Params, span: usize, limit: u32) vo
 /// prime the match tables; unknown repeat offsets are never emitted.
 pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: bool, out: []u8) CompressError!usize {
     if (c.next_index + @as(u64, in.len) >= index_limit) {
-        c.reduceIndices(index_limit);
+        c.reduceIndices(std.math.maxInt(u32));
         c.next_index = first_index;
     }
     const base = c.next_index;
@@ -453,7 +453,7 @@ pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: boo
     c.prepare(p, base);
     var reps: [3]u32 = if (first_job) c.initialReps() else .{ 0, 0, 0 };
     if (!first_job) c.entropy[0].reset();
-    const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
     var at: usize = 0;
     var prime_reps: [3]u32 = .{ 0, 0, 0 };
     while (at < prefix) {
