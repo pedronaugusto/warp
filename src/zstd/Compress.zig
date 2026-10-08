@@ -205,6 +205,7 @@ fn emit(s: *Compress, finishing: bool) void {
     const len = Encoder.blockSize(s.window[s.history..][0..s.have], s.block_max, s.params.strategy, s.savings);
     const last = finishing and len == s.have;
     const end = s.history + len;
+    s.encoder.normalize(&s.base, s.params, s.history + s.have + s.block_max, std.math.maxInt(u32));
     s.encoder.store.reset();
     var next_reps = s.reps;
     if (len >= 7) {
@@ -233,11 +234,6 @@ fn emit(s: *Compress, finishing: bool) void {
         if (discard != 0) @memmove(s.window[0 .. buffered - discard], s.window[discard..buffered]);
         s.history = keep;
         s.base += @intCast(discard);
-    }
-    if (s.base > 1 << 29) {
-        const amount = s.base - 2;
-        s.encoder.reduceIndices(amount);
-        s.base = 2;
     }
 }
 

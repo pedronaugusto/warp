@@ -179,8 +179,8 @@ const Layout = struct {
             }
         }
         if (options.dictionary) |d| {
-            l.dict_heads = @as(usize, 1) << dictionary_match.Index.hashLog(d.content.len);
-            l.dict_chain = d.content.len;
+            l.dict_heads = @as(usize, 1) << dictionary_match.Index.hashLog(dictionary_match.Index.contentLen(d.content.len));
+            l.dict_chain = dictionary_match.Index.contentLen(d.content.len);
             l.dict_sequences = l.seqs;
         }
         if (options.tuning.long_distance) {
@@ -269,7 +269,7 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
         .next_index = first_index,
         .owned = &.{},
         .gpa = undefined,
-        .dictionary_index = if (options.dictionary) |d| dictionary_match.Index.init(d.content, dictionary_heads, dictionary_chain) else null,
+        .dictionary_index = if (options.dictionary) |d| dictionary_match.Index.init(d.content[d.content.len - l.dict_chain ..], dictionary_heads, dictionary_chain) else null,
         .dictionary_sequences = dictionary_sequences,
         .long = if (options.tuning.long_distance) long_match.State.init(long_entries, long_heads, long_matches) else null,
     };
@@ -302,6 +302,7 @@ pub fn bound(len: usize) usize {
 
 /// One complete frame of `in` into `out`; returns its length.
 pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!usize {
+    if (in.len >= index_limit - encode.block_max) return c.compressLong(in, out, f, std.math.maxInt(u32));
     const p = c.parameters(in.len);
     if (c.next_index + @as(u64, in.len) + encode.block_max >= index_limit) {
         @memset(c.hash_table, 0);
@@ -367,6 +368,79 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
     return o;
 }
 
+/// A borrowed history slice permits frames larger than the index space.
+/// `limit` is the index ceiling, also allowing boundary tests with short
+/// inputs. Search, dictionary merging and emission use the same engines.
+pub fn compressLong(c: *Encoder, in: []const u8, out: []u8, f: Frame, limit: u32) CompressError!usize {
+    const p = c.parameters(in.len);
+    @memset(c.hash_table, 0);
+    @memset(c.chain_table, 0);
+    @memset(c.tag_table, 0);
+    @memset(c.hash3_table, 0);
+    var base: u32 = first_index;
+    c.prepare(p, base);
+    var o = try c.header(out, p, in.len, f);
+    const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    var reps = c.initialReps();
+    var prev: usize = 0;
+    var pos: usize = 0;
+    var discard: usize = 0;
+    var savings: i64 = 0;
+    while (true) {
+        const len = blockSize(in[pos..], block_max, p.strategy, savings);
+        const last = pos + len == in.len;
+        if (@as(u64, base) + (pos - discard) + 2 * block_max >= limit) {
+            const dropped = pos - @min(pos, @as(usize, 1) << p.window_log);
+            base += @intCast(dropped - discard);
+            discard = dropped;
+            c.normalize(&base, p, pos - discard + 2 * block_max, limit);
+        }
+        const source = in[discard..];
+        const at = pos - discard;
+        if (pos == 0 and p.strategy == .btultra2 and len > 8) {
+            c.store.reset();
+            var seed_reps = reps;
+            _ = c.searchPrefix(p, .{ .in = source, .start = base, .low = base }, &seed_reps, at, at + len);
+            base += @intCast(len);
+            c.optimal.next = base;
+            c.optimal.next3 = base;
+        }
+        var w: window.Window = .{ .in = source, .start = base, .low = base };
+        w.low = w.lowFor(at + len, p.window_log);
+        var next_reps = reps;
+        c.store.reset();
+        if (len >= 7) {
+            const tail = c.search(p, w, &next_reps, at, at + len);
+            c.store.storeLast(source[at + len - tail ..][0..tail]);
+        } else c.store.storeLast(in[pos..][0..len]);
+        c.mergeDictionary(source, at, at + len, pos, p, reps, &next_reps);
+        const n = try c.writeBlocks(p, in[pos..][0..len], out[o..], p.strategy == .fast and p.target_length > 0, &reps, next_reps, &prev, pos == 0, last);
+        savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));
+        o += n;
+        pos += len;
+        if (last) break;
+    }
+    c.next_index = base + @as(u32, @intCast(pos - discard)) + 1;
+    if (f.checksum) {
+        if (out.len - o < 4) return error.OutputTooSmall;
+        std.mem.writeInt(u32, out[o..][0..4], @truncate(std.hash.XxHash64.hash(0, in)), .little);
+        o += 4;
+    }
+    return o;
+}
+
+/// Normalize active indices by whole ring periods so chain slots keep
+/// naming the same positions. Hash tables have no positional ring.
+pub fn normalize(c: *Encoder, base: *u32, p: Params, span: usize, limit: u32) void {
+    if (@as(u64, base.*) + span < limit) return;
+    const ring_log = if (p.strategy == .btlazy2 or @backingInt(p.strategy) >= @backingInt(Strategy.btopt) or (params_.usesRows(p.strategy) and !rows(p))) p.chain_log - @as(u5, @intFromBool(p.strategy == .btlazy2 or @backingInt(p.strategy) >= @backingInt(Strategy.btopt))) else 0;
+    const mask = (@as(u32, 1) << ring_log) - 1;
+    const amount = (base.* - first_index) & ~mask;
+    std.debug.assert(amount != 0);
+    c.reduceIndices(amount);
+    base.* -= amount;
+}
+
 /// Encode a parallel job as non-final blocks. The leading `prefix` bytes
 /// prime the match tables; unknown repeat offsets are never emitted.
 pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: bool, out: []u8) CompressError!usize {
@@ -379,7 +453,7 @@ pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: boo
     c.prepare(p, base);
     var reps: [3]u32 = if (first_job) c.initialReps() else .{ 0, 0, 0 };
     if (!first_job) c.entropy[0].reset();
-    const block_max = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
     var at: usize = 0;
     var prime_reps: [3]u32 = .{ 0, 0, 0 };
     while (at < prefix) {
@@ -452,25 +526,25 @@ pub fn writeBlocks(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_litera
 /// match distances across literal cuts and raw partitions.
 pub fn writeTarget(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, searched_reps: [3]u32, prev: *usize, first: bool, last: bool, wanted: u32) CompressError!usize {
     const target = super_.target(wanted);
-    const estimate = encode.estimateDetailed(&c.store, &c.entropy[prev.*], &c.entropy[1 - prev.*], p.strategy);
+    var plan = encode.Target.init(&c.store, &c.entropy[prev.*], p.strategy, raw_literals);
+    const estimate = .{ .size = plan.size, .literals = plan.literal_size };
     if (estimate.size <= target or in.len == 0) return c.writeBlocks(p, in, out, raw_literals, reps, searched_reps, prev, first, last);
     if (estimate.size >= in.len) return c.writeLiteralTargets(p, in, out, raw_literals, reps, prev, first, last, target);
-    var cursor = super_.Cursor.init(&c.store, &c.entropy[1 - prev.*], reps.*, target, if (raw_literals) c.store.lit_len else estimate.literals);
+    var cursor = super_.Cursor.init(&c.store, &plan.tables, reps.*, target, if (raw_literals) c.store.lit_len else estimate.literals);
     var at: usize = 0;
     var o: usize = 0;
     var beginning = first;
     while (!cursor.done()) {
         var part = cursor.next();
         const len = part.decodedLen();
-        var next_reps = reps.*;
-        for (part.seqs[0..part.count], 0..) |*q, i| {
-            q.off = super_.offset(next_reps, q.off - 3, part.litLen(i) == 0);
-            next_reps = sequences.updateReps(next_reps, q.off, part.litLen(i) == 0);
-        }
-        o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, next_reps, prev, beginning, last and cursor.done());
+        const next_reps = cursor.remap(&part, reps);
+        const previous = prev.*;
+        o += try c.writeBlockWithPlan(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, next_reps, prev, beginning, last and cursor.done(), &plan);
+        if (prev.* == previous) cursor.rejected(part.count, reps);
         at += len;
         beginning = false;
     }
+    if (cursor.unchanged) reps.* = searched_reps;
     std.debug.assert(at == in.len);
     return o;
 }
@@ -492,9 +566,19 @@ fn writeLiteralTargets(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_li
 }
 
 fn writeBlock(c: *Encoder, store: *encode.SeqStore, strategy: Strategy, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, next_reps: [3]u32, prev: *usize, first: bool, last: bool) CompressError!usize {
+    return c.writeBlockWithPlan(store, strategy, in, out, raw_literals, reps, next_reps, prev, first, last, null);
+}
+
+fn writeBlockWithPlan(c: *Encoder, store: *encode.SeqStore, strategy: Strategy, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, next_reps: [3]u32, prev: *usize, first: bool, last: bool, plan: ?*encode.Target) CompressError!usize {
     if (out.len < 3) return error.OutputTooSmall;
-    var size = if (in.len >= 7) encode.compressBlock(store, in.len, &c.entropy[prev.*], &c.entropy[1 - prev.*], strategy, raw_literals, out[3..]) else 0;
+    const huf_sent = if (plan) |t| t.huf_sent else false;
+    const sequence_sent = if (plan) |t| t.sequence_sent else false;
+    var size = if (in.len < 7) 0 else if (plan) |target_plan| target_plan.compress(store, in.len, &c.entropy[prev.*], &c.entropy[1 - prev.*], strategy, raw_literals, out[3..]) else encode.compressBlock(store, in.len, &c.entropy[prev.*], &c.entropy[1 - prev.*], strategy, raw_literals, out[3..]);
     if (!first and in.len > 0 and size < 25 and allSame(in)) size = 1;
+    if (size <= 1) if (plan) |t| {
+        t.huf_sent = huf_sent;
+        t.sequence_sent = sequence_sent;
+    };
     const end: usize = @intFromBool(last);
     var written: usize = 0;
     if (size == 0) {
@@ -545,7 +629,12 @@ pub fn prepare(c: *Encoder, p: Params, start: u32) void {
 pub fn reduceIndices(c: *Encoder, amount: u32) void {
     if (c.long) |*state| state.reduceIndices(amount);
     for (c.hash_table) |*n| n.* -|= amount;
-    for (c.chain_table) |*n| n.* -|= amount;
+    // One is the lazy tree's unsorted marker, below every real index.
+    // Preserving it is harmless in hash/chain tables and required for the
+    // tree to retain candidates across normalization.
+    for (c.chain_table) |*n| if (n.* != 1) {
+        n.* = if (n.* <= amount + 1) 0 else n.* - amount;
+    };
     for (c.hash3_table) |*n| n.* -|= amount;
     c.next_index -|= amount;
     if (params_.usesRows(c.capacity.strategy) or c.capacity.strategy == .btlazy2) c.lazy.next -|= amount;

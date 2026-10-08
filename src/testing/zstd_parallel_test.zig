@@ -186,8 +186,11 @@ fn decodeProperty(_: void, case: *shakedown.Case) anyerror!void {
     var serial: zstd.Decompressor = .init;
     var p = try zstd.parallel.Decompressor.init(case.gpa, .{});
     defer p.deinit();
-    const expected = serial.decompress(encoded[0..n], serial_out, .{}) catch |err| {
-        try testing.expectError(err, p.decompress(testing.io, encoded[0..n], pipeline_out, .{}));
+    var serial_diagnostic: zstd.Diagnostic = .{};
+    var pipeline_diagnostic: zstd.Diagnostic = .{};
+    const expected = serial.decompress(encoded[0..n], serial_out, .{ .diagnostic = &serial_diagnostic }) catch |err| {
+        try testing.expectError(err, p.decompress(testing.io, encoded[0..n], pipeline_out, .{ .diagnostic = &pipeline_diagnostic }));
+        try testing.expectEqual(serial_diagnostic, pipeline_diagnostic);
         return;
     };
     const actual = try p.decompress(testing.io, encoded[0..n], pipeline_out, .{});

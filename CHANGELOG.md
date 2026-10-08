@@ -39,3 +39,10 @@ All notable changes to warp are documented here. The format follows
 - `gzip.parseHeader` and `gzip.writeHeader` for every header field.
 
 [Unreleased]: https://github.com/pedronaugusto/warp/commits/main
+
+- Zstd compressed block targets prepare entropy once and reuse it across
+  partitions. Repeat history is replayed only when a raw partition or a literal
+  cut requires it.
+- Zstd handles whole-buffer inputs beyond the virtual index range and preserves
+  match history and lazy-tree markers when streaming indices normalize.
+- Added the streaming zstd command example under `bench/cli/`.

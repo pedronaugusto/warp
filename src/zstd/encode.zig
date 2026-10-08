@@ -183,6 +183,182 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
     return o + stream;
 }
 
+/// Entropy prepared once for a parsed superblock. A description is sent
+/// again after an ordinary fallback changes the installed tables.
+pub const Target = struct {
+    tables: Entropy,
+    huf_kind: Mode = .predefined,
+    huf_description: [256]u8 = undefined,
+    huf_len: usize = 0,
+    sequence_description: [384]u8 = undefined,
+    sequence_len: usize = 0,
+    modes: u8 = 0,
+    last_table: usize = 0,
+    huf_sent: bool = false,
+    sequence_sent: bool = false,
+    literal_size: usize = 0,
+    size: usize = 0,
+    supported: [3]u64 = @splat(0),
+
+    pub fn init(store: *SeqStore, prev: *const Entropy, strategy: Strategy, raw_literals: bool) Target {
+        var plan: Target = .{ .tables = prev.* };
+        plan.prepareLiterals(store.lits[0..store.lit_len], prev, strategy, raw_literals);
+        plan.size = plan.literal_size + 4;
+        if (store.count != 0) {
+            plan.prepareSequences(store, prev, strategy);
+            plan.supported = .{ symbols(&plan.tables.ll), symbols(&plan.tables.ml), symbols(&plan.tables.of) };
+        }
+        return plan;
+    }
+
+    fn prepareLiterals(plan: *Target, lits: []const u8, prev: *const Entropy, strategy: Strategy, raw: bool) void {
+        plan.literal_size = lits.len;
+        if (raw or lits.len < 8) return;
+        var counts: [256]u32 = undefined;
+        const h = huffman.histogram(lits, &counts);
+        if (h.largest == lits.len) {
+            plan.huf_kind = .rle;
+            plan.literal_size = 1;
+            return;
+        }
+        if (h.largest <= (lits.len >> 7) + 4) return;
+        const used = counts[0 .. @as(usize, h.max_symbol) + 1];
+        const log = if (@backingInt(strategy) >= @backingInt(Strategy.btultra)) optimalDepth(used, lits.len, &plan.tables.huf) else huffman.optimalLog(huffman.encode_log, lits.len, h.max_symbol);
+        plan.tables.huf.build(used, log);
+        var len = plan.tables.huf.writeDescription(&plan.huf_description) orelse return;
+        var size = plan.tables.huf.estimate(used);
+        if (prev.huf_repeat != .none and prev.huf.covers(used) and prev.huf.estimate(used) <= size + len) {
+            plan.tables.huf = prev.huf;
+            len = plan.tables.huf.writeDescription(&plan.huf_description) orelse return;
+            size = plan.tables.huf.estimate(used);
+        }
+        if (size + len >= lits.len - minGain(lits.len, strategy)) return;
+        plan.huf_kind = .compressed;
+        plan.huf_len = len;
+        plan.tables.huf_repeat = .check;
+        plan.literal_size = size + len + 11;
+    }
+
+    fn prepareSequences(plan: *Target, store: *SeqStore, prev: *const Entropy, strategy: Strategy) void {
+        var counts: SeqStore.Counts = undefined;
+        store.toCodes(&counts);
+        const original = counts;
+        const n = store.count;
+        // Partition repeat histories can select either repeat-offset code,
+        // even if only one occurred in the original parse.
+        const added: usize = @intFromBool(counts.of[0] == 0) + @as(usize, @intFromBool(counts.of[1] == 0));
+        counts.of[0] = @max(1, counts.of[0]);
+        counts.of[1] = @max(1, counts.of[1]);
+        const ll = codeTable(LlTable, &counts.ll, store.ll_codes[n - 1], n, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, .none, &plan.tables.ll, &plan.tables.ll_repeat, strategy, &plan.sequence_description) orelse return;
+        var at = ll.len;
+        if (ll.mode == .compressed) plan.last_table = ll.len;
+        const of = codeTable(OfTable, &counts.of, store.of_codes[n - 1], n + added, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, .none, &plan.tables.of, &plan.tables.of_repeat, strategy, plan.sequence_description[at..]) orelse return;
+        at += of.len;
+        if (of.mode == .compressed) plan.last_table = of.len;
+        const ml = codeTable(MlTable, &counts.ml, store.ml_codes[n - 1], n, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, .none, &plan.tables.ml, &plan.tables.ml_repeat, strategy, plan.sequence_description[at..]) orelse return;
+        at += ml.len;
+        if (ml.mode == .compressed) plan.last_table = ml.len;
+        plan.sequence_len = at;
+        plan.modes = @as(u8, @backingInt(ll.mode)) << 6 | @as(u8, @backingInt(of.mode)) << 4 | @as(u8, @backingInt(ml.mode)) << 2;
+        plan.size = plan.literal_size + 8 + at + estimateSymbols(ll.mode, &plan.tables.ll, &original.ll, &codes.ll_bits, &codes.ll_default, codes.ll_default_log) + estimateSymbols(of.mode, &plan.tables.of, &original.of, &codes.of_bits, &codes.of_default, codes.of_default_log) + estimateSymbols(ml.mode, &plan.tables.ml, &original.ml, &codes.ml_bits, &codes.ml_default, codes.ml_default_log);
+    }
+
+    fn symbols(table: anytype) u64 {
+        if (table.log == 0) return @as(u64, 1) << @intCast(table.symbols);
+        var mask: u64 = 0;
+        for (0..64) |symbol| if (table.bitCost(@intCast(symbol)) != null) {
+            mask |= @as(u64, 1) << @intCast(symbol);
+        };
+        return mask;
+    }
+
+    fn covers(plan: *const Target, store: *const SeqStore) bool {
+        var used: [3]u64 = @splat(0);
+        for (store.ll_codes[0..store.count], store.ml_codes[0..store.count], store.of_codes[0..store.count]) |ll, ml, of| {
+            used[0] |= @as(u64, 1) << @intCast(ll);
+            used[1] |= @as(u64, 1) << @intCast(ml);
+            used[2] |= @as(u64, 1) << @intCast(of);
+        }
+        return (used[0] & ~plan.supported[0]) | (used[1] & ~plan.supported[1]) | (used[2] & ~plan.supported[2]) == 0;
+    }
+
+    pub fn compress(plan: *Target, store: *SeqStore, len: usize, prev: *const Entropy, next: *Entropy, strategy: Strategy, raw_literals: bool, out: []u8) usize {
+        if (!plan.covers(store)) {
+            const n = compressBlock(store, len, prev, next, strategy, raw_literals, out);
+            if (n != 0) {
+                plan.huf_sent = false;
+                plan.sequence_sent = false;
+            }
+            return n;
+        }
+        next.* = prev.*;
+        var huf_used = false;
+        var at = plan.literals(store.lits[0..store.lit_len], next, out, &huf_used) orelse return 0;
+        const n = store.count;
+        const count_bytes: usize = if (n < 128) 1 else if (n < 0x7f00) 2 else 3;
+        if (out.len - at < count_bytes + @intFromBool(n != 0)) return 0;
+        if (n < 128) out[at] = @intCast(n) else if (n < 0x7f00) {
+            out[at] = @intCast((n >> 8) + 0x80);
+            out[at + 1] = @truncate(n);
+        } else {
+            out[at] = 0xff;
+            std.mem.writeInt(u16, out[at + 1 ..][0..2], @intCast(n - 0x7f00), .little);
+        }
+        at += count_bytes;
+        if (n != 0) {
+            out[at] = if (plan.sequence_sent) 0xfc else plan.modes;
+            at += 1;
+            if (!plan.sequence_sent) {
+                if (out.len - at < plan.sequence_len) return 0;
+                @memcpy(out[at..][0..plan.sequence_len], plan.sequence_description[0..plan.sequence_len]);
+                at += plan.sequence_len;
+            }
+            const stream = encodeSequences(store, &plan.tables.ll, &plan.tables.of, &plan.tables.ml, out[at..]) orelse return 0;
+            if (!plan.sequence_sent and plan.last_table != 0 and plan.last_table + stream < 4) return 0;
+            at += stream;
+            next.ll = plan.tables.ll;
+            next.of = plan.tables.of;
+            next.ml = plan.tables.ml;
+            next.ll_repeat = .check;
+            next.of_repeat = .check;
+            next.ml_repeat = .check;
+        }
+        if (at >= len - minGain(len, strategy)) return 0;
+        if (huf_used) plan.huf_sent = true;
+        if (n != 0) plan.sequence_sent = true;
+        return at;
+    }
+
+    fn literals(plan: *const Target, lits: []const u8, next: *Entropy, out: []u8, used: *bool) ?usize {
+        if (lits.len == 0 or plan.huf_kind == .predefined) return rawLiterals(lits, out);
+        if (plan.huf_kind == .rle) return rleLiterals(lits, out);
+        const description = if (plan.huf_sent) 0 else plan.huf_len;
+        // A new tree may expand a small literal section. Reserve enough
+        // bits for both regenerated and compressed sizes before emission.
+        const bound = lits.len + description;
+        const header: usize = 3 + @as(usize, @intFromBool(bound >= 1024)) + @intFromBool(bound >= 16384);
+        if (out.len < header + description + 1) return null;
+        @memcpy(out[header..][0..description], plan.huf_description[0..description]);
+        const single = header == 3;
+        const body = if (single) huffman.compress1(&plan.tables.huf, lits, out[header + description ..]) else huffman.compress4(&plan.tables.huf, lits, out[header + description ..]);
+        const size = description + body;
+        if (body == 0 or size >= lits.len + description or (plan.huf_sent and size >= lits.len)) return rawLiterals(lits, out);
+        const kind: u32 = if (plan.huf_sent) 3 else 2;
+        switch (header) {
+            3 => std.mem.writeInt(u24, out[0..3], @intCast(kind | @as(u32, @intFromBool(!single)) << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @intCast(size)) << 14), .little),
+            4 => std.mem.writeInt(u32, out[0..4], kind | 2 << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @intCast(size)) << 18, .little),
+            else => {
+                std.mem.writeInt(u32, out[0..4], kind | 3 << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @truncate(size << 22)), .little);
+                out[4] = @intCast(size >> 10);
+            },
+        }
+        next.huf = plan.tables.huf;
+        next.huf_repeat = .check;
+        used.* = true;
+        return header + size;
+    }
+};
+
 // ---- literals ----
 
 fn rawLiterals(lits: []const u8, out: []u8) ?usize {

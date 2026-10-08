@@ -265,3 +265,12 @@ benchmarks and never times them.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+A streaming command example is built without installation:
+
+```sh
+zig build zstd-cli -Doptimize=ReleaseFast -- compress 3 < input > output.zst
+zig build zstd-cli -Doptimize=ReleaseFast -- decompress < output.zst > restored
+```
+
+The optional argument to `decompress` is the maximum window log (27 by default).

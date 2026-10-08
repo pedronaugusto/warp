@@ -40,6 +40,16 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(examples);
     check.dependOn(&example.step);
 
+    const zstd_cli = b.addExecutable(.{
+        .name = "zstd-cli",
+        .root_module = b.createModule(.{ .root_source_file = b.path("bench/cli/zstd.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "warp", .module = module }} }),
+    });
+    const cli_run = b.addRunArtifact(zstd_cli);
+    cli_run.stdio = .inherit;
+    cli_run.addPassthruArgs();
+    b.step("zstd-cli", "Run the streaming zstd command example").dependOn(&cli_run.step);
+    check.dependOn(&zstd_cli.step);
+
     // No Io and no OS calls but CPU detection: the library builds for a
     // target with no OS at all, and for a 32-bit and a big-endian one.
     const legs = [_]struct { name: []const u8, query: std.Target.Query }{

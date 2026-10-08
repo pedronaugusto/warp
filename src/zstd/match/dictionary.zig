@@ -10,6 +10,11 @@ pub const Index = struct {
     chain: []u32,
     log: u5,
 
+    /// Earlier bytes cannot be named by an offBase (distance plus three).
+    pub fn contentLen(len: usize) usize {
+        return @min(len, std.math.maxInt(u32) - 3);
+    }
+
     pub fn hashLog(len: usize) u5 {
         return @intCast(std.math.clamp(std.math.log2_int(usize, @max(len, 1)), 6, 17));
     }
