@@ -101,7 +101,7 @@ fn allocationFailures(gpa: std.mem.Allocator) !void {
 
 test "zstd parallel: allocation failures and invalid options" {
     try testing.checkAllAllocationFailures(testing.allocator, allocationFailures, .{});
-    for ([_]zstd.parallel.Options{ .{ .concurrency = 0 }, .{ .overlap_log = 10 }, .{ .job_len = 0 }, .{ .job_len = 1 << 30 } }) |options| {
+    for ([_]zstd.parallel.Options{ .{ .concurrency = 0 }, .{ .overlap_log = 10 }, .{ .job_len = 0 }, .{ .job_len = (1 << 30) + 1 } }) |options| {
         try testing.expectEqual(std.math.maxInt(usize), zstd.parallel.Compressor.memory(options));
         try testing.expectError(error.InvalidOptions, zstd.parallel.Compressor.init(testing.allocator, options));
     }
