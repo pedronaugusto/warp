@@ -260,7 +260,7 @@ fn gzipHeader(st: *State, s: *inflate.Stream, source: anytype, options: Options)
         const fed = feed(st, &byte, fields);
         if (fed.status == .invalid) return refuse(st, s, fed.reason);
         source.commit(s);
-        if (fed.status == .done) return headerDone(st, s, fields);
+        if (fed.status == .done) return headerDone(st, s, fields, options.keep_history);
     }
     // Only zero bytes past the end, if anything, are left in hand.
     s.ip -= s.virtual;
@@ -274,17 +274,18 @@ fn gzipHeader(st: *State, s: *inflate.Stream, source: anytype, options: Options)
         s.ip += fed.used;
         if (fed.status == .invalid) return refuse(st, s, fed.reason);
         source.commit(s);
-        if (fed.status == .done) return headerDone(st, s, fields);
+        if (fed.status == .done) return headerDone(st, s, fields, options.keep_history);
     }
 }
 
 fn feed(st: *State, bytes: []const u8, fields: ?*gzip.Fields) gzip.Parser.Fed {
+    st.header.verify = st.verify;
     if (fields) |f| return st.header.feed(bytes, f);
     return st.header.feed(bytes, gzip.skip);
 }
 
-/// A member's header is read: its body starts, with no history.
-fn headerDone(st: *State, s: *inflate.Stream, fields: ?*gzip.Fields) void {
+/// A member's header is read: start its body and checksum.
+fn headerDone(st: *State, s: *inflate.Stream, fields: ?*gzip.Fields, keep: bool) void {
     if (fields) |f| {
         const h = st.header.header();
         f.header.text = h.text;
@@ -295,7 +296,7 @@ fn headerDone(st: *State, s: *inflate.Stream, fields: ?*gzip.Fields) void {
     }
     s.start = s.op;
     st.checked = s.op;
-    replaceHistory(st, s, &.{});
+    if (!keep or st.members != 0) replaceHistory(st, s, &.{});
     st.check = 0;
     st.size = 0;
     st.engine = .{};

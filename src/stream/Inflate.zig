@@ -252,6 +252,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .window = @as(u32, 1) << z.options.window_bits,
         .partial = true,
         .stop_header = z.stop == .trees,
+        .stop_final = z.stop != .none,
         .diagnostic = &diagnostic,
     };
     source.commit(&s);

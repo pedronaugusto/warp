@@ -7,11 +7,13 @@ pub fn build(b: *std.Build) !void {
     addKernels(b, module, target, optimize);
     const library = b.addLibrary(.{ .name = "warp", .root_module = module });
     b.installArtifact(library);
+    var c_library: ?*std.Build.Step.Compile = null;
     if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
         const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
         addKernels(b, c_module, target, optimize);
-        const c_library = b.addLibrary(.{ .name = "z", .root_module = c_module });
-        b.installArtifact(c_library);
+        const artifact = b.addLibrary(.{ .name = "z", .root_module = c_module });
+        b.installArtifact(artifact);
+        c_library = artifact;
     }
 
     // Everything below is this repository's own: a project depending on
@@ -49,6 +51,7 @@ pub fn build(b: *std.Build) !void {
     const check = b.step("check", "Compile the tests, library, example and benchmarks without running them");
     check.dependOn(&tests.step);
     check.dependOn(&library.step);
+    if (c_library) |artifact| check.dependOn(&artifact.step);
 
     const cli = b.addExecutable(.{
         .name = "warp",
@@ -112,6 +115,19 @@ pub fn build(b: *std.Build) !void {
     const no_crc_step = b.step("check-no-crc", "Build with an explicitly disabled CRC CPU feature");
     no_crc_step.dependOn(&no_crc.step);
     check.dependOn(no_crc_step);
+    const abi_check = b.step("check-c-abi", "Compile the C ABI natively, for 32-bit Linux and with CRC disabled");
+    const abi_targets = [_]std.Build.ResolvedTarget{
+        target,
+        b.resolveTargetQuery(.{ .cpu_arch = .x86, .os_tag = .linux }),
+        no_crc_target,
+    };
+    for (abi_targets, 0..) |abi_target, i| {
+        const abi_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = abi_target, .optimize = .small });
+        addKernels(b, abi_module, abi_target, .small);
+        const object = b.addObject(.{ .name = b.fmt("check-c-abi-{d}", .{i}), .root_module = abi_module });
+        abi_check.dependOn(&object.step);
+    }
+    check.dependOn(abi_check);
     b.getInstallStep().dependOn(&tests.step);
     b.getInstallStep().dependOn(&example.step);
 

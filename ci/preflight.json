@@ -98,6 +98,11 @@
       "zig",
       "build",
       "check-assets"
+    ],
+    [
+      "zig",
+      "build",
+      "check-c-abi"
     ]
   ],
   "unreachable_exceptions": "ci/unreachable-exceptions.json",

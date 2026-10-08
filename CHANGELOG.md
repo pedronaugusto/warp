@@ -24,6 +24,8 @@ All notable changes to warp are documented here. The format follows
 - Raw Deflate64 decoding and the BGZF writer with virtual offsets.
 - Optional zlib C stream ABI, a host build helper for compressed assets,
   and a compression CLI example.
+- C retained-history resets, sync points, validation control, decode marks,
+  table-use introspection and reusable CRC combine operators.
 
 ### Fixed
 
@@ -41,3 +43,5 @@ All notable changes to warp are documented here. The format follows
 
 [Unreleased]: https://github.com/pedronaugusto/warp/commits/main
 - Level 10 considers a fixed-code parse for short blocks.
+- C block flushes stop before the final wrapper trailer; C ABI exports are
+  compiled for 32-bit targets and CPUs with CRC disabled.

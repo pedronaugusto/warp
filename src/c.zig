@@ -9,6 +9,7 @@ const container = @import("container.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const gzip = @import("gzip.zig");
 const crc = @import("checksum/crc.zig");
+const huffman = @import("huffman/decode.zig");
 
 pub const Stream = extern struct {
     next_in: [*c]const u8 = null,
@@ -205,8 +206,22 @@ pub export fn deflateEnd(stream: ?*Stream) c_int {
 pub export fn deflateReset(stream: ?*Stream) c_int {
     const z = stream orelse return stream_error;
     const s = state(z, .encode) orelse return stream_error;
-    s.encoder.options.dictionary = &.{};
-    s.encoder.reset(.nothing);
+    return resetDeflate(z, s, false);
+}
+
+pub export fn deflateResetKeep(stream: ?*Stream) c_int {
+    const z = stream orelse return stream_error;
+    const s = state(z, .encode) orelse return stream_error;
+    return resetDeflate(z, s, true);
+}
+
+fn resetDeflate(z: *Stream, s: *State, keep: bool) c_int {
+    const n = if (keep) @min(s.encoder.filled, s.dictionary.len) else 0;
+    if (n != 0) @memcpy(s.dictionary[0..n], s.encoder.window[s.encoder.filled - n .. s.encoder.filled]);
+    s.encoder.options.dictionary = s.dictionary[0..n];
+    s.encoder.reset(if (keep) .history else .nothing);
+    // ResetKeep starts a new checksum while preserving the LZ history.
+    if (n != 0 and s.encoder.options.container == .zlib) std.mem.writeInt(u32, s.encoder.pending[2..6], 1, .big);
     if (s.gzip_header != null) {
         s.encoder.pending_start = 0;
         s.encoder.pending_end = 0;
@@ -215,6 +230,8 @@ pub export fn deflateReset(stream: ?*Stream) c_int {
     }
     z.total_in = 0;
     z.total_out = 0;
+    z.msg = null;
+    z.data_type = 2;
     z.adler = s.encoder.check;
     return ok;
 }
@@ -341,7 +358,7 @@ pub export fn inflate(stream: ?*Stream, flush: c_int) c_int {
         z.data_type = @intCast(s.decoder.bitsleft);
         if (s.decoder.state.engine.final) z.data_type += 64;
         if (step.status == .block_end) {
-            z.data_type += if (s.decoder.state.engine.phase == .header) @as(c_int, 128) else if (flush == 6) @as(c_int, 256) else 0;
+            z.data_type += if (s.decoder.state.engine.phase == .header or s.decoder.state.engine.phase == .done) @as(c_int, 128) else if (flush == 6) @as(c_int, 256) else 0;
         }
         switch (step.status) {
             .done, .member_end => return stream_end,
@@ -360,7 +377,7 @@ pub export fn inflateSetDictionary(stream: ?*Stream, dictionary: [*c]const u8, l
     const bytes = if (len == 0) &.{} else dictionary[0..len];
     if (s.dictionary_id) |id| {
         if (checksum.adler32(1, bytes) != id) return data_error;
-        s.decoder.state = .{ .phase = .body, .wrapper = .zlib, .check = 1 };
+        s.decoder.state = .{ .phase = .body, .wrapper = .zlib, .check = 1, .verify = s.decoder.state.verify };
         s.decoder.in_total = s.header_len;
         s.header_ready = true;
         s.dictionary_id = null;
@@ -377,8 +394,18 @@ pub export fn inflateSetDictionary(stream: ?*Stream, dictionary: [*c]const u8, l
 pub export fn inflateReset(stream: ?*Stream) c_int {
     const z = stream orelse return stream_error;
     const s = state(z, .decode) orelse return stream_error;
+    return resetInflate(z, s, false);
+}
+
+pub export fn inflateResetKeep(stream: ?*Stream) c_int {
+    const z = stream orelse return stream_error;
+    const s = state(z, .decode) orelse return stream_error;
+    return resetInflate(z, s, true);
+}
+
+fn resetInflate(z: *Stream, s: *State, keep: bool) c_int {
     const verify = s.decoder.state.verify;
-    s.decoder.reset(.nothing);
+    s.decoder.reset(if (keep) .history else .nothing);
     s.decoder.state.verify = verify;
     s.syncing = false;
     s.sync_match = 0;
@@ -399,6 +426,61 @@ pub export fn inflateEnd(stream: ?*Stream) c_int {
     const s = state(z, .decode) orelse return stream_error;
     destroy(z, s);
     return ok;
+}
+
+pub export fn inflateSyncPoint(stream: ?*Stream) c_int {
+    const z = stream orelse return stream_error;
+    const s = state(z, .decode) orelse return stream_error;
+    return @intFromBool(s.decoder.state.phase == .body and s.decoder.state.engine.phase == .stored_lengths and s.decoder.bitsleft == 0);
+}
+
+pub export fn inflateValidate(stream: ?*Stream, check: c_int) c_int {
+    const z = stream orelse return stream_error;
+    const s = state(z, .decode) orelse return stream_error;
+    s.decoder.state.verify = check != 0;
+    return ok;
+}
+
+pub export fn inflateUndermine(stream: ?*Stream, subvert: c_int) c_int {
+    const z = stream orelse return stream_error;
+    _ = state(z, .decode) orelse return stream_error;
+    _ = subvert;
+    // The reference's default build never permits an invalid distance.
+    return data_error;
+}
+
+pub export fn inflateMark(stream: ?*Stream) c_long {
+    const z = stream orelse return -65536;
+    const s = state(z, .decode) orelse return -65536;
+    const engine = &s.decoder.state.engine;
+    if (s.decoder.state.phase != .body or z.data_type & 256 != 0) return -65536;
+    return switch (engine.phase) {
+        .stored => -65536 + @as(c_long, engine.stored_left),
+        .codes => if (engine.copy_left != 0)
+            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // safe: a DEFLATE match emits at most 258 bytes
+        else
+            0,
+        else => -65536,
+    };
+}
+
+fn tableUsed(table: []const u32, bits: u5) usize {
+    if (bits == 0) return 0;
+    const main = @as(usize, 1) << bits;
+    var used = main;
+    for (table[0..main]) |entry| if (entry & huffman.subtable_flag != 0 and entry & huffman.exceptional != 0 and entry & huffman.literal_flag == 0) {
+        const sub_bits: std.math.Log2Int(usize) = @intCast(huffman.codeword(entry)); // safe: a subtable uses at most 15 bits
+        used = @max(used, huffman.value(entry) + (@as(usize, 1) << sub_bits));
+    };
+    return used;
+}
+
+pub export fn inflateCodesUsed(stream: ?*Stream) c_ulong {
+    const z = stream orelse return std.math.maxInt(c_ulong);
+    const s = state(z, .decode) orelse return std.math.maxInt(c_ulong);
+    const engine = &s.decoder.state.engine;
+    if (engine.phase == .lengths) return @intCast(tableUsed(&s.decoder.tables.precode, engine.pre_bits));
+    return @intCast(tableUsed(&s.decoder.tables.litlen, engine.lbits) + tableUsed(&s.decoder.tables.dist, engine.dbits));
 }
 
 fn syncByte(s: *State, byte: u8) void {
@@ -755,6 +837,15 @@ pub fn crc32Combine(a: c_ulong, b: c_ulong, len: c_long) callconv(.c) c_ulong {
 pub fn crc32Combine64(a: c_ulong, b: c_ulong, len: i64) callconv(.c) c_ulong {
     return if (len < 0) 0 else checksum.crc32Combine(@truncate(a), @truncate(b), @intCast(len));
 }
+pub fn crc32CombineGen(len: c_long) callconv(.c) c_ulong {
+    return crc32CombineGen64(len);
+}
+pub fn crc32CombineGen64(len: i64) callconv(.c) c_ulong {
+    return crc.Crc(0xedb8_8320).xPow8nModP(@bitCast(len));
+}
+pub fn crc32CombineOp(a: c_ulong, b: c_ulong, op: c_ulong) callconv(.c) c_ulong {
+    return crc.Crc(0xedb8_8320).multiplyModP(@truncate(op), @truncate(a)) ^ @as(u32, @truncate(b));
+}
 pub fn adler32Combine(a: c_ulong, b: c_ulong, len: c_long) callconv(.c) c_ulong {
     return if (len < 0) 0xffffffff else checksum.adler32Combine(@truncate(a), @truncate(b), @intCast(len));
 }
@@ -772,6 +863,9 @@ comptime {
     @export(&adler32Z, .{ .name = "adler32_z" });
     @export(&crc32Combine, .{ .name = "crc32_combine" });
     @export(&crc32Combine64, .{ .name = "crc32_combine64" });
+    @export(&crc32CombineGen, .{ .name = "crc32_combine_gen" });
+    @export(&crc32CombineGen64, .{ .name = "crc32_combine_gen64" });
+    @export(&crc32CombineOp, .{ .name = "crc32_combine_op" });
     @export(&adler32Combine, .{ .name = "adler32_combine" });
     @export(&adler32Combine64, .{ .name = "adler32_combine64" });
 }

@@ -149,6 +149,8 @@ pub const Stream = struct {
     partial: bool = false,
     /// The stream ABI's tree flush stops after the next block header.
     stop_header: bool = false,
+    /// Private: the C ABI stops at a final block before its trailer.
+    stop_final: bool = false,
     diagnostic: ?*Diagnostic = null,
     deflate64: bool = false,
 
@@ -274,6 +276,9 @@ pub const State = struct {
     /// its distance.
     copy_left: u32 = 0,
     copy_distance: u32 = 0,
+    /// Introspection of a match suspended by a full output buffer.
+    copy_length: u32 = 0,
+    copy_bits: u16 = 0,
     /// A dynamic block's header so far: its counts, and how many code
     /// lengths are read (they are in the tables').
     hlit: u16 = 0,
@@ -282,7 +287,7 @@ pub const State = struct {
     read: u16 = 0,
     pre_bits: u5 = 0,
 
-    pub const Phase = enum { header, stored, precode, lengths, codes, done };
+    pub const Phase = enum { header, stored_lengths, stored, precode, lengths, codes, done };
 };
 
 /// Decode until a block ends, the final one ends, or the output is full
@@ -293,12 +298,23 @@ pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) E
     phase: switch (state.phase) {
         .header => {
             const next = try blockHeader(s, source, state);
-            if (s.stop_header and next != .precode) return .block_end;
+            if (s.stop_header and next != .precode and next != .stored_lengths) return .block_end;
             switch (next) {
-                .stored => continue :phase .stored,
+                .stored_lengths => continue :phase .stored_lengths,
                 .precode => continue :phase .precode,
                 else => continue :phase .codes,
             }
+        },
+        .stored_lengths => {
+            const lens = try s.take(source, 32);
+            const len: u16 = @truncate(lens);
+            if (len != ~@as(u16, @truncate(lens >> 16))) return s.fail(.stored_length);
+            s.alignToByte();
+            state.stored_left = len;
+            state.phase = .stored;
+            source.commit(s);
+            if (s.stop_header) return .block_end;
+            continue :phase .stored;
         },
         .stored => {
             if (!try stored(s, source, state)) return .output_full;
@@ -332,26 +348,19 @@ pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) E
 inline fn blockEnd(s: *Stream, source: anytype, state: *State) Status {
     state.phase = if (state.final) .done else .header;
     source.commit(s);
+    if (state.final and s.stop_final) return .block_end;
     return if (state.final) .done else .block_end;
 }
 
-/// A block's three header bits, and what follows them in the same unit: a
-/// stored block's lengths, or a dynamic block's counts. The part that
-/// follows.
+/// A block's three header bits and a dynamic block's counts. Stored
+/// lengths are a separate unit, so byte-aligned sync points are observable.
 inline fn blockHeader(s: *Stream, source: anytype, state: *State) Error!State.Phase {
     const header = try s.take(source, 3);
     const final = header & 1 != 0;
     switch (header >> 1) {
         0 => {
             s.consume(@intCast(s.bitsleft & 7));
-            const lens = try s.take(source, 32);
-            const len: u16 = @truncate(lens);
-            if (len != ~@as(u16, @truncate(lens >> 16))) return s.fail(.stored_length);
-            // The bit buffer holds whole bytes now; hand them back and copy
-            // from the input itself.
-            s.alignToByte();
-            state.stored_left = len;
-            state.phase = .stored;
+            state.phase = .stored_lengths;
         },
         1 => {
             state.fixed = true;
@@ -679,6 +688,8 @@ inline fn careful(s: *Stream, source: anytype, state: *State, litlen: []const u3
         copyCareful(s, distance, room);
         state.copy_left = @intCast(length - room);
         state.copy_distance = @intCast(distance);
+        state.copy_length = length;
+        state.copy_bits = @as(u16, lit.bits) + lit.extra + d.bits + d.extra;
         return .full;
     }
     copyCareful(s, distance, length);

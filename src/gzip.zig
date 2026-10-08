@@ -163,6 +163,8 @@ pub const Field = enum { extra, name, comment };
 /// checks it: the magic on two bytes, then the method and flags, then the
 /// header CRC when there is one.
 pub const Parser = struct {
+    /// Private: the C ABI's inflateValidate control.
+    verify: bool = true,
     part: Part = .fixed,
     /// Bytes of the current part read.
     at: u16 = 0,
@@ -245,7 +247,7 @@ pub const Parser = struct {
                         continue;
                     }
                     i += 1;
-                    if (@as(u16, in[i - 1]) << 8 | p.hcrc_low != @as(u16, @truncate(p.crc.final()))) return .{ .used = i, .status = .invalid, .reason = .header_crc };
+                    if (p.verify and (@as(u16, in[i - 1]) << 8 | p.hcrc_low != @as(u16, @truncate(p.crc.final())))) return .{ .used = i, .status = .invalid, .reason = .header_crc };
                     p.part = .done;
                 },
                 .done => break,

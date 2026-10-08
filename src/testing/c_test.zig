@@ -4,6 +4,7 @@ const testing = std.testing;
 const abi = @import("../c.zig");
 const Decompressor = @import("../Decompressor.zig");
 const shakedown = @import("shakedown");
+const gen = @import("gen");
 
 const Callbacks = struct {
     gpa: std.mem.Allocator,
@@ -277,6 +278,7 @@ test "C ABI tree flush stops after wrapper and block headers" {
     try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 6));
     try testing.expectEqual(@as(c_ulong, 0), d.total_out);
     try testing.expect(d.data_type & 256 != 0);
+    try testing.expectEqual(@as(c_long, -65536), abi.inflateMark(&d));
     try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 4));
     try testing.expectEqualStrings("abc", out[0..d.total_out]);
 }
@@ -329,4 +331,174 @@ test "C ABI decoding reports progress before a checksum error once" {
     try testing.expectEqual(@as(c_int, -3), abi.inflate(&d, 0));
     try testing.expectEqual(@as(c_ulong, 3), d.total_out);
     try testing.expectEqual(@as(c_ulong, encoded.len), d.total_in);
+}
+
+test "C ABI reports stored sync points and remaining copied bytes" {
+    const input = [_]u8{ 1, 3, 0, 252, 255, 'a', 'b', 'c' };
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit2(&d, -15, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [3]u8 = undefined;
+    d.next_in = &input;
+    d.avail_in = 1;
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_int, 1), abi.inflateSyncPoint(&d));
+    d.avail_in = 4;
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_int, 0), abi.inflateSyncPoint(&d));
+    try testing.expectEqual(@as(c_long, -65533), abi.inflateMark(&d));
+    d.avail_in = 3;
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 0));
+    try testing.expectEqualStrings("abc", &out);
+}
+
+test "C ABI mark follows a match across short output calls" {
+    const input = [_]u8{ 0x4b, 0x1c, 0x05, 0x00 };
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit2(&d, -15, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [259]u8 = undefined;
+    d.next_in = &input;
+    d.avail_in = input.len;
+    d.next_out = &out;
+    d.avail_out = 3;
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_long, (13 << 16) + 2), abi.inflateMark(&d));
+    try testing.expectEqual(@as(c_ulong, 0), abi.inflateCodesUsed(&d));
+    d.avail_out = 2;
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_long, (13 << 16) + 4), abi.inflateMark(&d));
+    d.avail_out = 254;
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_long, -65536), abi.inflateMark(&d));
+    for (out) |byte| try testing.expectEqual(@as(u8, 'a'), byte);
+}
+
+test "C ABI retained-history resets start a new raw stream" {
+    const input = "a vocabulary of repeated words, repeated words, repeated words";
+    var z: abi.Stream = .{};
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.deflateInit2(&z, 6, 8, -15, 8, 0, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.deflateEnd(&z);
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit2(&d, -15, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var encoded: [256]u8 = undefined;
+    var output: [input.len]u8 = undefined;
+    var previous: usize = 0;
+    for (0..2) |iteration| {
+        z.next_in = input;
+        z.avail_in = input.len;
+        z.next_out = &encoded;
+        z.avail_out = encoded.len;
+        try testing.expectEqual(@as(c_int, 1), abi.deflate(&z, 4));
+        if (iteration == 1) try testing.expect(z.total_out < previous);
+        previous = z.total_out;
+        d.next_in = &encoded;
+        d.avail_in = @intCast(z.total_out);
+        d.next_out = &output;
+        d.avail_out = output.len;
+        try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 0));
+        try testing.expectEqualStrings(input, &output);
+        try testing.expectEqual(@as(c_int, 0), abi.deflateResetKeep(&z));
+        try testing.expectEqual(@as(c_int, 0), abi.inflateResetKeep(&d));
+        try testing.expectEqual(@as(c_ulong, 0), z.total_in);
+        try testing.expectEqual(@as(c_ulong, 0), d.total_out);
+    }
+}
+
+test "C ABI validation can be disabled and enabled without relaxing distances" {
+    const input = [_]u8{ 0x78, 0x9c, 1, 3, 0, 252, 255, 'a', 'b', 'c', 0, 0, 0, 0 };
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [3]u8 = undefined;
+    try testing.expectEqual(@as(c_int, 0), abi.inflateValidate(&d, 0));
+    d.next_in = &input;
+    d.avail_in = input.len;
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 0));
+    try testing.expectEqualStrings("abc", &out);
+    try testing.expectEqual(@as(c_int, -3), abi.inflateUndermine(&d, 0));
+    try testing.expectEqual(@as(c_int, -3), abi.inflateUndermine(&d, 1));
+    try testing.expectEqual(@as(c_int, 0), abi.inflateReset(&d));
+    try testing.expectEqual(@as(c_int, 0), abi.inflateValidate(&d, 1));
+    d.next_in = &input;
+    d.avail_in = input.len;
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, -3), abi.inflate(&d, 0));
+}
+
+test "C ABI reusable CRC operators match checksum concatenation" {
+    const a = "words before";
+    const b = " and words after";
+    const ca = abi.crc32(0, a, a.len);
+    const cb = abi.crc32(0, b, b.len);
+    const op = abi.crc32CombineGen(b.len);
+    try testing.expectEqual(op, abi.crc32CombineGen64(b.len));
+    try testing.expectEqual(abi.crc32(0, a ++ b, a.len + b.len), abi.crc32CombineOp(ca, cb, op));
+    try testing.expectEqual(ca, abi.crc32CombineOp(ca, 0, abi.crc32CombineGen(0)));
+    try testing.expectEqual(cb, abi.crc32CombineOp(ca, cb, 0));
+}
+
+test "C ABI validation also controls the gzip header CRC" {
+    const input = [_]u8{ 31, 139, 8, 2, 0, 0, 0, 0, 0, 255, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    for ([_]c_int{ 0, 1 }) |check| {
+        var d: abi.Stream = .{};
+        try testing.expectEqual(@as(c_int, 0), abi.inflateInit2(&d, 31, abi.zlibVersion(), @sizeOf(abi.Stream)));
+        defer _ = abi.inflateEnd(&d);
+        try testing.expectEqual(@as(c_int, 0), abi.inflateValidate(&d, check));
+        var output: [1]u8 = undefined;
+        d.next_in = &input;
+        d.avail_in = input.len;
+        d.next_out = &output;
+        d.avail_out = output.len;
+        try testing.expectEqual(@as(c_int, if (check == 0) 1 else -3), abi.inflate(&d, 0));
+    }
+}
+
+test "C ABI table usage describes a dynamic block and resets" {
+    const input = try gen.alloc(testing.allocator, .text, 19, 4096);
+    defer testing.allocator.free(input);
+    const encoded = try testing.allocator.alloc(u8, input.len);
+    defer testing.allocator.free(encoded);
+    var length: c_ulong = encoded.len;
+    try testing.expectEqual(@as(c_int, 0), abi.compress2(encoded.ptr, &length, input.ptr, input.len, 6));
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    const output = try testing.allocator.alloc(u8, input.len);
+    defer testing.allocator.free(output);
+    d.next_in = encoded.ptr;
+    d.avail_in = @intCast(length);
+    d.next_out = output.ptr;
+    d.avail_out = @intCast(output.len);
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 0));
+    try testing.expect(abi.inflateCodesUsed(&d) > 0);
+    try testing.expectEqualSlices(u8, input, output);
+    try testing.expectEqual(@as(c_int, 0), abi.inflateReset(&d));
+    try testing.expectEqual(@as(c_ulong, 0), abi.inflateCodesUsed(&d));
+}
+
+test "C ABI block flush stops before a final wrapper trailer" {
+    var encoded: [128]u8 = undefined;
+    var length: c_ulong = encoded.len;
+    try testing.expectEqual(@as(c_int, 0), abi.compress2(&encoded, &length, "abc", 3, 0));
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [3]u8 = undefined;
+    d.next_in = &encoded;
+    d.avail_in = @intCast(length);
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 5));
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 5));
+    try testing.expectEqual(@as(c_uint, 4), d.avail_in);
+    try testing.expectEqual(@as(c_int, 192), d.data_type);
+    try testing.expectEqualStrings("abc", &out);
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 4));
 }

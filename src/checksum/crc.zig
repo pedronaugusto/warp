@@ -46,7 +46,8 @@ pub fn Crc(comptime polynomial: u32) type {
         }
 
         /// a·b mod P, both reflected.
-        fn multiplyModP(a: u32, b: u32) u32 {
+        pub fn multiplyModP(a: u32, b: u32) u32 {
+            if (a == 0) return 0;
             var m: u32 = 1 << 31;
             var p: u32 = 0;
             var bb = b;
@@ -74,7 +75,7 @@ pub fn Crc(comptime polynomial: u32) type {
         };
 
         /// x^(8n) mod P.
-        fn xPow8nModP(n: u64) u32 {
+        pub fn xPow8nModP(n: u64) u32 {
             var p: u32 = 1 << 31; // x^0
             var k: usize = 3;
             var rest = n;

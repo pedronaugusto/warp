@@ -200,9 +200,8 @@ decoded blocks to 64 KiB, and finishes with the canonical empty EOF member.
 `zig build -Dc-abi=true` also builds `libz.a`. The stream ABI supports raw,
 zlib, gzip and automatic decoding, caller allocation callbacks, dictionaries,
 flushes, level changes, resets, state copies, gzip headers, full-flush recovery,
-convenience calls and checksums. Use an existing zlib header when compiling C callers. File APIs,
-callback decoding, bit priming, fine-grained tuning and state introspection
-extensions are outside this surface.
+convenience calls, state introspection, retained-history resets and checksums. Use an existing zlib header when compiling C callers. File APIs,
+callback decoding, bit priming and fine-grained tuning are outside this surface.
 
 A consumer build can call `@import("warp").addCompressedAsset(b, dependency,
 .{ .source = b.path("asset.txt"), .name = "asset.gz" })`. The returned `LazyPath`
