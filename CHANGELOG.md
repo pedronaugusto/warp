@@ -40,6 +40,13 @@ All notable changes to warp are documented here. The format follows
   and AVX2 kernels chosen at run time.
 - `gzip.parseHeader` and `gzip.writeHeader` for every header field.
 
+### Fixed
+
+- Bound zstd long-distance warm-up state, avoiding counter overflow on long
+  streams, and size its match storage to the physical block capacity.
+- Refill parallel zstd compression workers as their ordered output is written,
+  retaining the shared wait for input that fits in one batch.
+
 [Unreleased]: https://github.com/pedronaugusto/warp/commits/main
 
 - Zstd compressed block targets prepare entropy once and reuse it across

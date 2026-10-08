@@ -149,6 +149,32 @@ test "zstd parallel: canceled jobs are joined and the compressor can be reused" 
     try testing.expectEqualSlices(u8, &input, &decoded);
 }
 
+test "zstd parallel: output failure joins jobs and allows both APIs to be reused" {
+    const gpa = testing.allocator;
+    const input = try gen.alloc(gpa, .text, 33, 8192);
+    defer gpa.free(input);
+    var p = try zstd.parallel.Compressor.init(gpa, .{ .job_len = 1024, .concurrency = 3, .tuning = .{ .window_log = 10 }, .frame = .{ .content_size = false } });
+    defer p.deinit();
+    var out: [16384]u8 = undefined;
+    var expected: [16384]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&expected);
+    try p.compress(testing.io, input, &sink);
+    const n = sink.buffered().len;
+    for ([_]bool{ false, true }) |read| {
+        // The header fits, while the jobs' output cannot all fit. Both
+        // early and later output failures leave worker memory reusable.
+        for ([_]usize{ 18, n / 2 }) |capacity| {
+            var small: std.Io.Writer = .fixed(out[0..capacity]);
+            var reader: std.Io.Reader = .fixed(input);
+            if (read) try testing.expectError(error.WriteFailed, p.compressReader(testing.io, &reader, &small)) else try testing.expectError(error.WriteFailed, p.compress(testing.io, input, &small));
+            sink = .fixed(&out);
+            reader = .fixed(input);
+            if (read) try p.compressReader(testing.io, &reader, &sink) else try p.compress(testing.io, input, &sink);
+            try testing.expectEqualSlices(u8, expected[0..n], sink.buffered());
+        }
+    }
+}
+
 test "zstd parallel decode: every captured frame, exact output and dictionaries" {
     const gpa = testing.allocator;
     var dictionaries = try captured.Dictionaries.load(gpa);

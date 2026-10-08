@@ -9,7 +9,8 @@ const bucket_log = 4;
 const bucket_size = 1 << bucket_log;
 
 pub const Entry = struct { index: u32, tag: u32 };
-pub const Match = struct { at: usize, len: usize, distance: u32 };
+// Positions fit the window's index space; lengths fit one block.
+pub const Match = struct { at: u32, len: u32, distance: u32 };
 
 pub const State = struct {
     entries: []Entry,
@@ -45,16 +46,19 @@ pub const State = struct {
         s.count = 0;
         var covered = start;
         const mask = s.heads.len - 1;
-        for (start..end) |at| {
+        const warm: usize = @min(s.bytes, min_match);
+        var at = start;
+        const warm_end = @min(end, start + @max(min_match - warm -| 1, min_match -| (start + 1)));
+        while (at < warm_end) : (at += 1) s.hash = (s.hash << 1) +% gear[w.in[at]];
+        while (at < end) : (at += 1) {
             s.hash = (s.hash << 1) +% gear[w.in[at]];
-            s.bytes += 1;
-            if (s.bytes < min_match or s.hash & 127 != 0 or at + 1 < min_match) continue;
+            if (s.hash & 127 != 0) continue;
             const pos = at + 1 - min_match;
             const curr = w.index(pos);
             const bucket: usize = @intCast((s.hash >> 7) & mask);
             const tag: u32 = @truncate(s.hash >> 32);
             const entries = s.entries[bucket * bucket_size ..][0..bucket_size];
-            var best: Match = .{ .at = pos, .len = 0, .distance = 0 };
+            var best: Match = .{ .at = @intCast(pos), .len = 0, .distance = 0 };
             if (pos >= covered) for (entries) |entry| {
                 if (entry.tag != tag or entry.index < w.low or entry.index >= curr) continue;
                 const candidate = w.at(entry.index);
@@ -66,7 +70,7 @@ pub const State = struct {
                 while (pos - back > covered and candidate - back > low and w.in[pos - back - 1] == w.in[candidate - back - 1]) back += 1;
                 len += back;
                 const distance = curr - entry.index;
-                if (len > best.len or (len == best.len and distance < best.distance)) best = .{ .at = pos - back, .len = len, .distance = distance };
+                if (len > best.len or (len == best.len and distance < best.distance)) best = .{ .at = @intCast(pos - back), .len = @intCast(len), .distance = distance };
             };
             const head = s.heads[bucket];
             entries[head] = .{ .index = curr, .tag = tag };
@@ -77,6 +81,7 @@ pub const State = struct {
                 covered = best.at + best.len;
             }
         }
+        s.bytes = warm + @min(min_match - warm, end - start);
         return s.matches[0..s.count];
     }
 };

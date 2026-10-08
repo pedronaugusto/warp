@@ -201,7 +201,7 @@ const Layout = struct {
             const p = resolve(options, if (options.max_input) |n| n else null);
             l.long_entries = @as(usize, 1) << long_match.State.hashLog(p);
             l.long_heads = l.long_entries >> 4;
-            l.long_matches = encode.block_max / 64 + 1;
+            l.long_matches = (l.lits - 32) / 64 + 1;
         }
         return l;
     }

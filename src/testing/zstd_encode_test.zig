@@ -27,6 +27,45 @@ test "zstd encoder: long-distance anchors recover distant random content at ever
     }
 }
 
+test "zstd encoder: long-distance warm state stays usable at the byte counter limit" {
+    const long_match = @import("../zstd/match/long.zig");
+    const gpa = testing.allocator;
+    const in = try inputs.alloc(gpa, .noise, 49, 128);
+    defer gpa.free(in);
+    var entries: [64]long_match.Entry = undefined;
+    var heads: [4]u8 = undefined;
+    var matches: [3]long_match.Match = undefined;
+    var actual = long_match.State.init(&entries, &heads, &matches);
+    var expected_entries: [64]long_match.Entry = undefined;
+    var expected_heads: [4]u8 = undefined;
+    var expected_matches: [3]long_match.Match = undefined;
+    var expected = long_match.State.init(&expected_entries, &expected_heads, &expected_matches);
+    // The counter only establishes that 64 preceding bytes warmed the hash.
+    // A long-running stream must remain equivalent to that bounded state.
+    actual.bytes = std.math.maxInt(usize);
+    expected.bytes = 64;
+    _ = actual.generate(.{ .in = in, .start = 2, .low = 2 }, 0, in.len);
+    _ = expected.generate(.{ .in = in, .start = 2, .low = 2 }, 0, in.len);
+    try testing.expectEqual(expected.hash, actual.hash);
+    try testing.expectEqual(expected.bytes, actual.bytes);
+}
+
+test "zstd encoder: long-distance matches fit storage beyond a small size hint" {
+    const gpa = testing.allocator;
+    const in = try inputs.alloc(gpa, .noise, 7, 20_000);
+    defer gpa.free(in);
+    for (1..in.len / 512) |i| @memcpy(in[i * 512 ..][0..512], in[0..512]);
+    var no_resize = shakedown.alloc.NoResize.init(gpa);
+    var counter: testing.FailingAllocator = .init(no_resize.allocator(), .{});
+    const options: Compressor.Options = .{ .max_input = 37, .tuning = .{ .long_distance = true, .window_log = 10 } };
+    var c = try Compressor.init(counter.allocator(), options);
+    defer c.deinit();
+    try testing.expectEqual(Compressor.memory(options), counter.allocated_bytes);
+    const allocations = counter.allocations;
+    try roundTrip(gpa, &c, in, .{});
+    try testing.expectEqual(allocations, counter.allocations);
+}
+
 test "zstd encoder: long-distance bucket wrap is deterministic across frames" {
     const gpa = testing.allocator;
     for ([_]inputs.Kind{ .text, .json, .periodic }) |kind| {

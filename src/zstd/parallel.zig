@@ -67,6 +67,8 @@ const Worker = struct {
     }
 };
 
+const Job = struct { group: Io.Group align(64) = .init };
+
 const Cuts = struct {
     rolling: u64 = 0,
     ring: [64]u8 = @splat(0),
@@ -120,6 +122,7 @@ pub const Compressor = struct {
     options: Options,
     cfg: Config,
     workers: []Worker,
+    jobs: []Job,
     history: []u8,
     owned: []align(64) u8 = &.{},
     gpa: std.mem.Allocator = undefined,
@@ -135,7 +138,7 @@ pub const Compressor = struct {
         const stride = enc +| std.mem.alignForward(usize, cfg.job_len + cfg.overlap + cfg.output_len, 64);
         const size = head +| stride *| @as(usize, options.concurrency) +| cfg.overlap;
         if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
-        return std.mem.alignForward(usize, size, 64);
+        return std.mem.alignForward(usize, size, 64) +| @as(usize, options.concurrency) *| @sizeOf(Job);
     }
 
     pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compressor {
@@ -160,7 +163,11 @@ pub const Compressor = struct {
             w.* = .{ .encoder = .initBuffer(@alignCast(buffer[at..][0..enc_size]), cfg.encoder), .input = buffer[at + enc_size ..][0 .. cfg.job_len + cfg.overlap], .output = buffer[at + enc_size + cfg.job_len + cfg.overlap ..][0..cfg.output_len] }; // safe: each worker starts at a 64-byte boundary
             at += enc_size + std.mem.alignForward(usize, cfg.job_len + cfg.overlap + cfg.output_len, 64);
         }
-        return .{ .options = options, .cfg = cfg, .workers = workers, .history = buffer[at..][0..cfg.overlap] };
+        const history = buffer[at..][0..cfg.overlap];
+        at = std.mem.alignForward(usize, at + cfg.overlap, 64);
+        const jobs: []Job = @alignCast(std.mem.bytesAsSlice(Job, buffer[at..][0 .. workers.len * @sizeOf(Job)])); // safe: jobs follow aligned worker storage
+        for (jobs) |*job| job.* = .{};
+        return .{ .options = options, .cfg = cfg, .workers = workers, .jobs = jobs, .history = history };
     }
 
     pub fn deinit(p: *Compressor) void {
@@ -185,13 +192,28 @@ pub const Compressor = struct {
         }
     }
 
+    fn queue(p: *Compressor, io: Io, w: *Worker, group: *Io.Group) void {
+        if (p.workers.len == 1) w.run(p.cfg.params) else group.async(io, Worker.run, .{ w, p.cfg.params });
+    }
+
+    fn borrow(p: *Compressor, io: Io, w: *Worker, in: []const u8, at: *usize, cuts: *Cuts, hash: *std.hash.XxHash64, group: *Io.Group) void {
+        const n = cuts.take(in[at.*..], p.cfg, p.options.rsyncable);
+        const prefix = @min(at.*, p.cfg.overlap);
+        w.bytes = in[at.* - prefix ..][0 .. prefix + n];
+        w.prefix = prefix;
+        w.first = at.* == 0;
+        if (p.options.frame.checksum) hash.update(in[at.*..][0..n]);
+        p.queue(io, w, group);
+        at.* += n;
+        cuts.count = 0;
+    }
+
     fn drain(p: *Compressor, io: Io, group: *Io.Group, count: usize, out: *Io.Writer) Error!void {
         try group.await(io);
         for (p.workers[0..count]) |*w| try out.writeAll(w.output[0..w.result]);
     }
 
-    /// Compress borrowed input into one frame, writing jobs in input order.
-    pub fn compress(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer) Error!void {
+    fn compressBatch(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer) Error!void {
         try p.header(out, in.len);
         var group: Io.Group = .init;
         defer group.cancel(io);
@@ -213,6 +235,31 @@ pub const Compressor = struct {
                 cuts.count = 0;
             }
             try p.drain(io, &group, count, out);
+        }
+        try p.trailer(out, &hash);
+    }
+
+    /// Compress borrowed input into one frame, writing jobs in input order.
+    pub fn compress(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer) Error!void {
+        if (!p.options.rsyncable and in.len <= p.cfg.job_len *| p.workers.len) return p.compressBatch(io, in, out);
+        try p.header(out, in.len);
+        defer for (p.jobs) |*job| job.group.cancel(io);
+        var hash: std.hash.XxHash64 = .init(0);
+        var cuts: Cuts = .{};
+        var at: usize = 0;
+        var pending: usize = 0;
+        for (p.workers, p.jobs) |*w, *job| {
+            if (at == in.len) break;
+            p.borrow(io, w, in, &at, &cuts, &hash, &job.group);
+            pending += 1;
+        }
+        var current: usize = 0;
+        while (pending != 0) {
+            const w = &p.workers[current];
+            try p.jobs[current].group.await(io);
+            try out.writeAll(w.output[0..w.result]);
+            if (at < in.len) p.borrow(io, w, in, &at, &cuts, &hash, &p.jobs[current].group) else pending -= 1;
+            current = (current + 1) % p.workers.len;
         }
         try p.trailer(out, &hash);
     }
@@ -285,38 +332,43 @@ pub const Compressor = struct {
         return count;
     }
 
+    fn readJob(p: *Compressor, io: Io, w: *Worker, source: *Source, cuts: *Cuts, history: *usize, first: *bool, eof: *bool, hash: *std.hash.XxHash64, group: *Io.Group) error{ReadFailed}!bool {
+        @memcpy(w.input[0..history.*], p.history[0..history.*]);
+        const n = try p.fill(source, w.input[history.*..], cuts, eof);
+        if (n == 0) return false;
+        w.bytes = w.input[0 .. history.* + n];
+        w.prefix = history.*;
+        w.first = first.*;
+        first.* = false;
+        if (p.options.frame.checksum) hash.update(w.bytes[history.*..]);
+        history.* = @min(w.bytes.len, p.cfg.overlap);
+        @memcpy(p.history[0..history.*], w.bytes[w.bytes.len - history.* ..]);
+        p.queue(io, w, group);
+        return true;
+    }
+
     /// Stream jobs from a reader; its frame omits the unknown content size.
     pub fn compressReader(p: *Compressor, io: Io, in: *Io.Reader, out: *Io.Writer) (Error || error{ReadFailed})!void {
         try p.header(out, null);
-        var group: Io.Group = .init;
-        defer group.cancel(io);
+        defer for (p.jobs) |*job| job.group.cancel(io);
         var hash: std.hash.XxHash64 = .init(0);
         var cuts: Cuts = .{};
         var history: usize = 0;
         var first = true;
         var source: Source = .{ .reader = in };
         var eof = false;
-        while (!eof) {
-            var count: usize = 0;
-            while (count < p.workers.len) : (count += 1) {
-                const w = &p.workers[count];
-                @memcpy(w.input[0..history], p.history[0..history]);
-                const n = try p.fill(&source, w.input[history..], &cuts, &eof);
-                if (n == 0) break;
-                w.bytes = w.input[0 .. history + n];
-                w.prefix = history;
-                w.first = first;
-                first = false;
-                if (p.options.frame.checksum) hash.update(w.bytes[history..]);
-                history = @min(w.bytes.len, p.cfg.overlap);
-                @memcpy(p.history[0..history], w.bytes[w.bytes.len - history ..]);
-                if (p.workers.len == 1) w.run(p.cfg.params) else group.async(io, Worker.run, .{ w, p.cfg.params });
-                if (eof) {
-                    count += 1;
-                    break;
-                }
-            }
-            try p.drain(io, &group, count, out);
+        var pending: usize = 0;
+        for (p.workers, p.jobs) |*w, *job| {
+            if (eof or !try p.readJob(io, w, &source, &cuts, &history, &first, &eof, &hash, &job.group)) break;
+            pending += 1;
+        }
+        var current: usize = 0;
+        while (pending != 0) {
+            const w = &p.workers[current];
+            try p.jobs[current].group.await(io);
+            try out.writeAll(w.output[0..w.result]);
+            if (eof or !try p.readJob(io, w, &source, &cuts, &history, &first, &eof, &hash, &p.jobs[current].group)) pending -= 1;
+            current = (current + 1) % p.workers.len;
         }
         try p.trailer(out, &hash);
     }
