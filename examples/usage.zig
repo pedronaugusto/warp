@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(stream);
     const n = try compressor.compress(data, stream, frame);
 
-    // About 11 KiB of tables and no stream state: one serves any number of
+    // About 12 KiB of tables and no stream state: one serves any number of
     // calls. Room for `inflate_margin` more bytes lets the fast loop run to
     // the end; the exact size works too.
     var decompressor: warp.Decompressor = .init;

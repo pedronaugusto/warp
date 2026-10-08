@@ -34,7 +34,7 @@ const stream = try gpa.alloc(u8, warp.Compressor.bound(data.len, frame));
 defer gpa.free(stream);
 const n = try compressor.compress(data, stream, frame);
 
-// About 11 KiB of tables and no stream state: one serves any number of
+// About 12 KiB of tables and no stream state: one serves any number of
 // calls. Room for `inflate_margin` more bytes lets the fast loop run to
 // the end; the exact size works too.
 var decompressor: warp.Decompressor = .init;
@@ -88,7 +88,7 @@ std.debug.assert(warp.adler32(1, data) == warp.Adler32.hash(data));
 [Architecture, ownership and invariants](docs/design.md).
 
 **Decoding.** A `Decompressor` is the decoding tables of the current block,
-11,488 bytes, and nothing else: it holds no stream, so one per thread serves every
+11,824 bytes on a 64-bit target, and nothing else: it holds no stream, so one per thread serves every
 call and every container. The output buffer is the history. Each table entry is
 one `u32` holding a literal, a length or distance base with its extra bits, or a
 pointer to a subtable, and the count of bits it consumes, so a symbol is one load
