@@ -119,10 +119,8 @@ pub fn estimateLiterals(lits: []const u8, prev: *const Entropy, strategy: Strate
     if (h.largest <= (lits.len >> 7) + 4) return lits.len;
     const used = counts[0 .. @as(usize, h.max_symbol) + 1];
     var table: huffman.EncodeTable = undefined;
-    const log = if (@backingInt(strategy) >= @backingInt(Strategy.btultra)) optimalDepth(used, lits.len, &table) else huffman.optimalLog(huffman.encode_log, lits.len, h.max_symbol);
-    table.build(used, log);
     var buf: [256]u8 = undefined;
-    const header = table.writeDescription(&buf) orelse return lits.len;
+    const header = literalTable(used, lits.len, &table, @backingInt(strategy) >= @backingInt(Strategy.btultra), &buf) orelse return lits.len;
     var size = table.estimate(used) + header;
     if (prev.huf_repeat != .none and prev.huf.covers(used)) size = @min(size, prev.huf.estimate(used));
     return size + 3 + @as(usize, @intFromBool(lits.len >= 1024)) + @intFromBool(lits.len >= 16384) + (if (lits.len >= 256) @as(usize, 6) else 0);
@@ -224,9 +222,7 @@ pub const Target = struct {
         }
         if (h.largest <= (lits.len >> 7) + 4) return;
         const used = counts[0 .. @as(usize, h.max_symbol) + 1];
-        const log = if (@backingInt(strategy) >= @backingInt(Strategy.btultra)) optimalDepth(used, lits.len, &plan.tables.huf) else huffman.optimalLog(huffman.encode_log, lits.len, h.max_symbol);
-        plan.tables.huf.build(used, log);
-        var len = plan.tables.huf.writeDescription(&plan.huf_description) orelse return;
+        var len = literalTable(used, lits.len, &plan.tables.huf, @backingInt(strategy) >= @backingInt(Strategy.btultra), &plan.huf_description) orelse return;
         var size = plan.tables.huf.estimate(used);
         if (prev.huf_repeat != .none and prev.huf.covers(used) and prev.huf.estimate(used) <= size + len) {
             plan.tables.huf = prev.huf;
@@ -467,9 +463,7 @@ fn huffmanLiterals(
     if (repeat.* == .check and !old.covers(used)) repeat.* = .none;
     if (prefer_repeat and repeat.* != .none) return withTable(old, lits, out, 0, single);
     var table: huffman.EncodeTable = undefined;
-    const log = if (optimal_depth) optimalDepth(used, lits.len, &table) else huffman.optimalLog(huffman.encode_log, lits.len, h.max_symbol);
-    table.build(used, log);
-    const header = table.writeDescription(out) orelse return null;
+    const header = literalTable(used, lits.len, &table, optimal_depth, out) orelse return null;
     if (repeat.* != .none) {
         const old_size = old.estimate(used);
         const new_size = table.estimate(used);
@@ -481,29 +475,38 @@ fn huffmanLiterals(
     return withTable(new, lits, out, header, single);
 }
 
-/// The table log that makes description plus data smallest, searched up
-/// from the smallest that holds every symbol (the strongest strategies).
-fn optimalDepth(counts: []const u32, len: usize, scratch: *huffman.EncodeTable) u4 {
+/// Build the selected literal table and its description once. Strong
+/// strategies retain the best candidate instead of rebuilding and encoding
+/// its description after the depth search.
+fn literalTable(counts: []const u32, len: usize, table: *huffman.EncodeTable, optimal: bool, out: []u8) ?usize {
+    if (!optimal) {
+        table.build(counts, huffman.optimalLog(huffman.encode_log, len, @intCast(counts.len - 1)));
+        return table.writeDescription(out);
+    }
     var symbols: u32 = 0;
     for (counts) |c| symbols += @intFromBool(c != 0);
     const min: u4 = @intCast(std.math.log2_int(u32, symbols) + 1);
     var best: usize = std.math.maxInt(usize) - 1;
-    var best_log: u4 = huffman.encode_log;
+    var best_header: usize = 0;
+    const tree = huffman.EncodeTable.Tree.init(counts);
+    var candidate: huffman.EncodeTable = undefined;
     var buf: [256]u8 = undefined;
     var log = min;
     while (log <= huffman.encode_log) : (log += 1) {
-        scratch.build(counts, log);
-        if (scratch.log < log and log > min) break;
-        const header = scratch.writeDescription(&buf) orelse continue;
-        const size = scratch.estimate(counts) + header;
+        tree.write(&candidate, log);
+        if (candidate.log < log and log > min) break;
+        const header = candidate.writeDescription(&buf) orelse continue;
+        const size = candidate.estimate(counts) + header;
         if (size > best + 1) break;
         if (size < best) {
             best = size;
-            best_log = log;
+            best_header = header;
+            table.* = candidate;
+            if (out.len >= header) @memcpy(out[0..header], buf[0..header]);
         }
     }
-    _ = len;
-    return best_log;
+    if (best_header == 0 or out.len < best_header) return null;
+    return best_header;
 }
 
 fn withTable(table: *const huffman.EncodeTable, lits: []const u8, out: []u8, header: usize, single: bool) ?usize {

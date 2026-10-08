@@ -301,9 +301,9 @@ fn lockstepSingle(t: *const Table, r: *[4]bits.Reader, out: []u8, op: *[4]usize)
             inline for (0..4) |s| out[op[s] + k] = lookupSingle(cells, log, &r[s]);
         }
         inline for (0..4) |s| op[s] += 4;
-        var full = true;
-        inline for (0..4) |s| full = full and r[s].reloadFast() == .unfinished;
-        if (!full) break;
+        var status: u2 = 0;
+        inline for (0..4) |s| status |= @backingInt(r[s].reloadFast());
+        if (status != 0) break;
     }
 }
 
@@ -316,9 +316,9 @@ fn lockstepDouble(t: *const Table, r: *[4]bits.Reader, out: []u8, op: *[4]usize)
         inline for (0..4) |_| {
             inline for (0..4) |s| op[s] += lookupDouble(cells, log, &r[s], out[op[s]..].ptr);
         }
-        var full = true;
-        inline for (0..4) |s| full = full and r[s].reloadFast() == .unfinished;
-        if (!full) break;
+        var status: u2 = 0;
+        inline for (0..4) |s| status |= @backingInt(r[s].reloadFast());
+        if (status != 0) break;
     }
 }
 
@@ -439,76 +439,97 @@ pub const EncodeTable = struct {
         t.log = w.log;
     }
 
+    /// A sorted tree reused while comparing depth limits. It belongs to
+    /// the table-selection call, never to a frame or a public codec value.
+    pub const Tree = struct {
+        leaves: [max_symbols]Node,
+        count: usize,
+        max_symbol: u8,
+
+        pub fn init(counts: []const u32) Tree {
+            // Leaves by count, most frequent first, at 1..n; 0 is a sentinel.
+            var nodes: [2 * max_symbols + 2]Node = undefined;
+            nodes[0] = .{ .count = 1 << 31, .parent = 0, .symbol = 0, .bits = 0 };
+            const n = sortLeaves(counts, nodes[1..]);
+            std.debug.assert(n >= 2);
+            // Internal nodes from `start`, merged from the two queues.
+            const start = max_symbols + 1;
+            var low_s: usize = n;
+            var low_n: usize = start;
+            var next: usize = start;
+            const root = start + n - 2;
+            nodes[next].count = nodes[low_s].count + nodes[low_s - 1].count;
+            nodes[low_s].parent = @intCast(next);
+            nodes[low_s - 1].parent = @intCast(next);
+            next += 1;
+            low_s -= 2;
+            for (next..root + 1) |j| nodes[j].count = 1 << 30;
+            while (next <= root) : (next += 1) {
+                var pick: [2]usize = undefined;
+                for (&pick) |*x| {
+                    if (nodes[low_s].count < nodes[low_n].count) {
+                        x.* = low_s;
+                        low_s -= 1;
+                    } else {
+                        x.* = low_n;
+                        low_n += 1;
+                    }
+                }
+                nodes[next].count = nodes[pick[0]].count + nodes[pick[1]].count;
+                nodes[pick[0]].parent = @intCast(next);
+                nodes[pick[1]].parent = @intCast(next);
+            }
+            nodes[root].bits = 0;
+            var j = root;
+            while (j > start) {
+                j -= 1;
+                nodes[j].bits = nodes[nodes[j].parent].bits + 1;
+            }
+            for (nodes[1 .. n + 1]) |*leaf| leaf.bits = nodes[leaf.parent].bits + 1;
+            var tree: Tree = .{ .leaves = undefined, .count = n, .max_symbol = @intCast(counts.len - 1) };
+            @memcpy(tree.leaves[0..n], nodes[1 .. n + 1]);
+            return tree;
+        }
+
+        pub fn write(tree: *const Tree, t: *EncodeTable, max_bits: u4) void {
+            var leaves: [max_symbols]Node = undefined;
+            @memcpy(leaves[0..tree.count], tree.leaves[0..tree.count]);
+            const max = limitHeight(leaves[0..tree.count], max_bits);
+            // Codewords: per length from the longest, values in symbol order.
+            var per_len: [max_log + 2]u16 = @splat(0);
+            @memset(&t.lens, 0);
+            for (leaves[0..tree.count]) |leaf| {
+                per_len[leaf.bits] += 1;
+                t.lens[leaf.symbol] = leaf.bits;
+            }
+            var value: [max_log + 2]u16 = @splat(0);
+            var min: u16 = 0;
+            var l: usize = max;
+            while (l > 0) : (l -= 1) {
+                value[l] = min;
+                min += per_len[l];
+                min >>= 1;
+            }
+            for (t.lens[0 .. @as(usize, tree.max_symbol) + 1], t.codes[0 .. @as(usize, tree.max_symbol) + 1], t.cells[0 .. @as(usize, tree.max_symbol) + 1]) |len, *code, *cell| {
+                if (len == 0) {
+                    code.* = 0;
+                    cell.* = 0;
+                    continue;
+                }
+                code.* = value[len];
+                cell.* = @as(u32, code.*) << 8 | len;
+                value[len] += 1;
+            }
+            t.max_symbol = tree.max_symbol;
+            t.log = max;
+        }
+    };
+
     /// A code for `counts` (symbols 0 to `counts.len - 1`, the last present),
     /// no code longer than `max_bits`; two or more symbols present.
     pub fn build(t: *EncodeTable, counts: []const u32, max_bits: u4) void {
-        // Leaves by count, most frequent first, at 1..n; 0 is a sentinel.
-        var nodes: [2 * max_symbols + 2]Node = undefined;
-        nodes[0] = .{ .count = 1 << 31, .parent = 0, .symbol = 0, .bits = 0 };
-        const n = sortLeaves(counts, nodes[1..]);
-        std.debug.assert(n >= 2);
-        // Internal nodes from `start`, merged from the two queues.
-        const start = max_symbols + 1;
-        var low_s: usize = n;
-        var low_n: usize = start;
-        var next: usize = start;
-        const root = start + n - 2;
-        nodes[next].count = nodes[low_s].count + nodes[low_s - 1].count;
-        nodes[low_s].parent = @intCast(next);
-        nodes[low_s - 1].parent = @intCast(next);
-        next += 1;
-        low_s -= 2;
-        for (next..root + 1) |j| nodes[j].count = 1 << 30;
-        while (next <= root) : (next += 1) {
-            var pick: [2]usize = undefined;
-            for (&pick) |*x| {
-                if (nodes[low_s].count < nodes[low_n].count) {
-                    x.* = low_s;
-                    low_s -= 1;
-                } else {
-                    x.* = low_n;
-                    low_n += 1;
-                }
-            }
-            nodes[next].count = nodes[pick[0]].count + nodes[pick[1]].count;
-            nodes[pick[0]].parent = @intCast(next);
-            nodes[pick[1]].parent = @intCast(next);
-        }
-        nodes[root].bits = 0;
-        var j = root;
-        while (j > start) {
-            j -= 1;
-            nodes[j].bits = nodes[nodes[j].parent].bits + 1;
-        }
-        for (nodes[1 .. n + 1]) |*leaf| leaf.bits = nodes[leaf.parent].bits + 1;
-        const max = limitHeight(nodes[1 .. n + 1], max_bits);
-        // Codewords: per length from the longest, values in symbol order.
-        var per_len: [max_log + 2]u16 = @splat(0);
-        @memset(&t.lens, 0);
-        for (nodes[1 .. n + 1]) |leaf| {
-            per_len[leaf.bits] += 1;
-            t.lens[leaf.symbol] = leaf.bits;
-        }
-        var value: [max_log + 2]u16 = @splat(0);
-        var min: u16 = 0;
-        var l: usize = max;
-        while (l > 0) : (l -= 1) {
-            value[l] = min;
-            min += per_len[l];
-            min >>= 1;
-        }
-        for (t.lens[0..counts.len], t.codes[0..counts.len], t.cells[0..counts.len]) |len, *code, *cell| {
-            if (len == 0) {
-                code.* = 0;
-                cell.* = 0;
-                continue;
-            }
-            code.* = value[len];
-            cell.* = @as(u32, code.*) << 8 | len;
-            value[len] += 1;
-        }
-        t.max_symbol = @intCast(counts.len - 1);
-        t.log = max;
+        const tree = Tree.init(counts);
+        tree.write(t, max_bits);
     }
 
     /// Bucket of a count: small counts each their own, larger ones by

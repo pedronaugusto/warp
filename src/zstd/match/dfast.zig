@@ -137,13 +137,13 @@ pub noinline fn compress(comptime mls: u4, long_table: []u32, long_log: u5, shor
 inline fn matches64(b: window.Bytes, prefix: usize, p: usize, i: usize) bool {
     const valid = i >= prefix;
     const q = if (valid) i else p;
-    return valid and b.load64(p) == b.load64(q);
+    return @intFromBool(valid) & @intFromBool(b.load64(p) == b.load64(q)) != 0;
 }
 
 inline fn matches32(b: window.Bytes, prefix: usize, p: usize, i: usize) bool {
     const valid = i >= prefix;
     const q = if (valid) i else p;
-    return valid and b.load32(p) == b.load32(q);
+    return @intFromBool(valid) & @intFromBool(b.load32(p) == b.load32(q)) != 0;
 }
 
 inline fn prefetch(b: window.Bytes, ip: usize) void {
