@@ -15,6 +15,8 @@ pub fn main(init: std.process.Init) !void {
     var levels: []const u8 = "-5,1,3,6,9,19";
     var long_distance = false;
     var checksum = true;
+    var concurrency: ?u16 = null;
+    var dictionary_path: ?[]const u8 = null;
     var runs: usize = 7;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -22,6 +24,12 @@ pub fn main(init: std.process.Init) !void {
             smoke = true;
         } else if (std.mem.eql(u8, args[i], "--long")) {
             long_distance = true;
+        } else if (std.mem.eql(u8, args[i], "--parallel") and i + 1 < args.len) {
+            i += 1;
+            concurrency = try std.fmt.parseInt(u16, args[i], 10);
+        } else if (std.mem.eql(u8, args[i], "--dictionary") and i + 1 < args.len) {
+            i += 1;
+            dictionary_path = args[i];
         } else if (std.mem.eql(u8, args[i], "--no-checksum")) {
             checksum = false;
         } else if (std.mem.eql(u8, args[i], "--file") and i + 1 < args.len) {
@@ -41,14 +49,17 @@ pub fn main(init: std.process.Init) !void {
     var stdout = Io.File.stdout().writer(io, &buffer);
     const writer = &stdout.interface;
     try writer.print("zstd | workload | level | input | compressed | encode MB/s | decode MB/s | memory\n", .{});
+    var dictionary: ?zstd.Dictionary = null;
+    if (dictionary_path) |path| dictionary = try zstd.Dictionary.parse(try Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited));
+    const dict: ?*const zstd.Dictionary = if (dictionary) |*d| d else null;
     if (file) |path| {
         const in = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
-        try workload(gpa, io, writer, path, in, levels, runs, long_distance, checksum);
+        try workload(gpa, io, writer, path, in, levels, runs, long_distance, checksum, dict, concurrency);
     } else {
         const len: usize = if (smoke) 20_000 else 4 << 20;
         for ([_]gen.Kind{ .text, .binary, .json, .noise, .runs, .png }) |kind| {
             const in = try gen.alloc(gpa, kind, 4, len);
-            try workload(gpa, io, writer, @tagName(kind), in, levels, runs, long_distance, checksum);
+            try workload(gpa, io, writer, @tagName(kind), in, levels, runs, long_distance, checksum, dict, concurrency);
         }
     }
     try setup(gpa, io, writer, if (smoke) 10 else 200_000, runs);
@@ -63,7 +74,8 @@ fn throughput(bytes: usize, ns: u64) f64 {
     return 1000 * @as(f64, @floatFromInt(bytes)) / @as(f64, @floatFromInt(@max(1, ns)));
 }
 
-fn workload(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, name: []const u8, in: []const u8, levels: []const u8, runs: usize, long_distance: bool, checksum: bool) !void {
+fn workload(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, name: []const u8, in: []const u8, levels: []const u8, runs: usize, long_distance: bool, checksum: bool, dictionary: ?*const zstd.Dictionary, concurrency: ?u16) !void {
+    if (concurrency) |count| return parallelWorkload(gpa, io, writer, name, in, levels, runs, checksum, dictionary, count);
     const out = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
     defer gpa.free(out);
     const back = try gpa.alloc(u8, in.len);
@@ -74,11 +86,11 @@ fn workload(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, name: []const u8
     var it = std.mem.splitScalar(u8, levels, ',');
     while (it.next()) |text| {
         const level = try std.fmt.parseInt(i32, text, 10);
-        const options: zstd.Compressor.Options = .{ .level = level, .max_input = in.len, .tuning = .{ .long_distance = long_distance } };
+        const options: zstd.Compressor.Options = .{ .level = level, .max_input = in.len, .tuning = .{ .long_distance = long_distance }, .dictionary = dictionary };
         var c = try zstd.Compressor.init(gpa, options);
         defer c.deinit();
         const n = try c.compress(in, out, .{ .checksum = checksum });
-        _ = try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64) });
+        _ = try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64), .dictionaries = if (dictionary) |dct| &.{dct} else &.{} });
         if (!std.mem.eql(u8, in, back)) return error.WrongOutput;
         var encode_ns: u64 = std.math.maxInt(u64);
         var decode_ns: u64 = std.math.maxInt(u64);
@@ -86,12 +98,12 @@ fn workload(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, name: []const u8
             const start = now(io);
             std.mem.doNotOptimizeAway(try c.compress(in, out, .{ .checksum = checksum }));
             const encoded = now(io);
-            std.mem.doNotOptimizeAway(try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64) }));
+            std.mem.doNotOptimizeAway(try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64), .dictionaries = if (dictionary) |dct| &.{dct} else &.{} }));
             const decoded = now(io);
             encode_ns = @min(encode_ns, @as(u64, @intCast(encoded - start)));
             decode_ns = @min(decode_ns, @as(u64, @intCast(decoded - encoded)));
         }
-        try writer.print("zstd | {s} | {d} | {d} | {d} | {d:.1} | {d:.1} | {d}\n", .{ name, level, in.len, n, throughput(in.len, encode_ns), throughput(in.len, decode_ns), zstd.Compressor.memory(options) });
+        try writer.print("{s} | {s} | {d} | {d} | {d} | {d:.1} | {d:.1} | {d}\n", .{ if (dictionary != null) "zstd-dict" else if (long_distance) "zstd-long" else "zstd", name, level, in.len, n, throughput(in.len, encode_ns), throughput(in.len, decode_ns), zstd.Compressor.memory(options) });
         try writer.flush();
     }
 }
@@ -120,4 +132,33 @@ fn setup(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, rounds: usize, runs
         }
         try writer.print("zstd-setup | {d} | {d} | {d} | {d:.1} | {d:.1}\n", .{ level, in.len, n, @as(f64, @floatFromInt(encode_ns)) / @as(f64, @floatFromInt(rounds)), @as(f64, @floatFromInt(decode_ns)) / @as(f64, @floatFromInt(rounds)) });
     };
+}
+
+fn parallelWorkload(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, name: []const u8, in: []const u8, levels: []const u8, runs: usize, checksum: bool, dictionary: ?*const zstd.Dictionary, concurrency: u16) !void {
+    const out = try gpa.alloc(u8, in.len + in.len / 32 + 4096);
+    defer gpa.free(out);
+    const back = try gpa.alloc(u8, in.len);
+    defer gpa.free(back);
+    const d = try gpa.create(zstd.Decompressor);
+    defer gpa.destroy(d);
+    d.* = .init;
+    var it = std.mem.splitScalar(u8, levels, ',');
+    while (it.next()) |text| {
+        const options: zstd.parallel.Options = .{ .level = try std.fmt.parseInt(i32, text, 10), .concurrency = concurrency, .dictionary = dictionary, .frame = .{ .checksum = checksum } };
+        var p = try zstd.parallel.Compressor.init(gpa, options);
+        defer p.deinit();
+        var best: u64 = std.math.maxInt(u64);
+        var n: usize = 0;
+        for (0..runs) |_| {
+            var sink: Io.Writer = .fixed(out);
+            const start = now(io);
+            try p.compress(io, in, &sink);
+            best = @min(best, @as(u64, @intCast(now(io) - start)));
+            n = sink.buffered().len;
+        }
+        _ = try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64), .dictionaries = if (dictionary) |dict| &.{dict} else &.{} });
+        if (!std.mem.eql(u8, in, back)) return error.WrongOutput;
+        try writer.print("zstd-parallel | {s} | {d} | {d} | {d} | {d:.1} | threads {d} | memory {d}\n", .{ name, options.level, in.len, n, throughput(in.len, best), concurrency, zstd.parallel.Compressor.memory(options) });
+        try writer.flush();
+    }
 }

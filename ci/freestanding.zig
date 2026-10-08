@@ -156,3 +156,18 @@ export fn warpZstdStreamDecompress(in: [*]const u8, in_len: usize, out: [*]u8, o
     };
     return -1;
 }
+
+/// Parallel job storage and both inputs with an Io supplied by the caller.
+export fn warpZstdParallel(io: *const std.Io, in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, rsyncable: bool) isize {
+    const options: warp.zstd.parallel.Options = .{ .job_len = 1024, .concurrency = 1, .tuning = .{ .window_log = 10 }, .rsyncable = rsyncable };
+    const size = warp.zstd.parallel.Compressor.memory(options);
+    if (size > memory.len) return -1;
+    var p = warp.zstd.parallel.Compressor.initBuffer(memory[0..size], options);
+    defer p.deinit();
+    var sink: std.Io.Writer = .fixed(out[0..out_len]);
+    p.compress(io.*, in[0..in_len], &sink) catch return -1;
+    sink = .fixed(out[0..out_len]);
+    var reader: std.Io.Reader = .fixed(in[0..in_len]);
+    p.compressReader(io.*, &reader, &sink) catch return -1;
+    return @intCast(sink.buffered().len);
+}

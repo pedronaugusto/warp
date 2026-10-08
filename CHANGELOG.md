@@ -21,6 +21,8 @@ All notable changes to warp are documented here. The format follows
   segment parameters and finalizes supplied content into a formatted dictionary.
 - Sparse long-distance matching on whole-buffer and streaming encoders,
   with a configurable window and deterministic bucket selection across frames.
+- `zstd.parallel`: ordered compression jobs in one frame, overlap priming,
+  rsyncable cuts, reader input and output independent of concurrency.
 - `zstd.seekable`: independent-frame output, seek-table validation, frame
   indexing and range reads, with caller storage and checksum verification.
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every

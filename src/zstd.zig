@@ -29,6 +29,8 @@ pub const Dictionary = @import("zstd/Dictionary.zig");
 pub const train = @import("zstd/train.zig");
 /// Independent frames, indexed ranges and seek table output.
 pub const seekable = @import("zstd/seekable.zig");
+/// Ordered jobs in one frame, with deterministic worker counts.
+pub const parallel = @import("zstd/parallel.zig");
 /// Whole-buffer decoding.
 pub const Decompressor = @import("zstd/Decompressor.zig");
 /// Resumable decoding and its reader adapter.

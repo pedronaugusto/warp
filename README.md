@@ -214,8 +214,11 @@ an output writer. `Index` validates the table and records frame offsets;
 storage. Frame and table checksums are verified by default. The writer's
 `frame_len` and `max_frames` bound staging and table storage at initialization.
 
-Parallel compression and latency-oriented
-compressed block sizing are still being built.
+`zstd.parallel.Compressor` writes ordered jobs into one frame, with overlap
+priming and optional `rsyncable` cuts. `compress` and `compressReader` take
+`Io` per call; concurrency does not change the encoded bytes. Job and overlap
+storage are reserved at initialization. Invalid job sizes are `InvalidOptions`.
+Latency-oriented compressed block sizing is still being built.
 
 ## Platforms
 

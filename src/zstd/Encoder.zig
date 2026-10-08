@@ -366,6 +366,54 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
     return o;
 }
 
+/// Encode a parallel job as non-final blocks. The leading `prefix` bytes
+/// prime the match tables; unknown repeat offsets are never emitted.
+pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: bool, out: []u8) CompressError!usize {
+    if (c.next_index + @as(u64, in.len) >= index_limit) {
+        c.reduceIndices(index_limit);
+        c.next_index = first_index;
+    }
+    const base = c.next_index;
+    c.next_index += @intCast(in.len + 1);
+    c.prepare(p, base);
+    var reps: [3]u32 = if (first_job) c.initialReps() else .{ 0, 0, 0 };
+    if (!first_job) c.entropy[0].reset();
+    const block_max = @min(encode.block_max, @as(usize, 1) << p.window_log);
+    var at: usize = 0;
+    var prime_reps: [3]u32 = .{ 0, 0, 0 };
+    while (at < prefix) {
+        const end = @min(prefix, at + block_max);
+        c.store.reset();
+        var w: window.Window = .{ .in = in, .start = base, .low = base };
+        w.low = w.lowFor(end, p.window_log);
+        if (end - at >= 8) _ = c.search(p, w, &prime_reps, at, end);
+        at = end;
+    }
+    var prev: usize = 0;
+    var o: usize = 0;
+    var savings: i64 = 0;
+    var first = true;
+    while (at < in.len) {
+        const len = blockSize(in[at..], block_max, p.strategy, savings);
+        const end = at + len;
+        var w: window.Window = .{ .in = in, .start = base, .low = base };
+        w.low = w.lowFor(end, p.window_log);
+        var next_reps = reps;
+        c.store.reset();
+        if (len >= 7) {
+            const tail = c.search(p, w, &next_reps, at, end);
+            c.store.storeLast(in[end - tail .. end]);
+        } else c.store.storeLast(in[at..end]);
+        if (first_job) c.mergeDictionary(in, at, end, at, p, reps, &next_reps);
+        const n = try c.writeBlocks(p, in[at..end], out[o..], p.strategy == .fast and p.target_length > 0, &reps, next_reps, &prev, first, false);
+        o += n;
+        savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));
+        at = end;
+        first = false;
+    }
+    return o;
+}
+
 pub fn writeBlocks(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, searched_reps: [3]u32, prev: *usize, first: bool, last: bool) CompressError!usize {
     var plan: post.Plan = .{};
     if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt) and p.window_log >= 17) {
