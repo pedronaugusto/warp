@@ -517,9 +517,6 @@ pub const Frame = struct {
     /// registers to it and runs 7-9% slower (measured on large frames).
     noinline fn execute(f: *Frame, comptime partial: bool, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
-        const ll_cells = &f.entropy.ll.cells;
-        const of_cells = &f.entropy.of.cells;
-        const ml_cells = &f.entropy.ml.cells;
         var ll_state = readState(&r, f.entropy.ll.log);
         var of_state = readState(&r, f.entropy.of.log);
         var ml_state = readState(&r, f.entropy.ml.log);
@@ -535,20 +532,22 @@ pub const Frame = struct {
         var o = op.*;
         var l = lp.*;
         var n = count;
+        // Fetch the next sequence's cells before copying this one's output.
+        // The copies can cover the dependent table loads' latency; the final
+        // sequence never reads an unused state or fetches another cell.
+        var next = SequenceCells.read(&f.entropy, .{ ll_state, ml_state, of_state });
         while (n > 0) : (n -= 1) {
             // ---- decode ----
-            const llc = ll_cells[ll_state];
-            const mlc = ml_cells[ml_state];
-            const ofc = of_cells[of_state];
+            const cell = next;
             var offset: u32 = undefined;
-            if (ofc.extra_bits > 1) {
-                offset = ofc.base + @as(u32, @intCast(r.readFast(@intCast(ofc.extra_bits))));
+            if (cell.of.extra_bits > 1) {
+                offset = cell.of.base + @as(u32, @intCast(r.readFast(@intCast(cell.of.extra_bits))));
                 rep2 = rep1;
                 rep1 = rep0;
                 rep0 = offset;
             } else {
-                const ll0 = llc.base == 0;
-                if (ofc.extra_bits == 0) {
+                const ll0 = cell.ll.base == 0;
+                if (cell.of.extra_bits == 0) {
                     // Repeat 1, or repeat 2 after no literals.
                     offset = if (ll0) rep1 else rep0;
                     rep1 = if (ll0) rep0 else rep1;
@@ -556,7 +555,7 @@ pub const Frame = struct {
                 } else {
                     // Repeat 2 or 3, or after no literals repeat 3 or
                     // repeat 1 less one.
-                    const index = ofc.base + @intFromBool(ll0) + @as(u32, @intCast(r.readFast(1)));
+                    const index = cell.of.base + @intFromBool(ll0) + @as(u32, @intCast(r.readFast(1)));
                     var rep: u32 = switch (index) {
                         1 => rep1,
                         2 => rep2,
@@ -571,16 +570,17 @@ pub const Frame = struct {
                 }
             }
             prefetchMatch(out, o, prefix, offset);
-            var ml: usize = mlc.base;
-            if (mlc.extra_bits > 0) ml += @intCast(r.readFast(@intCast(mlc.extra_bits)));
-            if (@as(u32, ofc.extra_bits) + mlc.extra_bits + llc.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
-            var ll: usize = llc.base;
-            if (llc.extra_bits > 0) ll += @intCast(r.readFast(@intCast(llc.extra_bits)));
+            var ml: usize = cell.ml.base;
+            if (cell.ml.extra_bits > 0) ml += @intCast(r.readFast(@intCast(cell.ml.extra_bits)));
+            if (@as(u32, cell.of.extra_bits) + cell.ml.extra_bits + cell.ll.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
+            var ll: usize = cell.ll.base;
+            if (cell.ll.extra_bits > 0) ll += @intCast(r.readFast(@intCast(cell.ll.extra_bits)));
             if (n > 1) {
-                ll_state = llc.next_state + @as(u32, @intCast(r.read(@intCast(llc.nb_bits))));
-                ml_state = mlc.next_state + @as(u32, @intCast(r.read(@intCast(mlc.nb_bits))));
-                of_state = ofc.next_state + @as(u32, @intCast(r.read(@intCast(ofc.nb_bits))));
+                ll_state = cell.ll.next_state + @as(u32, @intCast(r.read(@intCast(cell.ll.nb_bits))));
+                ml_state = cell.ml.next_state + @as(u32, @intCast(r.read(@intCast(cell.ml.nb_bits))));
+                of_state = cell.of.next_state + @as(u32, @intCast(r.read(@intCast(cell.of.nb_bits))));
                 _ = r.reload();
+                next = SequenceCells.read(&f.entropy, .{ ll_state, ml_state, of_state });
             }
 
             // ---- execute ----
@@ -684,6 +684,17 @@ pub const Frame = struct {
             return;
         }
         repeat(out[o_lit..].ptr, out[o_lit - offset ..].ptr, ml);
+    }
+};
+
+/// The three independent lookups for one sequence.
+const SequenceCells = struct {
+    ll: fse.SeqCell,
+    ml: fse.SeqCell,
+    of: fse.SeqCell,
+
+    inline fn read(entropy: *const Entropy, states: [3]u32) SequenceCells {
+        return .{ .ll = entropy.ll.cells[states[0]], .ml = entropy.ml.cells[states[1]], .of = entropy.of.cells[states[2]] };
     }
 };
 
