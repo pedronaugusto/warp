@@ -12,11 +12,15 @@ const Allocator = std.mem.Allocator;
 const params_ = @import("params.zig");
 const encode = @import("encode.zig");
 const frame = @import("frame.zig");
-const window = @import("match/window.zig");
-const fast = @import("match/fast.zig");
-const dfast = @import("match/dfast.zig");
-const lazy_ = @import("match/lazy.zig");
+const match = @import("match.zig");
+const window = match.window;
+const fast = match.fast;
+const dfast = match.dfast;
+const lazy_ = match.lazy;
+const opt_ = match.opt;
 const split = @import("split.zig");
+const post = @import("post.zig");
+const sequences = @import("sequences.zig");
 
 pub const Strategy = encode.Strategy;
 pub const Params = params_.Params;
@@ -31,6 +35,10 @@ chain_table: []u32,
 tag_table: []u8,
 /// Private: the chain and row matchfinders' insertion state.
 lazy: lazy_.State,
+/// Private: optimal parsing tables and adaptive prices.
+optimal: opt_.State,
+hash3_table: []u32,
+opt_workspace: ?*opt_.Workspace,
 /// Private: one block's sequences and literals.
 store: encode.SeqStore,
 /// Private: the tables the last block left, and the block's own.
@@ -106,8 +114,10 @@ const Layout = struct {
     tags: usize,
     seqs: usize,
     lits: usize,
+    hash3: usize,
+    opt: usize,
 
-    fn of(p: Params) Layout {
+    fn fromParams(p: Params) Layout {
         const block: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
         const with_rows = rows(p);
         // Rows serve large inputs; an input under 16 KiB is searched by
@@ -119,17 +129,34 @@ const Layout = struct {
             .tags = if (with_rows) @as(usize, 1) << p.hash_log else 0,
             .seqs = encode.SeqStore.capacity(block, p.min_match),
             .lits = block + 32,
+            .hash3 = if (p.min_match == 3) @as(usize, 1) << @min(17, p.window_log) else 0,
+            .opt = if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) @sizeOf(opt_.Workspace) else 0,
         };
     }
 
+    fn of(options: Options) Layout {
+        var l = fromParams(resolve(options, if (options.max_input) |n| n else null));
+        // Smaller size classes can select another strategy at the same
+        // level. Reserve all tables those calls may use, not only the
+        // strategy selected for the largest input.
+        for ([_]usize{ 0, 16 << 10, 128 << 10, 256 << 10 }) |n| {
+            if (options.max_input) |max| if (n > max) continue;
+            const small = fromParams(resolve(options, n));
+            inline for (.{ "hash", "chain", "tags", "seqs", "lits", "hash3", "opt" }) |field| {
+                @field(l, field) = @max(@field(l, field), @field(small, field));
+            }
+        }
+        return l;
+    }
+
     fn bytes(l: Layout) usize {
-        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits, 64);
+        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.hash3 * 4 + l.opt + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits, 64);
     }
 };
 
 /// The bytes `initBuffer` needs for `options`.
 pub fn memory(options: Options) usize {
-    return Layout.of(resolve(options, if (options.max_input) |n| n else null)).bytes();
+    return Layout.of(options).bytes();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
@@ -144,16 +171,20 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
 /// then frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
     const p = resolve(options, if (options.max_input) |n| n else null);
-    const l = Layout.of(p);
+    const l = Layout.of(options);
     std.debug.assert(buffer.len >= l.bytes());
     var at: usize = 0;
-    const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4]));
+    const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
     at += l.hash * 4;
-    const chain_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4]));
+    const chain_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
     at += l.chain * 4;
     const tag_table = buffer[at..][0..l.tags];
     at += l.tags;
-    const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)]));
+    const hash3_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash3 * 4])); // safe: preceding tables have sizes divisible by four
+    at += l.hash3 * 4;
+    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) @ptrCast(@alignCast(buffer[at..][0..l.opt])) else null; // safe: preceding tables and Workspace have four-byte alignment
+    at += l.opt;
+    const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)])); // safe: 64-byte base and preceding tables have sizes divisible by four
     at += l.seqs * @sizeOf(encode.Sequence);
     const codes_ = buffer[at..][0 .. 3 * l.seqs];
     at += 3 * l.seqs;
@@ -161,6 +192,7 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
     @memset(hash_table, 0);
     @memset(chain_table, 0);
     @memset(tag_table, 0);
+    @memset(hash3_table, 0);
     var c: Compressor = .{
         .options = options,
         .capacity = p,
@@ -168,6 +200,9 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
         .chain_table = chain_table,
         .tag_table = tag_table,
         .lazy = undefined,
+        .optimal = undefined,
+        .hash3_table = hash3_table,
+        .opt_workspace = opt_workspace,
         .store = .{ .seqs = seqs, .lits = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
         .entropy = undefined,
         .next_index = first_index,
@@ -204,17 +239,20 @@ pub fn bound(len: usize) usize {
 /// One complete frame of `in` into `out`; returns its length.
 pub fn compress(c: *Compressor, in: []const u8, out: []u8, f: Frame) CompressError!usize {
     var p = resolve(c.options, in.len);
-    p.hash_log = @min(p.hash_log, c.capacity.hash_log);
+    p.window_log = @min(p.window_log, c.capacity.window_log);
+    p.hash_log = @min(p.hash_log, std.math.log2_int(usize, c.hash_table.len));
     if (c.chain_table.len != 0) p.chain_log = @min(p.chain_log, std.math.log2_int(usize, c.chain_table.len));
-    if (c.next_index + @as(u64, in.len) >= index_limit) {
+    if (c.next_index + @as(u64, in.len) + encode.block_max >= index_limit) {
         @memset(c.hash_table, 0);
         @memset(c.chain_table, 0);
         @memset(c.tag_table, 0);
+        @memset(c.hash3_table, 0);
         c.next_index = first_index;
     }
-    const start = c.next_index;
+    var start = c.next_index;
     c.next_index += @intCast(in.len + 1);
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
+    if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
     var o = try writeHeader(out, p, in.len, f);
     const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
     var reps: [3]u32 = .{ 1, 4, 8 };
@@ -229,40 +267,30 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8, f: Frame) CompressErr
     while (true) {
         const len = blockSize(in[pos..], block_max, p.strategy, savings);
         const last = pos + len == in.len;
+        // The first ultra2 pass seeds prices. Advancing the virtual base
+        // invalidates its positions without clearing the large tables.
+        if (first and p.strategy == .btultra2 and len > 8) {
+            c.store.reset();
+            var seed_reps = reps;
+            _ = c.search(p, .{ .in = in, .start = start, .low = 0 }, &seed_reps, pos, pos + len);
+            c.store.reset();
+            start += @intCast(len);
+            c.next_index += @intCast(len);
+            c.optimal.next = start;
+            c.optimal.next3 = start;
+        }
         const w: window.Window = .{ .in = in, .start = start, .low = 0 };
         var block_w = w;
         block_w.low = w.lowFor(pos + len, p.window_log);
-        if (out.len - o < 3) return error.OutputTooSmall;
-        var size: usize = 0;
         var next_reps = reps;
-        // Blocks under 7 bytes are sent raw, as the reference sends them.
+        c.store.reset();
         if (len >= 7) {
-            c.store.reset();
             const rest = c.search(p, block_w, &next_reps, pos, pos + len);
             c.store.storeLast(in[pos + len - rest .. pos + len]);
-            size = encode.compressBlock(&c.store, len, &c.entropy[prev], &c.entropy[1 - prev], p.strategy, raw_literals, out[o + 3 ..]);
-            // A block of one byte repeated is RLE, but never the first:
-            // decoders up to zstd 1.4.3 refuse a frame that starts so.
-            if (!first and size < 25 and allSame(in[pos..][0..len])) size = 1;
-        }
-        const o_block = o;
-        if (size == 0) {
-            if (out.len - o - 3 < len) return error.OutputTooSmall;
-            std.mem.writeInt(u24, out[o..][0..3], @intCast(@as(usize, @intFromBool(last)) | len << 3), .little);
-            @memcpy(out[o + 3 ..][0..len], in[pos..][0..len]);
-            o += 3 + len;
-        } else if (size == 1) {
-            std.mem.writeInt(u24, out[o..][0..3], @intCast(@as(usize, @intFromBool(last)) | 1 << 1 | len << 3), .little);
-            out[o + 3] = in[pos];
-            o += 4;
-        } else {
-            std.mem.writeInt(u24, out[o..][0..3], @intCast(@as(usize, @intFromBool(last)) | 2 << 1 | size << 3), .little);
-            o += 3 + size;
-            prev = 1 - prev;
-            reps = next_reps;
-        }
-        if (c.entropy[prev].of_repeat == .valid) c.entropy[prev].of_repeat = .check;
-        savings += @as(i64, @intCast(len)) - @as(i64, @intCast(o - o_block));
+        } else c.store.storeLast(in[pos..][0..len]);
+        const bytes = try c.writeBlocks(p, in[pos..][0..len], out[o..], raw_literals, &reps, next_reps, &prev, first, last);
+        savings += @as(i64, @intCast(len)) - @as(i64, @intCast(bytes));
+        o += bytes;
         pos += len;
         first = false;
         if (last) break;
@@ -273,6 +301,65 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8, f: Frame) CompressErr
         o += 4;
     }
     return o;
+}
+
+fn writeBlocks(c: *Compressor, p: Params, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, searched_reps: [3]u32, prev: *usize, first: bool, last: bool) CompressError!usize {
+    var plan: post.Plan = .{};
+    if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt) and p.window_log >= 17) {
+        plan = post.plan(&c.store, &c.entropy[prev.*], &c.entropy[1 - prev.*], p.strategy);
+    } else {
+        plan.ends[0] = @intCast(c.store.count);
+        plan.count = 1;
+    }
+    if (plan.count == 1) return c.writeBlock(&c.store, p.strategy, in, out, raw_literals, reps, searched_reps, prev, first, last);
+    var from: usize = 0;
+    var at: usize = 0;
+    var o: usize = 0;
+    var parse_reps = reps.*;
+    for (plan.ends[0..plan.count], 0..) |to, i| {
+        var part = c.store.chunk(from, to);
+        const len = part.decodedLen();
+        var next_reps = reps.*;
+        for (part.seqs[0..part.count], 0..) |*q, seq| {
+            const zero = part.litLen(seq) == 0;
+            const original = q.off;
+            if (original <= 3 and sequences.distance(parse_reps, original, zero) != sequences.distance(next_reps, original, zero)) {
+                q.off = sequences.distance(parse_reps, original, zero) + 3;
+            }
+            parse_reps = sequences.updateReps(parse_reps, original, zero);
+            next_reps = sequences.updateReps(next_reps, q.off, zero);
+        }
+        o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, next_reps, prev, first and i == 0, last and i + 1 == plan.count);
+        at += len;
+        from = to;
+    }
+    return o;
+}
+
+fn writeBlock(c: *Compressor, store: *encode.SeqStore, strategy: Strategy, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, next_reps: [3]u32, prev: *usize, first: bool, last: bool) CompressError!usize {
+    if (out.len < 3) return error.OutputTooSmall;
+    var size = if (in.len >= 7) encode.compressBlock(store, in.len, &c.entropy[prev.*], &c.entropy[1 - prev.*], strategy, raw_literals, out[3..]) else 0;
+    if (!first and in.len > 0 and size < 25 and allSame(in)) size = 1;
+    const end: usize = @intFromBool(last);
+    var written: usize = 0;
+    if (size == 0) {
+        if (out.len - 3 < in.len) return error.OutputTooSmall;
+        std.mem.writeInt(u24, out[0..3], @intCast(end | in.len << 3), .little);
+        @memcpy(out[3..][0..in.len], in);
+        written = 3 + in.len;
+    } else if (size == 1) {
+        if (out.len < 4) return error.OutputTooSmall;
+        std.mem.writeInt(u24, out[0..3], @intCast(end | 1 << 1 | in.len << 3), .little);
+        out[3] = in[0];
+        written = 4;
+    } else {
+        std.mem.writeInt(u24, out[0..3], @intCast(end | 2 << 1 | size << 3), .little);
+        prev.* = 1 - prev.*;
+        written = 3 + size;
+        reps.* = next_reps;
+    }
+    if (c.entropy[prev.*].of_repeat == .valid) c.entropy[prev.*].of_repeat = .check;
+    return written;
 }
 
 /// The next block's size: a full block, cut where its statistics change
@@ -306,38 +393,66 @@ fn prepareLazy(c: *Compressor, p: Params, start: u32) void {
     };
 }
 
+fn prepareOptimal(c: *Compressor, p: Params, start: u32) void {
+    const workspace = c.opt_workspace.?;
+    workspace.model.reset();
+    const hash3_log: u5 = @min(17, p.window_log);
+    c.optimal = .{
+        .hash = c.hash_table[0 .. @as(usize, 1) << p.hash_log],
+        .tree = c.chain_table[0 .. @as(usize, 1) << p.chain_log],
+        .hash3 = if (p.min_match == 3) c.hash3_table[0 .. @as(usize, 1) << hash3_log] else &.{},
+        .hash_log = p.hash_log,
+        .hash3_log = hash3_log,
+        .window_log = p.window_log,
+        .search_log = p.search_log,
+        .target = p.target_length,
+        .next = start,
+        .next3 = start,
+        .workspace = workspace,
+    };
+}
+
 /// Run the strategy over one block; returns the trailing literals.
 fn search(c: *Compressor, p: Params, w: window.Window, reps: *[3]u32, start: usize, end: usize) usize {
     const table = c.hash_table[0 .. @as(usize, 1) << p.hash_log];
     const cmov = p.window_log < 19;
+    if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) {
+        // After a match running far into this block, insertion resumes
+        // near the block's start.
+        const curr = w.index(start);
+        if (curr > c.lazy.next + 384) c.lazy.next = curr - @min(192, curr - c.lazy.next - 384);
+    }
     return switch (p.strategy) {
         .fast => switch (@max(4, @min(p.min_match, 7))) {
             inline 4, 5, 6, 7 => |mls| if (cmov)
-                fast.compress(table, p.hash_log, w, &c.store, reps, start, end, p.target_length, mls, true)
+                fast.compress(mls, true, table, p.hash_log, w, &c.store, reps, start, end, p.target_length)
             else
-                fast.compress(table, p.hash_log, w, &c.store, reps, start, end, p.target_length, mls, false),
+                fast.compress(mls, false, table, p.hash_log, w, &c.store, reps, start, end, p.target_length),
             else => unreachable,
         },
         .dfast => switch (@max(4, @min(p.min_match, 7))) {
-            inline 4, 5, 6, 7 => |mls| dfast.compress(table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end, mls),
+            inline 4, 5, 6, 7 => |mls| dfast.compress(mls, table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end),
             else => unreachable,
         },
         .btlazy2 => switch (@max(4, @min(p.min_match, 6))) {
-            inline 4, 5, 6 => |mls| lazy_.compress(&c.lazy, w, &c.store, reps, start, end, .tree, 2, mls),
+            inline 4, 5, 6 => |mls| lazy_.compress(.tree, 2, mls, &c.lazy, w, &c.store, reps, start, end),
             else => unreachable,
         },
         .greedy, .lazy, .lazy2 => switch (@max(4, @min(p.min_match, 6))) {
             inline 4, 5, 6 => |mls| switch (p.strategy) {
                 inline .greedy, .lazy, .lazy2 => |s| if (rows(p))
-                    lazy_.compress(&c.lazy, w, &c.store, reps, start, end, .row, depthOf(s), mls)
+                    lazy_.compress(.row, depthOf(s), mls, &c.lazy, w, &c.store, reps, start, end)
                 else
-                    lazy_.compress(&c.lazy, w, &c.store, reps, start, end, .chain, depthOf(s), mls),
+                    lazy_.compress(.chain, depthOf(s), mls, &c.lazy, w, &c.store, reps, start, end),
                 else => unreachable,
             },
             else => unreachable,
         },
-        else => switch (@max(4, @min(p.min_match, 7))) {
-            inline 4, 5, 6, 7 => |mls| dfast.compress(table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end, mls),
+        .btopt, .btultra, .btultra2 => switch (@max(3, @min(p.min_match, 6))) {
+            inline 3, 4, 5, 6 => |mls| if (p.strategy == .btopt)
+                opt_.compress(false, mls, &c.optimal, w, &c.store, reps, start, end)
+            else
+                opt_.compress(true, mls, &c.optimal, w, &c.store, reps, start, end),
             else => unreachable,
         },
     };
@@ -352,15 +467,17 @@ fn depthOf(s: Strategy) u2 {
 }
 
 fn writeHeader(out: []u8, p: Params, size: usize, f: Frame) CompressError!usize {
-    if (out.len < 18) return error.OutputTooSmall;
+    const window_size = @as(u64, 1) << p.window_log;
+    const single = f.content_size and window_size >= size;
+    const fcs: u8 = if (f.content_size) @as(u8, @intFromBool(size >= 256)) + @intFromBool(size >= 65536 + 256) + @intFromBool(size >= 0xffff_ffff) else 0;
+    const fields = [4]u8{ @intFromBool(single), 2, 4, 8 };
+    const header_len: usize = (if (f.format == .standard) @as(usize, 4) else 0) + 1 + @intFromBool(!single) + fields[fcs];
+    if (out.len < header_len) return error.OutputTooSmall;
     var o: usize = 0;
     if (f.format == .standard) {
         std.mem.writeInt(u32, out[0..4], frame.magic, .little);
         o = 4;
     }
-    const window_size = @as(u64, 1) << p.window_log;
-    const single = f.content_size and window_size >= size;
-    const fcs: u8 = if (f.content_size) @as(u8, @intFromBool(size >= 256)) + @intFromBool(size >= 65536 + 256) + @intFromBool(size >= 0xffff_ffff) else 0;
     out[o] = @as(u8, @intFromBool(f.checksum)) << 2 | @as(u8, @intFromBool(single)) << 5 | fcs << 6;
     o += 1;
     if (!single) {

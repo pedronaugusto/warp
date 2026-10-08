@@ -37,11 +37,12 @@ pub const Options = struct {
     frames: Frames = .all,
     /// Stop without error when `out` is full; `Result.finished` is then
     /// false and the output so far is a prefix of the content. Raw and RLE
-    /// blocks fill `out` to its end; a compressed block that does not fit
-    /// whole is not started.
+    /// and compressed blocks fill `out` to its end.
     partial: bool = false,
     /// Check content checksums where frames carry them.
     verify_checksum: bool = true,
+    /// Largest accepted frame window.
+    max_window: u64 = 1 << 27,
     format: frame.Format = .standard,
     diagnostic: ?*Diagnostic = null,
 };
@@ -225,6 +226,7 @@ fn run(d: *Decompressor, source: anytype, out: []u8, options: Options) Error!Res
                 continue;
             },
             .zstd => |header| {
+                if (header.window_size > options.max_window) return fail(options, error.WindowTooLarge, at, .window_too_large);
                 source.advance(header.header_len);
                 const status = try d.decodeFrame(source, header, out, &op, options, at);
                 frames += 1;
@@ -300,12 +302,14 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
             .compressed => {
                 if (b.size > f.block_max) return fail(options, error.InvalidStream, block_at, .block_too_large);
                 const content = source.bytes(b.size) orelse return fail(options, error.Truncated, block_at, .truncated);
-                const n = f.block(content, op.*) catch |err| {
+                const decoded = if (options.partial) f.blockPartial(content, op.*) else f.block(content, op.*);
+                const n = decoded catch |err| {
                     if (err == error.OutputTooSmall and options.partial) return .stopped;
                     return fail(options, err, block_at + 3 + f.fault.offset, f.fault.reason);
                 };
                 source.advance(b.size);
                 op.* += n;
+                if (f.stopped) return .stopped;
             },
             .reserved => return fail(options, error.InvalidStream, block_at, .bad_block_type),
         }

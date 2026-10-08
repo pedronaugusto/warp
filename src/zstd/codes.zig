@@ -77,29 +77,31 @@ pub const of_default = [_]i16{
     1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
 };
 
+const ll_table = blk: {
+    @setEvalBranchQuota(10_000);
+    var t: [64]u8 = undefined;
+    for (&t, 0..) |*c, l| c.* = codeOf(&ll_base, l);
+    break :blk t;
+};
+
+const ml_table = blk: {
+    @setEvalBranchQuota(20_000);
+    var t: [128]u8 = undefined;
+    for (&t, 0..) |*c, v| c.* = codeOf(&ml_base, v + 3);
+    break :blk t;
+};
+
 /// The literal-length code of `len`.
 pub inline fn llCode(len: u32) u8 {
-    const table = comptime blk: {
-        @setEvalBranchQuota(10_000);
-        var t: [64]u8 = undefined;
-        for (&t, 0..) |*c, l| c.* = codeOf(&ll_base, l);
-        break :blk t;
-    };
-    if (len < 64) return table[len];
+    if (len < 64) return ll_table[len];
     // Above 63 every code covers a power-of-two range: 64 is code 25.
     return @as(u8, std.math.log2_int(u32, len)) + 19;
 }
 
 /// The match-length code of a match of `len` bytes (`len >= 3`).
 pub inline fn mlCode(len: u32) u8 {
-    const table = comptime blk: {
-        @setEvalBranchQuota(20_000);
-        var t: [128]u8 = undefined;
-        for (&t, 0..) |*c, v| c.* = codeOf(&ml_base, v + 3);
-        break :blk t;
-    };
     const v = len - 3;
-    if (v < 128) return table[v];
+    if (v < 128) return ml_table[v];
     // From 131 (value 128) on, each code covers a power of two: 131 is 43.
     return @as(u8, std.math.log2_int(u32, v)) + 36;
 }

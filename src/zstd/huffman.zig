@@ -744,13 +744,13 @@ pub inline fn encodeFse(w: *Writer, table: anytype, state: *u32, symbol: u8) voi
 /// One stream of `src` into `out`, last symbol first; 0 when it does not
 /// fit.
 pub fn compress1(t: *const EncodeTable, src: []const u8, out: []u8) usize {
-    if (out.len < 8) return 0;
+    if (out.len == 0) return 0;
     // With room for every symbol at the longest code, no write is checked.
-    if (out.len >= (src.len * max_log) / 8 + 16) return encodeStream(t, src, out, false);
-    return encodeStream(t, src, out, true);
+    if (out.len >= (src.len * max_log) / 8 + 16) return encodeStream(false, t, src, out);
+    return encodeStream(true, t, src, out);
 }
 
-fn encodeStream(t: *const EncodeTable, src: []const u8, out: []u8, comptime checked: bool) usize {
+fn encodeStream(comptime checked: bool, t: *const EncodeTable, src: []const u8, out: []u8) usize {
     var w: Writer = .init(out, 0);
     var i = src.len;
     const cells = &t.cells;
@@ -775,7 +775,7 @@ fn encodeStream(t: *const EncodeTable, src: []const u8, out: []u8, comptime chec
 
 /// Four streams behind a jump table; 0 when they do not fit.
 pub fn compress4(t: *const EncodeTable, src: []const u8, out: []u8) usize {
-    if (out.len < 6 + 1 + 1 + 1 + 8) return 0;
+    if (out.len < 6 + 4) return 0;
     if (src.len < 12) return 0;
     const segment = (src.len + 3) / 4;
     var o: usize = 6;
@@ -831,3 +831,69 @@ test "descriptions whose weights do not form a code are refused" {
     // Truncated.
     try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 4, 0x11 }, &w));
 }
+
+/// Sequential symbols for partial decoding: literals are read directly
+/// into their final output positions, without a temporary literal buffer.
+pub const Symbols = struct {
+    table: *const Table,
+    streams: [4]bits.Reader,
+    ends: [4]usize,
+    index: usize = 0,
+    at: usize = 0,
+    pending: ?u8 = null,
+
+    pub fn init(t: *const Table, in: []const u8, len: usize, single: bool) Error!Symbols {
+        var s: Symbols = .{ .table = t, .streams = undefined, .ends = undefined };
+        if (single) {
+            s.streams[0] = try .init(in);
+            s.ends = @splat(len);
+            return s;
+        }
+        if (in.len < 10 or len < 6) return error.InvalidStream;
+        const a: usize = std.mem.readInt(u16, in[0..2], .little);
+        const b: usize = std.mem.readInt(u16, in[2..4], .little);
+        const c: usize = std.mem.readInt(u16, in[4..6], .little);
+        if (6 + a + b + c > in.len) return error.InvalidStream;
+        s.streams[0] = try .init(in[6..][0..a]);
+        s.streams[1] = try .init(in[6 + a ..][0..b]);
+        s.streams[2] = try .init(in[6 + a + b ..][0..c]);
+        s.streams[3] = try .init(in[6 + a + b + c ..]);
+        const quarter = (len + 3) / 4;
+        if (3 * quarter > len) return error.InvalidStream;
+        s.ends = .{ quarter, 2 * quarter, 3 * quarter, len };
+        return s;
+    }
+
+    pub fn read(s: *Symbols, out: []u8) Error!void {
+        for (out) |*byte| {
+            if (s.at >= s.ends[3]) return error.InvalidStream;
+            if (s.at == s.ends[s.index]) s.index += 1;
+            const r = &s.streams[s.index];
+            if (s.pending) |next| {
+                byte.* = next;
+                s.pending = null;
+            } else {
+                if (r.reload() == .overflow) return error.InvalidStream;
+                switch (s.table.kind) {
+                    .single => byte.* = lookupSingle(&s.table.cells.single, s.table.log, r),
+                    .double => {
+                        const cell = s.table.cells.double[@intCast(r.peek(s.table.log))];
+                        byte.* = @truncate(cell);
+                        r.skip((cell >> 16) & 0xff);
+                        if (cell >> 24 == 2) {
+                            if (s.at + 1 < s.ends[s.index]) {
+                                s.pending = @truncate(cell >> 8);
+                            } else if (r.consumed > 64) {
+                                // The final lookup may contain two symbols;
+                                // only the first belongs to this stream.
+                                r.consumed = 64;
+                            }
+                        }
+                    },
+                }
+            }
+            s.at += 1;
+            if (s.at == s.ends[s.index] and !r.finished()) return error.InvalidStream;
+        }
+    }
+};

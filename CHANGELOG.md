@@ -7,6 +7,11 @@ All notable changes to warp are documented here. The format follows
 
 ### Added
 
+- `zstd`: whole-buffer compression at levels −131072 through 22, with all
+  nine search strategies, adaptive optimal parsing, and block splitting.
+  Decoder support includes dictionaries, checksums, concatenated, skippable
+  and magicless frames, reader input, partial output and diagnostics.
+  Frame inspection and caller-provided compressor storage are available.
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every
   member, or one), from memory or a `std.Io.Reader`, with dictionaries, partial
   output, and the reason and bit offset of every refusal.

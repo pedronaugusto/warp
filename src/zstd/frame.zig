@@ -241,9 +241,61 @@ pub fn extent(in: []const u8, format: Format, fault: *Fault) ParseError!Extent {
     }
 }
 
+/// Inspection errors: malformed structures, truncated frames or a
+/// window above the format's supported limit.
+pub const FrameError = ParseError;
+
+/// Inspect the first header without consuming any block.
+pub fn frameHeader(in: []const u8, format: Format) FrameError!Frame {
+    var fault: Fault = undefined;
+    return parse(in, format, &fault);
+}
+
+/// Bytes occupied by the first frame, including its checksum.
+pub fn frameLength(in: []const u8, format: Format) FrameError!usize {
+    var fault: Fault = undefined;
+    return (try extent(in, format, &fault)).len;
+}
+
+/// Sum of declared content sizes; null if any frame omits its size.
+/// Every frame is inspected even after an unknown size is found.
+pub fn contentSize(in: []const u8, format: Format) FrameError!?u64 {
+    var at: usize = 0;
+    var total: u64 = 0;
+    var known = true;
+    while (at < in.len) {
+        const h = try frameHeader(in[at..], format);
+        switch (h) {
+            .zstd => |z| if (z.content_size) |n| {
+                total = std.math.add(u64, total, n) catch return error.InvalidStream;
+            } else {
+                known = false;
+            },
+            .skippable => {},
+        }
+        at += try frameLength(in[at..], format);
+    }
+    return if (known) total else null;
+}
+
+/// Sum of frame bounds, including frames without a declared size.
+pub fn decompressBound(in: []const u8, format: Format) FrameError!u64 {
+    var at: usize = 0;
+    var total: u64 = 0;
+    while (at < in.len) {
+        var fault: Fault = undefined;
+        const e = try extent(in[at..], format, &fault);
+        total = std.math.add(u64, total, e.bound) catch return error.InvalidStream;
+        at += e.len;
+    }
+    return total;
+}
+
+pub const WriteSkippableError = error{OutputTooSmall};
+
 /// Write a skippable frame of `payload` with magic variant `variant`.
-pub fn writeSkippable(out: []u8, variant: u4, payload: []const u8) error{OutputTooSmall}!usize {
-    if (out.len < payload.len + 8) return error.OutputTooSmall;
+pub fn writeSkippable(out: []u8, variant: u4, payload: []const u8) WriteSkippableError!usize {
+    if (payload.len > std.math.maxInt(u32) or out.len < 8 or out.len - 8 < payload.len) return error.OutputTooSmall;
     std.mem.writeInt(u32, out[0..4], skippable_magic | variant, .little);
     std.mem.writeInt(u32, out[4..8], @intCast(payload.len), .little);
     @memcpy(out[8..][0..payload.len], payload);

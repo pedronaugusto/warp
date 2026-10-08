@@ -60,3 +60,31 @@ export fn warpGzipHeader(in: [*]const u8, in_len: usize, out: [*]u8, out_len: us
     warp.gzip.writeHeader(&w, parsed.header) catch return -1;
     return @intCast(w.buffered().len);
 }
+
+/// All zstd strategies, frame options and caller-provided storage.
+export fn warpZstdCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32) isize {
+    const options: warp.zstd.Compressor.Options = .{ .level = level, .max_input = in_len };
+    const size = warp.zstd.Compressor.memory(options);
+    if (size > memory.len) return -1;
+    var c: warp.zstd.Compressor = .initBuffer(memory[0..size], options);
+    defer c.deinit();
+    if (out_len < warp.zstd.Compressor.bound(in_len)) return -1;
+    return @intCast(c.compress(in[0..in_len], out[0..out_len], .{}) catch return -1);
+}
+
+/// Zstd decoding, reader decoding, dictionaries and frame inspection.
+export fn warpZstdDecompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, dict: [*]const u8, dict_len: usize, partial: bool) isize {
+    var dictionary = warp.zstd.Dictionary.parse(dict[0..dict_len]) catch return -1;
+    var d: warp.zstd.Decompressor = .init;
+    const options: warp.zstd.Decompressor.Options = .{ .dictionaries = &.{&dictionary}, .partial = partial };
+    const whole = d.decompress(in[0..in_len], out[0..out_len], options) catch return -1;
+    var r: std.Io.Reader = .fixed(in[0..in_len]);
+    const read = d.decompressReader(&r, out[0..out_len], options) catch return -1;
+    if (read.out_len != whole.out_len) return -1;
+    _ = warp.zstd.frameHeader(in[0..in_len], .standard) catch return -1;
+    _ = warp.zstd.frameLength(in[0..in_len], .standard) catch return -1;
+    _ = warp.zstd.contentSize(in[0..in_len], .standard) catch return -1;
+    _ = warp.zstd.decompressBound(in[0..in_len], .standard) catch return -1;
+    _ = warp.zstd.writeSkippable(out[0..out_len], 0, in[0..in_len]) catch return -1;
+    return @intCast(whole.out_len);
+}

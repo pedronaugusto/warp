@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) !void {
             .tests = test_step,
             .portable_tests = true,
             .bench = .{
-                .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }},
+                .programs = &.{ .{ .name = "bench", .source = "bench/main.zig" }, .{ .name = "zstd-bench", .source = "bench/zstd.zig" } },
                 .imports = benchImports,
                 .target = target,
                 .optimize = optimize,

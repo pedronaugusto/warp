@@ -35,6 +35,23 @@ pub const Window = struct {
     }
 };
 
+/// Temporarily disable a repeat offset that would precede available history.
+/// Its original value is restored if the block does not replace it.
+pub inline fn disableRep(rep: *u32, available: usize) u32 {
+    if (rep.* <= available) return 0;
+    const saved = rep.*;
+    rep.* = 0;
+    return saved;
+}
+
+/// Restore disabled repeat offsets while preserving the order after matches.
+pub inline fn restoreReps(reps: *[3]u32, first: u32, second: u32, saved_first: u32, saved_second: u32) void {
+    const last = if (saved_first != 0 and first != 0) saved_first else saved_second;
+    reps[0] = if (first != 0) first else saved_first;
+    reps[1] = if (second != 0) second else last;
+}
+
+pub const prime3: u32 = 506832829;
 pub const prime4: u32 = 2654435761;
 pub const prime5: u64 = 889523592379;
 pub const prime6: u64 = 227718039650203;
@@ -42,8 +59,12 @@ pub const prime7: u64 = 58295818150454627;
 pub const prime8: u64 = 0xCF1BBCDCB7A56463;
 
 /// The reference encoder's hash of the `mls` bytes at `p`, to `bits` bits.
-pub inline fn hash(in: []const u8, p: usize, bits: u5, comptime mls: u4) u32 {
+pub inline fn hash(comptime mls: u4, in: []const u8, p: usize, bits: u5) u32 {
     switch (mls) {
+        3 => {
+            const v = std.mem.readInt(u32, in[p..][0..4], .little);
+            return ((v << 8) *% prime3) >> @intCast(@as(u6, 32) - bits);
+        },
         4 => {
             const v = std.mem.readInt(u32, in[p..][0..4], .little);
             return (v *% prime4) >> @intCast(@as(u6, 32) - bits);
@@ -89,7 +110,7 @@ pub const Bytes = struct {
 
     pub fn of(w: Window) Bytes {
         // safe: an address, only ever offset by indices of `w.in`
-        return .{ .base = @intFromPtr(w.in.ptr) -% w.start };
+        return .{ .base = @intFromPtr(w.in.ptr) -% w.start }; // safe: an address, dereferenced only with an index into w.in
     }
 
     pub inline fn ptr(b: Bytes, i: usize) [*]const u8 {
@@ -109,8 +130,9 @@ pub const Bytes = struct {
     }
 
     /// `hash` of the bytes at index `i`.
-    pub inline fn hash(b: Bytes, i: usize, bits: u5, comptime mls: u4) u32 {
+    pub inline fn hash(b: Bytes, comptime mls: u4, i: usize, bits: u5) u32 {
         switch (mls) {
+            3 => return ((b.load32(i) << 8) *% prime3) >> @intCast(@as(u6, 32) - bits),
             4 => return (b.load32(i) *% prime4) >> @intCast(@as(u6, 32) - bits),
             5, 6, 7, 8 => {
                 const v = b.load64(i);
@@ -143,8 +165,8 @@ pub const Bytes = struct {
 
 test "hashes are the reference's, and counts stop at the end" {
     const in = "abcdefghabcdefgh-tail--";
-    try std.testing.expectEqual((std.mem.readInt(u32, "abcd", .little) *% prime4) >> 18, hash(in, 0, 14, 4));
-    try std.testing.expectEqual(hash(in, 0, 14, 6), hash(in, 8, 14, 6));
+    try std.testing.expectEqual((std.mem.readInt(u32, "abcd", .little) *% prime4) >> 18, hash(4, in, 0, 14));
+    try std.testing.expectEqual(hash(6, in, 0, 14), hash(6, in, 8, 14));
     try std.testing.expectEqual(@as(usize, 8), count(in, 0, 8, in.len));
     try std.testing.expectEqual(@as(usize, 5), count(in, 0, 8, 13));
 }

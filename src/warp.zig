@@ -1,10 +1,13 @@
-//! DEFLATE, zlib and gzip: compression and decompression; CRC-32, CRC-32C
+//! DEFLATE, zlib, gzip and zstd: compression and decompression; CRC-32, CRC-32C
 //! and Adler-32.
 
 const checksum = @import("checksum.zig");
 const container = @import("container.zig");
 const inflate = @import("inflate.zig");
 const gzip_ = @import("gzip.zig");
+
+/// Zstandard frames, dictionaries, compression and decompression.
+pub const zstd = @import("zstd.zig");
 
 /// The wrapper a compressor writes: raw DEFLATE, zlib or gzip.
 pub const Container = container.Container;

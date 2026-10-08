@@ -4,7 +4,7 @@
 //! means there.
 
 const std = @import("std");
-const Strategy = @import("encode.zig").Strategy;
+const Strategy = @import("sequences.zig").Strategy;
 
 pub const min_level: i32 = -(1 << 17);
 pub const max_level: i32 = 22;

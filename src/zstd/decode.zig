@@ -66,6 +66,8 @@ pub const Frame = struct {
     block_max: usize,
     /// Where and why a block was refused, relative to the block.
     fault: Fault = .{},
+    /// A partial block stopped at the output limit.
+    stopped: bool = false,
 
     pub const Fault = struct { offset: usize = 0, reason: Diagnostic.Reason = .truncated };
 
@@ -79,7 +81,69 @@ pub const Frame = struct {
         if (in.len > f.block_max) return f.fail(error.InvalidStream, 0, .block_too_large);
         var lits: Literals = undefined;
         const lit_len = try f.literals(in, op, &lits);
-        return f.sequences(in, lit_len, op, &lits);
+        return f.sequences(false, in, lit_len, op, &lits);
+    }
+
+    /// Decode a prefix through the same sequence decoder; literals are
+    /// pulled into their final positions rather than decoded into a tail.
+    pub fn blockPartial(f: *Frame, in: []const u8, op: usize) Error!usize {
+        f.stopped = false;
+        if (in.len > f.block_max) return f.fail(error.InvalidStream, 0, .block_too_large);
+        var cursor: LiteralCursor = undefined;
+        const section = try f.literalCursor(in, &cursor);
+        var lits: Literals = .{ .bytes = &.{}, .len = section.len, .in_out = null, .limit = f.out.len, .cursor = &cursor };
+        return f.sequences(true, in, section.bytes, op, &lits);
+    }
+
+    const LiteralSection = struct { bytes: usize, len: usize };
+
+    fn literalCursor(f: *Frame, in: []const u8, cursor: *LiteralCursor) Error!LiteralSection {
+        if (in.len < 2) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+        const kind: u2 = @truncate(in[0]);
+        const size_format: u2 = @truncate(in[0] >> 2);
+        if (kind < 2) {
+            const header: usize = switch (size_format) {
+                0, 2 => 1,
+                1 => 2,
+                3 => 3,
+            };
+            if (in.len < header + @as(usize, kind)) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+            const len: usize = switch (header) {
+                1 => in[0] >> 3,
+                2 => std.mem.readInt(u16, in[0..2], .little) >> 4,
+                else => std.mem.readInt(u24, in[0..3], .little) >> 4,
+            };
+            if (len > f.block_max) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+            if (kind == 0) {
+                if (in.len - header < len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+                cursor.* = .{ .raw = in[header..][0..len] };
+            } else cursor.* = .{ .rle = in[header] };
+            return .{ .bytes = header + (if (kind == 0) len else 1), .len = len };
+        }
+        if (kind == 3 and f.entropy.huffman == null) return f.fail(error.InvalidStream, 0, .treeless_first);
+        if (in.len < 5) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+        const h = std.mem.readInt(u32, in[0..4], .little);
+        const header: usize = if (size_format < 2) 3 else if (size_format == 2) 4 else 5;
+        const len: usize = switch (size_format) {
+            0, 1 => (h >> 4) & 0x3ff,
+            2 => (h >> 4) & 0x3fff,
+            3 => (h >> 4) & 0x3ffff,
+        };
+        const csize: usize = switch (size_format) {
+            0, 1 => (h >> 14) & 0x3ff,
+            2 => h >> 18,
+            3 => (h >> 22) + (@as(usize, in[4]) << 10),
+        };
+        const single = size_format == 0;
+        if (len > f.block_max or (!single and len < 6) or header + csize > in.len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+        var src = in[header..][0..csize];
+        if (kind == 2) {
+            try f.huffmanTable(src, header, false);
+            if (f.tables.weights.len >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
+            src = src[f.tables.weights.len..];
+        }
+        cursor.* = .{ .huffman = huffman.Symbols.init(f.entropy.huffman.?, src, len, single) catch return f.fail(error.InvalidStream, header, .literals_size) };
+        return .{ .bytes = header + csize, .len = len };
     }
 
     // ---- literals ----
@@ -93,6 +157,7 @@ pub const Frame = struct {
         /// Where the literals start in `out`, when they are there: the
         /// output may not overtake the next one unread.
         in_out: ?usize,
+        cursor: ?*LiteralCursor = null,
         /// The end of the output this block may write. Where its literals
         /// are not in the input and the output has room for a whole block
         /// and its literals, the reference decoder puts them after the
@@ -217,7 +282,7 @@ pub const Frame = struct {
 
     // ---- sequences ----
 
-    fn sequences(f: *Frame, in: []const u8, lit_len: usize, op_start: usize, lits: *const Literals) Error!usize {
+    fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals) Error!usize {
         var ip = lit_len;
         const at = ip;
         if (ip >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
@@ -246,22 +311,38 @@ pub const Frame = struct {
             ip += try f.codeTable(fse.LlTable, &f.tables.ll, &f.entropy.ll, @truncate(modes >> 6), codes.max_ll, codes.max_ll_log, &codes.ll_base, &codes.ll_bits, &fse.ll_default, in, ip);
             ip += try f.codeTable(fse.OfTable, &f.tables.of, &f.entropy.of, @truncate(modes >> 4), codes.max_of, codes.max_of_log, &codes.of_base, &codes.of_bits, &fse.of_default, in, ip);
             ip += try f.codeTable(fse.MlTable, &f.tables.ml, &f.entropy.ml, @truncate(modes >> 2), codes.max_ml, codes.max_ml_log, &codes.ml_base, &codes.ml_bits, &fse.ml_default, in, ip);
-            if (f.out.len == op) return f.fail(error.OutputTooSmall, at, .bad_sequences_header);
+            if (f.out.len == op) {
+                if (partial) {
+                    f.stopped = true;
+                    return 0;
+                }
+                return f.fail(error.OutputTooSmall, at, .bad_sequences_header);
+            }
             f.entropy.fse_ready = true;
             // Where literals sit in the output ahead of the block's end, the
             // output may not overtake the next unread one; elsewhere the
             // block's limit is fixed.
-            if (lits.in_out != null and lits.limit == f.out.len) {
-                try f.execute(true, in[ip..], count, &op, &lp, lits, ip);
+            if (partial) {
+                try f.execute(true, false, in[ip..], count, &op, &lp, lits, ip);
+                if (f.stopped) return op - op_start;
+            } else if (lits.in_out != null and lits.limit == f.out.len) {
+                try f.execute(false, true, in[ip..], count, &op, &lp, lits, ip);
             } else {
-                try f.execute(false, in[ip..], count, &op, &lp, lits, ip);
+                try f.execute(false, false, in[ip..], count, &op, &lp, lits, ip);
             }
         }
         // The literals after the last sequence.
         const last = lits.len - lp;
-        if (last > lits.limit - op) return f.fail(error.OutputTooSmall, at, .bad_length);
-        @memmove(f.out[op..][0..last], lits.bytes[lp..][0..last]);
-        op += last;
+        if (partial) {
+            const n = @min(last, lits.limit - op);
+            try f.readLiterals(lits.cursor.?, f.out[op..][0..n], at);
+            f.stopped = n < last;
+            op += n;
+        } else {
+            if (last > lits.limit - op) return f.fail(error.OutputTooSmall, at, .bad_length);
+            @memmove(f.out[op..][0..last], lits.bytes[lp..][0..last]);
+            op += last;
+        }
         return op - op_start;
     }
 
@@ -310,17 +391,14 @@ pub const Frame = struct {
 
     /// Out of line: inlined into the frame loop, the sequence loop loses
     /// registers to it and runs 7-9% slower (measured on large frames).
-    noinline fn execute(f: *Frame, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
+    noinline fn execute(f: *Frame, comptime partial: bool, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
         const ll_cells = &f.entropy.ll.cells;
         const of_cells = &f.entropy.of.cells;
         const ml_cells = &f.entropy.ml.cells;
-        var ll_state: u32 = @intCast(r.read(f.entropy.ll.log));
-        _ = r.reload();
-        var of_state: u32 = @intCast(r.read(f.entropy.of.log));
-        _ = r.reload();
-        var ml_state: u32 = @intCast(r.read(f.entropy.ml.log));
-        _ = r.reload();
+        var ll_state = readState(&r, f.entropy.ll.log);
+        var of_state = readState(&r, f.entropy.of.log);
+        var ml_state = readState(&r, f.entropy.ml.log);
         // The repeat offsets, most recent first, kept in registers.
         var rep0 = f.entropy.reps[0];
         var rep1 = f.entropy.reps[1];
@@ -381,6 +459,15 @@ pub const Frame = struct {
             }
 
             // ---- execute ----
+            if (partial) {
+                try f.executePrefix(&o, lits.cursor.?, lits.len - l, ll, ml, offset, at);
+                if (f.stopped) {
+                    op.* = o;
+                    return;
+                }
+                l += ll;
+                continue;
+            }
             const o_lit = o + ll;
             const o_end = o_lit + ml;
             const l_end = l + ll;
@@ -424,6 +511,36 @@ pub const Frame = struct {
         lp.* = l;
     }
 
+    fn readLiterals(f: *Frame, cursor: *LiteralCursor, out: []u8, at: usize) Error!void {
+        cursor.read(out) catch return f.fail(error.InvalidStream, at, .literals_size);
+    }
+
+    fn executePrefix(f: *Frame, op: *usize, cursor: *LiteralCursor, remaining: usize, ll: usize, ml: usize, offset: usize, at: usize) Error!void {
+        const used = try f.executePartial(op.*, cursor, remaining, ll, ml, offset, at);
+        op.* += used;
+        f.stopped = used < ll + ml;
+    }
+
+    fn executePartial(f: *Frame, o: usize, cursor: *LiteralCursor, remaining: usize, ll: usize, ml: usize, offset: usize, at: usize) Error!usize {
+        if (ll > remaining) return f.fail(error.InvalidStream, at, .bad_length);
+        const lit = @min(ll, f.out.len - o);
+        try f.readLiterals(cursor, f.out[o..][0..lit], at);
+        if (lit < ll) return lit;
+        const start = o + lit;
+        const match = @min(ml, f.out.len - start);
+        if (offset > start - f.start) {
+            const back = offset - (start - f.start);
+            if (back > f.dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
+            const first = @min(match, back);
+            @memcpy(f.out[start..][0..first], f.dict[f.dict.len - back ..][0..first]);
+            if (first < match) repeat(f.out[start + first ..].ptr, f.out[f.start..].ptr, match - first);
+        } else {
+            if (offset == 0) return f.fail(error.InvalidStream, at, .bad_offset);
+            repeat(f.out[start..].ptr, f.out[start - offset ..].ptr, match);
+        }
+        return lit + match;
+    }
+
     /// One sequence with every bound checked and exact copies; `lits` are
     /// the literals not yet read, `limit` the end of what it may write.
     fn executeCarefully(f: *Frame, o: usize, lits: []const u8, ll: usize, ml: usize, offset: usize, limit: usize, at: usize) Error!void {
@@ -442,6 +559,24 @@ pub const Frame = struct {
             return;
         }
         repeat(out[o_lit..].ptr, out[o_lit - offset ..].ptr, ml);
+    }
+};
+
+const LiteralCursor = union(enum) {
+    raw: []const u8,
+    rle: u8,
+    huffman: huffman.Symbols,
+
+    fn read(c: *LiteralCursor, out: []u8) huffman.Error!void {
+        switch (c.*) {
+            .raw => |bytes| {
+                if (out.len > bytes.len) return error.InvalidStream;
+                @memcpy(out, bytes[0..out.len]);
+                c.raw = bytes[out.len..];
+            },
+            .rle => |byte| @memset(out, byte),
+            .huffman => |*symbols| try symbols.read(out),
+        }
     }
 };
 
@@ -501,4 +636,10 @@ inline fn overlapCopy(dst_: [*]u8, src_: [*]const u8, offset: usize, len: usize)
 /// being written, they repeat, as a match does.
 fn repeat(dst: [*]u8, src: [*]const u8, len: usize) void {
     for (0..len) |i| dst[i] = src[i];
+}
+
+inline fn readState(r: *bits.Reader, log: u4) u32 {
+    const state: u32 = @intCast(r.read(log));
+    _ = r.reload();
+    return state;
 }

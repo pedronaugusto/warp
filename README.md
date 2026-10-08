@@ -1,7 +1,8 @@
 # warp
 
 warp compresses and decompresses DEFLATE in Zig, raw or in its zlib and gzip
-wrappers, and computes their checksums: CRC-32, CRC-32C and Adler-32. A call
+wrappers, and zstd frames through `warp.zstd`. It computes CRC-32, CRC-32C
+and Adler-32. A call
 works on whole buffers in memory the caller gives, allocates nothing, and runs
 the fastest kernel the CPU has.
 
@@ -166,8 +167,30 @@ Errors are named sets: `InvalidStream`, `ChecksumMismatch`, `DictionaryMismatch`
 - Whole buffers only for now: no streaming encoder or decoder over chunks, no
   flush modes, no window sizes below 32 KiB.
 - Levels 10 to 12 compress as level 9 until their parser exists.
-- No parallel compression, no zstd and no Deflate64 yet.
+- No parallel compression or Deflate64 yet.
 - A gzip header's fields are read by `gzip.parseHeader`; the decoder skips them.
+
+## Zstandard
+
+`warp.zstd.Compressor` writes a complete frame per call at levels −131072
+through 22. Level 0 selects the default, 3. `init` takes its tables once;
+`initBuffer` uses aligned caller storage of `memory(options)` bytes. Set
+`max_input` to size the tables for a workload; larger calls still work with
+those tables. `Compressor.bound(len)` reserves enough output for every frame.
+`Frame` selects checksums, content sizes and standard or magicless framing.
+`Tuning` overrides the level's search strategy and parameters.
+
+`warp.zstd.Decompressor.decompress` and `decompressReader` decode concatenated
+frames, skippable frames and dictionary frames. Dictionary bytes are borrowed
+by `Dictionary.parse` or `Dictionary.raw`, and dictionaries can be shared
+between decoders. Checksums are verified by default; `partial` returns the
+output prefix, and `frames = .one` leaves the next frame unread. `max_window`
+defaults to 128 MiB. `Diagnostic` records the refusal's byte offset and reason.
+
+`frameHeader`, `frameLength`, `contentSize` and `decompressBound` inspect frames
+without decompressing them. `writeSkippable` writes an application payload.
+Streaming, dictionary compression, dictionary training, long-distance and
+parallel compression, and seekable streams are still being built.
 
 ## Platforms
 

@@ -7,26 +7,14 @@
 //! Positions here are indices (see `window.Bytes`): the table stores them
 //! as they are.
 
-const std = @import("std");
 const window = @import("window.zig");
-const encode = @import("../encode.zig");
+const encode = @import("../sequences.zig");
 
 const Window = window.Window;
 
 /// Search the block `w.in[start..end]`; sequences go to `store`, `reps`
 /// are the repeat offsets before and after. Returns the trailing literals.
-pub noinline fn compress(
-    table: []u32,
-    hash_log: u5,
-    w: Window,
-    store: *encode.SeqStore,
-    reps: *[3]u32,
-    start: usize,
-    end: usize,
-    acceleration: u32,
-    comptime mls: u4,
-    comptime cmov: bool,
-) usize {
+pub noinline fn compress(comptime mls: u4, comptime cmov: bool, table: []u32, hash_log: u5, w: Window, store: *encode.SeqStore, reps: *[3]u32, start: usize, end: usize, acceleration: u32) usize {
     if (end - start < 8) return end - start;
     const b: window.Bytes = .of(w);
     const step_size: usize = acceleration + @intFromBool(acceleration == 0) + 1;
@@ -38,20 +26,10 @@ pub noinline fn compress(
     var ip0 = anchor;
     var rep1 = reps[0];
     var rep2 = reps[1];
-    var saved1: u32 = 0;
-    var saved2: u32 = 0;
     ip0 += @intFromBool(ip0 == prefix);
-    {
-        const max_rep: u32 = @intCast(ip0 - prefix);
-        if (rep2 > max_rep) {
-            saved2 = rep2;
-            rep2 = 0;
-        }
-        if (rep1 > max_rep) {
-            saved1 = rep1;
-            rep1 = 0;
-        }
-    }
+    const max_rep = ip0 - prefix;
+    const saved1 = window.disableRep(&rep1, max_rep);
+    const saved2 = window.disableRep(&rep2, max_rep);
     outer: while (true) {
         var step = step_size;
         var next_step = ip0 + step_increment;
@@ -59,8 +37,8 @@ pub noinline fn compress(
         var ip2 = ip0 + step;
         var ip3 = ip2 + 1;
         if (ip3 >= limit) break :outer;
-        var hash0 = b.hash(ip0, hash_log, mls);
-        var hash1 = b.hash(ip1, hash_log, mls);
+        var hash0 = b.hash(mls, ip0, hash_log);
+        var hash1 = b.hash(mls, ip1, hash_log);
         var match_idx: usize = table[hash0];
         var current0: usize = undefined;
         var match0: usize = undefined;
@@ -82,19 +60,19 @@ pub noinline fn compress(
                     table[hash1] = @intCast(ip1);
                     break :found;
                 }
-                if (matches(b, prefix, ip0, match_idx, cmov)) {
+                if (matches(cmov, b, prefix, ip0, match_idx)) {
                     table[hash1] = @intCast(ip1);
                     break;
                 }
                 match_idx = table[hash1];
                 hash0 = hash1;
-                hash1 = b.hash(ip2, hash_log, mls);
+                hash1 = b.hash(mls, ip2, hash_log);
                 ip0 = ip1;
                 ip1 = ip2;
                 ip2 = ip3;
                 current0 = ip0;
                 table[hash0] = @intCast(ip0);
-                if (matches(b, prefix, ip0, match_idx, cmov)) {
+                if (matches(cmov, b, prefix, ip0, match_idx)) {
                     // Searching resumes 4 or more ahead: an entry there
                     // would be one it passes.
                     if (step <= 4) table[hash1] = @intCast(ip1);
@@ -102,7 +80,7 @@ pub noinline fn compress(
                 }
                 match_idx = table[hash1];
                 hash0 = hash1;
-                hash1 = b.hash(ip2, hash_log, mls);
+                hash1 = b.hash(mls, ip2, hash_log);
                 ip0 = ip1;
                 ip1 = ip2;
                 ip2 = ip0 + step;
@@ -132,15 +110,15 @@ pub noinline fn compress(
         ip0 += len;
         anchor = ip0;
         if (ip0 <= limit) {
-            table[b.hash(current0 + 2, hash_log, mls)] = @intCast(current0 + 2);
-            table[b.hash(ip0 - 2, hash_log, mls)] = @intCast(ip0 - 2);
+            table[b.hash(mls, current0 + 2, hash_log)] = @intCast(current0 + 2);
+            table[b.hash(mls, ip0 - 2, hash_log)] = @intCast(ip0 - 2);
             if (rep2 > 0) {
                 while (ip0 <= limit and b.load32(ip0) == b.load32(ip0 - rep2)) {
                     const rlen = b.count(ip0 + 4 - rep2, ip0 + 4, i_end) + 4;
                     const t = rep1;
                     rep1 = rep2;
                     rep2 = t;
-                    table[b.hash(ip0, hash_log, mls)] = @intCast(ip0);
+                    table[b.hash(mls, ip0, hash_log)] = @intCast(ip0);
                     ip0 += rlen;
                     const p = w.at(@intCast(ip0 - rlen));
                     store.store(w.in, p, p, end, 1, rlen);
@@ -150,13 +128,11 @@ pub noinline fn compress(
         }
     }
     // Repeat offsets left invalid at the start come back, in order.
-    if (saved1 != 0 and rep1 != 0) saved2 = saved1;
-    reps[0] = if (rep1 != 0) rep1 else saved1;
-    reps[1] = if (rep2 != 0) rep2 else saved2;
+    window.restoreReps(reps, rep1, rep2, saved1, saved2);
     return i_end - anchor;
 }
 
-inline fn matches(b: window.Bytes, prefix: usize, p: usize, i: usize, comptime cmov: bool) bool {
+inline fn matches(comptime cmov: bool, b: window.Bytes, prefix: usize, p: usize, i: usize) bool {
     if (cmov) {
         const valid = i >= prefix;
         const q = if (valid) i else p;

@@ -327,7 +327,7 @@ fn normalizeSlowly(norm: []i16, log: u4, counts: []const u32, total_: usize, low
     var total = total_;
     var distributed: u32 = 0;
     const low_threshold: u64 = total >> log;
-    var low_one: u64 = (total * 3) >> (@as(u6, log) + 1);
+    var low_one: u64 = (@as(u64, total) * 3) >> (@as(u6, log) + 1);
     for (counts, norm[0..counts.len]) |c, *n| {
         if (c == 0) {
             n.* = 0;

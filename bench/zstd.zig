@@ -1,0 +1,116 @@
+//! Whole-buffer zstd throughput and setup on generated or caller-provided
+//! inputs. Timings are reported by hand; CI only compiles these rows.
+const std = @import("std");
+const warp = @import("warp");
+const gen = @import("gen");
+const Io = std.Io;
+const zstd = warp.zstd;
+
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(gpa);
+    var smoke = false;
+    var file: ?[]const u8 = null;
+    var levels: []const u8 = "-5,1,3,6,9,13,15";
+    var runs: usize = 7;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--smoke")) {
+            smoke = true;
+        } else if (std.mem.eql(u8, args[i], "--file") and i + 1 < args.len) {
+            i += 1;
+            file = args[i];
+        } else if (std.mem.eql(u8, args[i], "--levels") and i + 1 < args.len) {
+            i += 1;
+            levels = args[i];
+        } else if (std.mem.eql(u8, args[i], "--runs") and i + 1 < args.len) {
+            i += 1;
+            runs = try std.fmt.parseInt(usize, args[i], 10);
+        } else return error.UnknownArgument;
+    }
+    if (smoke) runs = 1;
+    if (runs == 0) return error.InvalidRuns;
+    var buffer: [4096]u8 = undefined;
+    var stdout = Io.File.stdout().writer(io, &buffer);
+    const writer = &stdout.interface;
+    try writer.print("zstd | workload | level | input | compressed | encode MB/s | decode MB/s | memory\n", .{});
+    if (file) |path| {
+        const in = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+        try workload(gpa, io, writer, path, in, levels, runs);
+    } else {
+        const len: usize = if (smoke) 20_000 else 4 << 20;
+        for ([_]gen.Kind{ .text, .binary, .json, .noise, .runs, .png }) |kind| {
+            const in = try gen.alloc(gpa, kind, 4, len);
+            try workload(gpa, io, writer, @tagName(kind), in, levels, runs);
+        }
+    }
+    try setup(gpa, io, writer, if (smoke) 10 else 200_000, runs);
+    try writer.flush();
+}
+
+fn now(io: Io) i96 {
+    return Io.Clock.awake.now(io).nanoseconds;
+}
+
+fn throughput(bytes: usize, ns: u64) f64 {
+    return 1000 * @as(f64, @floatFromInt(bytes)) / @as(f64, @floatFromInt(@max(1, ns)));
+}
+
+fn workload(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, name: []const u8, in: []const u8, levels: []const u8, runs: usize) !void {
+    const out = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
+    defer gpa.free(out);
+    const back = try gpa.alloc(u8, in.len);
+    defer gpa.free(back);
+    const d = try gpa.create(zstd.Decompressor);
+    defer gpa.destroy(d);
+    d.* = .init;
+    var it = std.mem.splitScalar(u8, levels, ',');
+    while (it.next()) |text| {
+        const level = try std.fmt.parseInt(i32, text, 10);
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .max_input = in.len });
+        defer c.deinit();
+        const n = try c.compress(in, out, .{});
+        _ = try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64) });
+        if (!std.mem.eql(u8, in, back)) return error.WrongOutput;
+        var encode_ns: u64 = std.math.maxInt(u64);
+        var decode_ns: u64 = std.math.maxInt(u64);
+        for (0..runs) |_| {
+            const start = now(io);
+            std.mem.doNotOptimizeAway(try c.compress(in, out, .{}));
+            const encoded = now(io);
+            std.mem.doNotOptimizeAway(try d.decompress(out[0..n], back, .{ .max_window = std.math.maxInt(u64) }));
+            const decoded = now(io);
+            encode_ns = @min(encode_ns, @as(u64, @intCast(encoded - start)));
+            decode_ns = @min(decode_ns, @as(u64, @intCast(decoded - encoded)));
+        }
+        try writer.print("zstd | {s} | {d} | {d} | {d} | {d:.1} | {d:.1} | {d}\n", .{ name, level, in.len, n, throughput(in.len, encode_ns), throughput(in.len, decode_ns), zstd.Compressor.memory(.{ .level = level, .max_input = in.len }) });
+        try writer.flush();
+    }
+}
+
+fn setup(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, rounds: usize, runs: usize) !void {
+    const d = try gpa.create(zstd.Decompressor);
+    defer gpa.destroy(d);
+    d.* = .init;
+    try writer.print("zstd-setup | level | input | compressed | encode ns/frame | decode ns/frame\n", .{});
+    for ([_]i32{ 1, 3 }) |level| for ([_][]const u8{ "", "blob 28\x00tiny file for the setup case\n" }) |in| {
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .max_input = in.len });
+        defer c.deinit();
+        var out: [128]u8 = undefined;
+        var back: [128]u8 = undefined;
+        const n = try c.compress(in, &out, .{});
+        var encode_ns: u64 = std.math.maxInt(u64);
+        var decode_ns: u64 = std.math.maxInt(u64);
+        for (0..runs) |_| {
+            const start = now(io);
+            for (0..rounds) |_| std.mem.doNotOptimizeAway(try c.compress(in, &out, .{}));
+            const encoded = now(io);
+            for (0..rounds) |_| std.mem.doNotOptimizeAway(try d.decompress(out[0..n], back[0..in.len], .{}));
+            const decoded = now(io);
+            encode_ns = @min(encode_ns, @as(u64, @intCast(encoded - start)));
+            decode_ns = @min(decode_ns, @as(u64, @intCast(decoded - encoded)));
+        }
+        try writer.print("zstd-setup | {d} | {d} | {d} | {d:.1} | {d:.1}\n", .{ level, in.len, n, @as(f64, @floatFromInt(encode_ns)) / @as(f64, @floatFromInt(rounds)), @as(f64, @floatFromInt(decode_ns)) / @as(f64, @floatFromInt(rounds)) });
+    };
+}

@@ -12,6 +12,7 @@ const Dictionary = @import("../zstd/Dictionary.zig");
 const Diagnostic = @import("../zstd/Diagnostic.zig");
 const frame = @import("../zstd/frame.zig");
 const decode = @import("../zstd/decode.zig");
+const zstd = @import("../zstd.zig");
 
 pub const frames = @embedFile("zstd-frames.corpus");
 pub const invalid = @embedFile("zstd-invalid.corpus");
@@ -145,7 +146,7 @@ test "every frame the reference judged gets its judgment, for the same reason" {
         const out = try gpa.alloc(u8, capacity);
         defer gpa.free(out);
         var diag: Diagnostic = .{};
-        const got = d.decompress(z, out, .{ .dictionaries = dicts.get(r.fields[1]), .diagnostic = &diag });
+        const got = d.decompress(z, out, .{ .dictionaries = dicts.get(r.fields[1]), .diagnostic = &diag, .max_window = std.math.maxInt(u64) });
         count += 1;
         if (std.mem.startsWith(u8, verdict, "ok ")) {
             var parts = std.mem.splitScalar(u8, verdict[3..], ' ');
@@ -225,4 +226,84 @@ test "every prefix of a frame is Truncated, and frames measure themselves as the
         }
     }
     try testing.expect(checked >= 200);
+}
+
+test "zstd frame inspection: public helpers count concatenated and skippable frames" {
+    var c = try zstd.Compressor.init(testing.allocator, .{ .max_input = 1024 });
+    defer c.deinit();
+    var out: [256]u8 = undefined;
+    const a = try c.compress("abcabcabcabc", &out, .{});
+    const b = try zstd.writeSkippable(out[a..], 9, "padding");
+    const d = try c.compress("hello hello", out[a + b ..], .{});
+    try testing.expectEqual(@as(?u64, 23), try zstd.contentSize(out[0 .. a + b + d], .standard));
+    try testing.expectEqual(@as(u64, 23), try zstd.decompressBound(out[0 .. a + b + d], .standard));
+    try testing.expectEqual(a, try zstd.frameLength(out[0 .. a + b + d], .standard));
+    try testing.expectEqual(@as(?u64, 12), (try zstd.frameHeader(out[0..a], .standard)).zstd.content_size);
+    const e = try c.compress("no declared size", &out, .{ .content_size = false });
+    try testing.expectEqual(@as(?u64, null), try zstd.contentSize(out[0..e], .standard));
+    try testing.expect((try zstd.decompressBound(out[0..e], .standard)) >= 16);
+    try testing.expectError(error.Truncated, zstd.frameLength(out[0 .. e - 1], .standard));
+}
+
+test "zstd decode: caller window limit is checked for memory and reader inputs" {
+    const d = try testing.allocator.create(Decompressor);
+    defer testing.allocator.destroy(d);
+    d.* = .init;
+    const in = [_]u8{ 0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x10, 0x01, 0x00, 0x00 };
+    var diag: Diagnostic = .{};
+    try testing.expectError(error.WindowTooLarge, d.decompress(&in, &.{}, .{ .max_window = 1024, .diagnostic = &diag }));
+    try testing.expectEqual(Diagnostic.Reason.window_too_large, diag.reason);
+    var r: std.Io.Reader = .fixed(&in);
+    try testing.expectError(error.WindowTooLarge, d.decompressReader(&r, &.{}, .{ .max_window = 1024 }));
+    try testing.expect((try d.decompress(&in, &.{}, .{ .max_window = 4096 })).finished);
+}
+
+test "zstd partial decode: every output length ends at the right literal or match byte" {
+    const gpa = testing.allocator;
+    const d = try gpa.create(Decompressor);
+    defer gpa.destroy(d);
+    d.* = .init;
+    const in = try gen.alloc(gpa, .json, 39, 2000);
+    defer gpa.free(in);
+    var c = try zstd.Compressor.init(gpa, .{ .level = 6, .max_input = in.len });
+    defer c.deinit();
+    const compressed = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
+    defer gpa.free(compressed);
+    const n = try c.compress(in, compressed, .{});
+    const out = try gpa.alloc(u8, in.len);
+    defer gpa.free(out);
+    for (0..in.len + 1) |len| {
+        const r = try d.decompress(compressed[0..n], out[0..len], .{ .partial = true });
+        try testing.expectEqual(len, r.out_len);
+        try testing.expectEqualSlices(u8, in[0..len], out[0..len]);
+        try testing.expectEqual(len == in.len, r.finished);
+    }
+}
+
+test "zstd partial decode: captured frames give their prefixes, including dictionaries" {
+    const gpa = testing.allocator;
+    var dicts: Dictionaries = try .load(gpa);
+    defer dicts.deinit(gpa);
+    const d = try gpa.create(Decompressor);
+    defer gpa.destroy(d);
+    d.* = .init;
+    const c = try corpus.Corpus.parse(frames);
+    var it = c.records();
+    var checked: usize = 0;
+    while (it.next()) |r| {
+        if (std.mem.startsWith(u8, r.fields[1], "concatenated")) continue;
+        const in = try input(gpa, r.fields[2]);
+        defer gpa.free(in);
+        const out = try gpa.alloc(u8, in.len);
+        defer gpa.free(out);
+        for ([_]usize{ 0, 1, 2, 3, 7, 31, 64, 127, 257, in.len / 2, in.len }) |limit| {
+            const len = @min(limit, in.len);
+            const decoded = try d.decompress(r.fields[4], out[0..len], .{ .dictionaries = dicts.get(r.fields[3]), .format = format(r.fields[1]), .partial = true });
+            try testing.expectEqual(len, decoded.out_len);
+            try testing.expectEqualSlices(u8, in[0..len], out[0..len]);
+            try testing.expectEqual(len == in.len, decoded.finished);
+        }
+        checked += 1;
+    }
+    try testing.expect(checked > 1500);
 }
