@@ -204,7 +204,11 @@ its window holds the declared history plus one decoded block. Call
 `Decompress.finish` at end of input to check truncation. `Decompress.Reader`
 uses the same decoder, reserving 4 KiB of its buffer for reader buffering.
 
-Long-distance and parallel compression, seekable streams and latency-oriented
+`Tuning.long_distance` adds sparse matching over a larger retained window
+(128 MiB by default); `window_log` sets its limit. Whole-buffer and streaming
+encoders share the same long-distance state and block engines.
+
+Parallel compression, seekable streams and latency-oriented
 compressed block sizing are still being built.
 
 ## Platforms

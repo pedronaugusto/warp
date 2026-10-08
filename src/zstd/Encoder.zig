@@ -23,6 +23,7 @@ const post = @import("post.zig");
 const sequences = @import("sequences.zig");
 const Dictionary = @import("Dictionary.zig");
 const dictionary_match = @import("match/dictionary.zig");
+const long_match = @import("match/long.zig");
 
 pub const Strategy = encode.Strategy;
 pub const Params = params_.Params;
@@ -53,6 +54,7 @@ gpa: Allocator,
 /// Private: immutable dictionary index and prefix sequence scratch.
 dictionary_index: ?dictionary_match.Index,
 dictionary_sequences: []encode.Sequence,
+long: ?long_match.State,
 
 /// Settings the level does not decide: each null keeps the level's.
 /// Logs and minimum lengths outside the supported range are clamped.
@@ -64,6 +66,8 @@ pub const Tuning = struct {
     min_match: ?u3 = null,
     target_length: ?u32 = null,
     strategy: ?Strategy = null,
+    /// Sparse matching over a larger retained window (128 MiB by default).
+    long_distance: bool = false,
 };
 
 pub const Options = struct {
@@ -92,6 +96,10 @@ pub fn resolve(options: Options, size: ?u64) Params {
     var p = params_.forLevel(options.level, size, dict_len);
     const t = options.tuning;
     var changed = false;
+    if (t.long_distance and t.window_log == null) {
+        p.window_log = 27;
+        changed = true;
+    }
     if (t.window_log) |v| {
         p.window_log = std.math.clamp(v, params_.window_log_min, params_.window_log_max);
         changed = true;
@@ -132,6 +140,9 @@ const Layout = struct {
     dict_heads: usize = 0,
     dict_chain: usize = 0,
     dict_sequences: usize = 0,
+    long_entries: usize = 0,
+    long_heads: usize = 0,
+    long_matches: usize = 0,
 
     fn fromParams(p: Params) Layout {
         const block: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
@@ -171,11 +182,17 @@ const Layout = struct {
             l.dict_chain = d.content.len;
             l.dict_sequences = l.seqs;
         }
+        if (options.tuning.long_distance) {
+            const p = resolve(options, if (options.max_input) |n| n else null);
+            l.long_entries = @as(usize, 1) << long_match.State.hashLog(p);
+            l.long_heads = l.long_entries >> 4;
+            l.long_matches = encode.block_max / 64 + 1;
+        }
         return l;
     }
 
     fn bytes(l: Layout) usize {
-        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.hash3 * 4 + l.opt + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (l.dict_heads + l.dict_chain) + @sizeOf(encode.Sequence) * l.dict_sequences, 64);
+        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.hash3 * 4 + l.opt + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (l.dict_heads + l.dict_chain) + @sizeOf(encode.Sequence) * l.dict_sequences + l.long_entries * @sizeOf(long_match.Entry) + l.long_matches * @sizeOf(long_match.Match) + l.long_heads, 64);
     }
 };
 
@@ -199,6 +216,13 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
     const l = Layout.of(options);
     std.debug.assert(buffer.len >= l.bytes());
     var at: usize = 0;
+    const long_matches: []long_match.Match = @alignCast(std.mem.bytesAsSlice(long_match.Match, buffer[at..][0 .. l.long_matches * @sizeOf(long_match.Match)])); // safe: base has 64-byte alignment
+    at += l.long_matches * @sizeOf(long_match.Match);
+    const long_entries: []long_match.Entry = @alignCast(std.mem.bytesAsSlice(long_match.Entry, buffer[at..][0 .. l.long_entries * @sizeOf(long_match.Entry)])); // safe: preceding table size is divisible by eight
+    at += l.long_entries * @sizeOf(long_match.Entry);
+    const long_heads = buffer[at..][0..l.long_heads];
+    at += l.long_heads;
+    // Even the smallest long table has four heads.
     const dictionary_heads: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_heads * 4])); // safe: base has 64-byte alignment
     at += l.dict_heads * 4;
     const dictionary_chain: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_chain * 4])); // safe: preceding table size is divisible by four
@@ -241,6 +265,7 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
         .gpa = undefined,
         .dictionary_index = if (options.dictionary) |d| dictionary_match.Index.init(d.content, dictionary_heads, dictionary_chain) else null,
         .dictionary_sequences = dictionary_sequences,
+        .long = if (options.tuning.long_distance) long_match.State.init(long_entries, long_heads, long_matches) else null,
     };
     c.entropy[0].reset();
     c.entropy[1].reset();
@@ -278,7 +303,9 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         @memset(c.tag_table, 0);
         @memset(c.hash3_table, 0);
         c.next_index = first_index;
+        if (c.long) |*state| state.reset();
     }
+    if (c.long) |*state| state.reset();
     var start = c.next_index;
     c.next_index += @intCast(in.len + 1);
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
@@ -302,7 +329,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         if (first and p.strategy == .btultra2 and len > 8) {
             c.store.reset();
             var seed_reps = reps;
-            _ = c.search(p, .{ .in = in, .start = start, .low = 0 }, &seed_reps, pos, pos + len);
+            _ = c.searchPrefix(p, .{ .in = in, .start = start, .low = start }, &seed_reps, pos, pos + len);
             c.store.reset();
             start += @intCast(len);
             c.next_index += @intCast(len);
@@ -412,12 +439,14 @@ fn allSame(bytes: []const u8) bool {
 pub fn prepare(c: *Encoder, p: Params, start: u32) void {
     c.startEntropy();
     c.entropy[1].reset();
+    if (c.long) |*state| state.reset();
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
     if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
 }
 
 /// Keep indices bounded while preserving active match history.
 pub fn reduceIndices(c: *Encoder, amount: u32) void {
+    if (c.long) |*state| state.reduceIndices(amount);
     for (c.hash_table) |*n| n.* -|= amount;
     for (c.chain_table) |*n| n.* -|= amount;
     for (c.hash3_table) |*n| n.* -|= amount;
@@ -466,6 +495,22 @@ fn prepareOptimal(c: *Encoder, p: Params, start: u32) void {
 
 /// Run the strategy over one block; returns the trailing literals.
 pub fn search(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, start: usize, end: usize) usize {
+    if (c.long) |*state| {
+        const matches = state.generate(w, start, end);
+        var at = start;
+        for (matches) |m| {
+            const tail = c.searchPrefix(p, w, reps, at, m.at);
+            const off = m.distance + 3;
+            c.store.store(w.in, m.at - tail, m.at, end, off, m.len);
+            reps.* = sequences.updateReps(reps.*, off, tail == 0);
+            at = m.at + m.len;
+        }
+        return c.searchPrefix(p, w, reps, at, end);
+    }
+    return c.searchPrefix(p, w, reps, start, end);
+}
+
+pub fn searchPrefix(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, start: usize, end: usize) usize {
     const table = c.hash_table[0 .. @as(usize, 1) << p.hash_log];
     const cmov = p.window_log < 19;
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) {

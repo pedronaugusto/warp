@@ -19,6 +19,8 @@ All notable changes to warp are documented here. The format follows
   indexes and encoding entropy; dictionary IDs can be suppressed for prefixes.
   `zstd.train` selects dictionary content by hashed or exact coverage, searches
   segment parameters and finalizes supplied content into a formatted dictionary.
+- Sparse long-distance matching on whole-buffer and streaming encoders,
+  with a configurable window and deterministic bucket selection across frames.
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every
   member, or one), from memory or a `std.Io.Reader`, with dictionaries, partial
   output, and the reason and bit offset of every refusal.

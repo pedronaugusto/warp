@@ -147,61 +147,28 @@ pub const Table = struct {
         const log: u4 = if (w.log <= 11) 11 else 12;
         t.kind = .double;
         t.log = log;
-        const scale: u4 = log - w.log;
-        // Symbols in table order (weight, then symbol), and where each
-        // weight's cells start over `log` bits.
-        var sorted: [max_symbols]u8 = undefined;
-        var first: [max_log + 2]u32 = @splat(0);
-        var start: [max_log + 2]u32 = @splat(0);
-        var n: u32 = 0;
-        var pos: u32 = 0;
-        var max_weight: u4 = 1;
-        for (1..@as(usize, w.log) + 1) |weight| {
-            first[weight] = n;
-            start[weight] = pos;
-            n += w.rank[weight];
-            pos += w.rank[weight] << @intCast(weight - 1 + scale);
-            if (w.rank[weight] != 0) max_weight = @intCast(weight);
-        }
-        first[@as(usize, w.log) + 1] = n;
-        start[@as(usize, w.log) + 1] = pos;
-        var fill = first;
-        for (w.weights[0..w.count], 0..) |weight, s| {
-            if (weight == 0) continue;
-            sorted[fill[weight]] = @intCast(s);
-            fill[weight] += 1;
-        }
-        const baseline: u32 = @as(u32, w.log) + 1;
-        const min_len: u32 = baseline - max_weight;
-        const cells = &t.cells.double;
-        for (1..@as(usize, w.log) + 1) |weight1| {
-            const len1: u32 = baseline - @as(u32, @intCast(weight1));
-            const rest: u32 = log - len1;
-            const span1 = @as(u32, 1) << @intCast(rest);
-            var at = start[weight1];
-            for (sorted[first[weight1]..first[weight1 + 1]]) |s1| {
-                if (rest < min_len) {
-                    @memset(cells[at..][0..span1], @as(u32, s1) | len1 << 16 | 1 << 24);
-                    at += span1;
-                    continue;
-                }
-                // Second codes longer than `rest` bits come first: one
-                // symbol there.
-                const min_weight: u32 = if (rest >= baseline) 1 else baseline - rest;
-                const skip = start[min_weight] >> @intCast(len1);
-                @memset(cells[at..][0..skip], @as(u32, s1) | len1 << 16 | 1 << 24);
-                var sub = at + skip;
-                for (min_weight..@as(usize, w.log) + 1) |weight2| {
-                    const len2: u32 = baseline - @as(u32, @intCast(weight2));
-                    const span2 = span1 >> @intCast(len2);
-                    const cell = @as(u32, s1) | len1 + len2 << 16 | 2 << 24;
-                    for (sorted[first[weight2]..first[weight2 + 1]]) |s2| {
-                        @memset(cells[sub..][0..span2], cell | @as(u32, s2) << 8);
-                        sub += span2;
-                    }
-                }
-                at += span1;
+        var single: [1 << max_log]u16 = undefined;
+        fillSingle(w, log, &single);
+        const limit = @as(usize, 1) << log;
+        var at: usize = 0;
+        while (at < limit) {
+            const first = single[at];
+            const len1: u5 = @intCast(first >> 8);
+            const span = @as(usize, 1) << (log - len1);
+            var sub: usize = 0;
+            while (sub < span) {
+                const second = single[sub << len1];
+                const len2: u5 = @intCast(second >> 8);
+                const pair = len1 + len2 <= log;
+                const size = if (pair) span >> len2 else 1;
+                const cell = if (pair)
+                    @as(u32, @as(u8, @truncate(first))) | @as(u32, @as(u8, @truncate(second))) << 8 | @as(u32, len1 + len2) << 16 | 2 << 24
+                else
+                    @as(u32, @as(u8, @truncate(first))) | @as(u32, len1) << 16 | 1 << 24;
+                @memset(t.cells.double[at + sub ..][0..size], cell);
+                sub += size;
             }
+            at += span;
         }
     }
 };

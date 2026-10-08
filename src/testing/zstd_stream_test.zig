@@ -235,6 +235,25 @@ test "zstd streaming encode: attached dictionaries preserve whole-buffer parity 
     };
 }
 
+test "zstd streaming encode: long-distance state survives chunking and window compaction" {
+    const gpa = testing.allocator;
+    const in = try gen.alloc(gpa, .noise, 78, 600_000);
+    defer gpa.free(in);
+    @memcpy(in[400_000..], in[0..200_000]);
+    const out = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
+    defer gpa.free(out);
+    for ([_]i32{ 1, 19 }) |level| {
+        const tuning: zstd.Tuning = .{ .long_distance = true, .window_log = 19 };
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .tuning = tuning, .max_input = in.len });
+        defer c.deinit();
+        const n = try c.compress(in, out, .{});
+        const encoded = try streamEncode(gpa, in, .{ .level = level, .tuning = tuning, .pledged_size = in.len }, 307, 257);
+        defer gpa.free(encoded);
+        try testing.expectEqualSlices(u8, out[0..n], encoded);
+        try chunked(gpa, encoded, in, .{}, 509, 1024);
+    }
+}
+
 test "zstd streaming encode: pledge mismatch and single-byte finish" {
     const gpa = testing.allocator;
     var s = try zstd.Compress.init(gpa, .{ .pledged_size = 3 });

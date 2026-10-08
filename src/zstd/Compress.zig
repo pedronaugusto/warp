@@ -228,7 +228,7 @@ fn emit(s: *Compress, finishing: bool) void {
 
 fn prime(s: *Compress, end: usize) void {
     var reps = s.reps;
-    _ = s.encoder.search(s.params, .{ .in = s.window[0 .. s.history + s.have], .start = s.base, .low = 0 }, &reps, s.history, end);
+    _ = s.encoder.searchPrefix(s.params, .{ .in = s.window[0 .. s.history + s.have], .start = s.base, .low = s.base }, &reps, s.history, end);
     s.encoder.store.reset();
     s.base += @intCast(end);
     s.encoder.optimal.next = s.base;

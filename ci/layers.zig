@@ -35,7 +35,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "zstd frame headers", .patterns = &.{"src/zstd/frame.zig"} },
     .{ .name = "zstd sequences", .patterns = &.{ "src/zstd/sequences.zig", "src/zstd/params.zig", "src/zstd/split.zig", "src/zstd/match/window.zig" } },
     .{ .name = "zstd prices", .patterns = &.{"src/zstd/match/price.zig"} },
-    .{ .name = "zstd match", .patterns = &.{ "src/zstd/match/fast.zig", "src/zstd/match/dfast.zig", "src/zstd/match/lazy.zig", "src/zstd/match/opt.zig", "src/zstd/match/dictionary.zig" } },
+    .{ .name = "zstd match", .patterns = &.{ "src/zstd/match/fast.zig", "src/zstd/match/dfast.zig", "src/zstd/match/lazy.zig", "src/zstd/match/opt.zig", "src/zstd/match/dictionary.zig", "src/zstd/match/long.zig" } },
     .{ .name = "zstd match entry", .patterns = &.{"src/zstd/match.zig"} },
     .{ .name = "zstd engines", .patterns = &.{ "src/zstd/decode.zig", "src/zstd/encode.zig" } },
     .{ .name = "zstd partitions", .patterns = &.{"src/zstd/post.zig"} },

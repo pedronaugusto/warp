@@ -7,6 +7,43 @@ const inputs = @import("gen");
 const zstd = @import("../zstd.zig");
 const Compressor = zstd.Compressor;
 
+test "zstd encoder: long-distance anchors recover distant random content at every strategy" {
+    const gpa = testing.allocator;
+    const in = try inputs.alloc(gpa, .noise, 92, 600_000);
+    defer gpa.free(in);
+    @memcpy(in[400_000..], in[0..200_000]);
+    var c = try Compressor.init(gpa, .{ .level = 1, .max_input = in.len, .tuning = .{ .hash_log = 6, .chain_log = 6, .window_log = 20 } });
+    defer c.deinit();
+    const out = try gpa.alloc(u8, Compressor.bound(in.len));
+    defer gpa.free(out);
+    const baseline = try c.compress(in, out, .{});
+    for (std.enums.values(Compressor.Strategy)) |strategy| {
+        var long = try Compressor.init(gpa, .{ .level = 1, .max_input = in.len, .tuning = .{ .strategy = strategy, .long_distance = true, .window_log = 20, .hash_log = 6, .chain_log = 6 } });
+        defer long.deinit();
+        const n = try long.compress(in, out, .{});
+        if (n + 150_000 >= baseline) std.debug.print("long {t}: {d} bytes; baseline {d}\n", .{ strategy, n, baseline });
+        try testing.expect(n + 150_000 < baseline);
+        try roundTrip(gpa, &long, in, .{});
+    }
+}
+
+test "zstd encoder: long-distance bucket wrap is deterministic across frames" {
+    const gpa = testing.allocator;
+    for ([_]inputs.Kind{ .text, .json, .periodic }) |kind| {
+        const in = try inputs.alloc(gpa, kind, 2, 600_000);
+        defer gpa.free(in);
+        var c = try Compressor.init(gpa, .{ .max_input = in.len, .tuning = .{ .long_distance = true } });
+        defer c.deinit();
+        try roundTrip(gpa, &c, in, .{});
+    }
+    const mixed = try inputs.alloc(gpa, .noise, 91, 1025 * 1024);
+    defer gpa.free(mixed);
+    for (1..1025) |packet| @memcpy(mixed[packet * 1024 ..][0..512], mixed[0..512]);
+    var c = try Compressor.init(gpa, .{ .max_input = mixed.len, .tuning = .{ .long_distance = true } });
+    defer c.deinit();
+    try roundTrip(gpa, &c, mixed, .{});
+}
+
 test "zstd encoder: attached dictionaries, repeat histories and suppressed IDs" {
     const gpa = testing.allocator;
     const captured = @import("zstd_decode_test.zig");
