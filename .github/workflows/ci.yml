@@ -4,6 +4,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      indicative:
+        description: Run manual indicative x86 own/std/previous-main measurements only
+        type: boolean
+        default: false
       tier:
         description: fast, merge (the candidate for main) or release (before a cut, or after threading or platform work)
         type: choice
@@ -23,8 +27,11 @@ permissions:
   contents: read
   actions: read
 jobs:
+  indicative:
+    if: github.event_name == 'workflow_dispatch' && inputs.indicative
+    uses: ./.github/workflows/indicative.yml
   skip:
-    if: github.event_name != 'push' && !inputs.status-only
+    if: github.event_name != 'push' && !inputs.status-only && !inputs.indicative
     uses: pedronaugusto/preflight/.github/workflows/skip.yml@b28046cc22055fcd32640117fc0e6965283a8ae5
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
@@ -32,7 +39,7 @@ jobs:
       working-directory: "."
   gate:
     needs: skip
-    if: always() && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
+    if: always() && !inputs.indicative && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
     uses: pedronaugusto/preflight/.github/workflows/zig.yml@b28046cc22055fcd32640117fc0e6965283a8ae5
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
@@ -58,7 +65,7 @@ jobs:
   # Package-owned deterministic corpus gate; retain after caller regeneration.
   sizes:
     needs: skip
-    if: always() && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
+    if: always() && !inputs.indicative && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

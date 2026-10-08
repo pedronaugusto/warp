@@ -74,3 +74,14 @@ partial output, determinism and allocation failures using shakedown. Cross-build
 fixtures exercise freestanding, big-endian, 32-bit, CRC-disabled and C-interface
 calls. Size gates compare aggregate totals; single-input tails are reported.
 Benchmarks compile in CI; timing evidence is measured separately.
+
+Manual x86 measurements use `zig build hosted-bench -Dhosted-previous-main=true`
+and the `Indicative x86 measurements` workflow on Linux and Windows (dispatch
+`ci.yml` with `indicative=true` on a candidate branch). Its lazy
+benchmark dependency pins the previous main; consumers fetch no benchmark code.
+Generated inputs, ReleaseFast baseline targets and reused storage are identical
+across adjacent, alternating samples. Every timed output is checked outside the
+timer. Raw times, absolute throughput and paired ratio spread are reported as
+indicative: runner contention and ordering effects remain possible. DEFLATE uses
+zlib frames at matching levels; Zstandard uses checksum-off frames for both
+Warp and std. Missing historical or std APIs are explicitly unmeasured.

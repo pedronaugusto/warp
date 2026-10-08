@@ -1,0 +1,39 @@
+name: Indicative x86 measurements
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Runner provenance
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          zig version
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            lscpu
+            free -b
+          else
+            powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors; Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory'
+          fi
+      - name: Paired interleaved rows (indicative)
+        shell: bash
+        run: |
+          set -o pipefail
+          zig build hosted-bench -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-previous-main=true 2>&1 | tee indicative.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: indicative-${{ matrix.os }}
+          path: indicative.txt

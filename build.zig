@@ -145,6 +145,14 @@ pub fn build(b: *std.Build) !void {
     // import. Its error is returned last, so one configure pass asks for it
     // and for preflight together.
     var needed: error{LazyDependencyNeeded}!void = {};
+    // Manual indicative measurements; ordinary CI compiles without fetching
+    // a historical package. The workflow explicitly enables its pinned main.
+    if (b.option(bool, "hosted-previous-main", "Compare indicative rows with pinned previous main") orelse false) {
+        if (b.dependencyLazy("previous_main", .{ .target = target, .optimize = .fast })) |previous| {
+            addHostedBench(b, target, previous.module("warp"), true, check);
+        } else |err| needed = err;
+    } else addHostedBench(b, target, warpModule(b, target, .fast), false, check);
+
     if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize })) |shakedown| {
         test_module.addImport("shakedown", shakedown.module("shakedown"));
     } else |err| needed = err;
@@ -302,4 +310,27 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
     const output = run.addOutputFileArg(options.name);
     run.addArgs(&.{ @tagName(options.container), b.fmt("{d}", .{options.level}) });
     return output;
+}
+
+fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, check: *std.Build.Step) void {
+    const current = warpModule(b, target, .fast);
+    const options = b.addOptions();
+    options.addOption(bool, "previous_main", enabled);
+    const m = b.createModule(.{
+        .root_source_file = b.path("bench/hosted.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{
+            .{ .name = "warp", .module = current },
+            .{ .name = "previous", .module = if (enabled) previous else current },
+            .{ .name = "gen", .module = b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = target, .optimize = .fast }) },
+        },
+    });
+    m.addOptions("options", options);
+    const artifact = b.addExecutable(.{ .name = "hosted-bench", .root_module = m });
+    check.dependOn(&artifact.step);
+    const step = b.step("hosted-bench", "Run indicative paired own/std/previous-main measurements");
+    const run = b.addRunArtifact(artifact);
+    run.has_side_effects = true;
+    step.dependOn(&run.step);
 }

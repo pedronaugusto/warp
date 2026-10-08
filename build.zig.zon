@@ -5,6 +5,11 @@
     .fingerprint = 0xd3b58c6615b10424,
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "docs", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
+        .previous_main = .{
+            .url = "git+https://github.com/pedronaugusto/warp#e607c194f837fa0a7a8c08914495d4cc0202eb91",
+            .hash = "warp-0.1.0-JASxFYjCAwAP0PAOtv3qiGkW9TIRI_Wwg0jwlH8FhtSZ",
+            .lazy = true,
+        },
         .preflight = .{
             .url = "git+https://github.com/pedronaugusto/preflight#b28046cc22055fcd32640117fc0e6965283a8ae5",
             .hash = "preflight-0.1.0-LX1ZwjmEBwCer1MlXnpPw9a_ko-7gFW-k0n7uD_6jv-P",
