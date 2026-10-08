@@ -188,7 +188,13 @@ fn fillSingle(w: *const Weights, log: u4, cells: *[1 << max_log]u16) void {
         if (weight == 0) continue;
         const len = @as(u32, 1) << @intCast(weight - 1 + scale);
         const cell: u16 = @as(u16, @intCast(s)) | @as(u16, w.log + 1 - weight) << 8;
-        @memset(cells[start[weight]..][0..len], cell);
+        const out = cells[start[weight]..][0..len];
+        switch (len) {
+            1 => out[0] = cell,
+            2 => out[0..2].* = @splat(cell),
+            4 => out[0..4].* = @splat(cell),
+            else => @memset(out, cell),
+        }
         start[weight] += len;
     }
 }

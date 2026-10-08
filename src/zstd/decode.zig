@@ -18,6 +18,7 @@
 //! for the same reason.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const bits = @import("bits.zig");
 const fse = @import("fse.zig");
 const huffman = @import("huffman.zig");
@@ -529,8 +530,8 @@ pub const Frame = struct {
         const out = f.out;
         const prefix = f.start;
         const lit = lits.bytes.ptr;
-        // The fast loop reads 16 bytes from the last literal it copies.
-        const lit_fast_end = @min(lits.len, lits.bytes.len -| 16);
+        // Long literal runs can read up to 31 bytes past their end.
+        const lit_fast_end = @min(lits.len, lits.bytes.len -| margin);
         var o = op.*;
         var l = lp.*;
         var n = count;
@@ -569,6 +570,7 @@ pub const Frame = struct {
                     offset = rep;
                 }
             }
+            prefetchMatch(out, o, prefix, offset);
             var ml: usize = mlc.base;
             if (mlc.extra_bits > 0) ml += @intCast(r.readFast(@intCast(mlc.extra_bits)));
             if (@as(u32, ofc.extra_bits) + mlc.extra_bits + llc.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
@@ -775,14 +777,14 @@ inline fn copy8(dst: [*]u8, src: [*]const u8) void {
     dst[0..8].* = v;
 }
 
-/// Copy `len` bytes 16 at a time, writing up to 15 past the end; source
+/// Copy `len` bytes 16 at a time, writing up to 31 past the end; source
 /// and destination at least 16 apart, or the source after.
 inline fn wildCopy16(dst: [*]u8, src: [*]const u8, len: usize) void {
-    var i: usize = 0;
-    while (true) {
+    copy16(dst, src);
+    var i: usize = 16;
+    while (i < len) : (i += 32) {
         copy16(dst + i, src + i);
-        i += 16;
-        if (i >= len) break;
+        copy16(dst + i + 16, src + i + 16);
     }
 }
 
@@ -827,4 +829,9 @@ inline fn readState(r: *bits.Reader, log: u4) u32 {
     const state: u32 = @intCast(r.read(log));
     _ = r.reload();
     return state;
+}
+
+/// Fetch a decoded prefix while its remaining sequence bits are read.
+inline fn prefetchMatch(out: []u8, o: usize, prefix: usize, offset: usize) void {
+    if (builtin.cpu.arch == .aarch64 and offset <= o - prefix) @prefetch(out.ptr + o - offset, .{});
 }
