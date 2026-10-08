@@ -92,7 +92,7 @@ pub const Options = struct {
     gzip: gzip.Header = .{},
 };
 
-const Closing = struct { mode: Mode, step: enum { parse, mark, done } };
+const Closing = struct { mode: Mode, step: enum { buffered, parse, mark, done } };
 const Mode = enum { partial, sync, full, block, finish };
 const Change = struct { level: u4, strategy: Strategy };
 
@@ -393,11 +393,17 @@ fn slide(d: *Deflate) bool {
 /// mode writes; one step at a time while the output drains.
 fn close(d: *Deflate, mode: Mode, out: []u8) Drain {
     var out_len = d.drain(out);
-    if (d.closing == null) d.closing = .{ .mode = mode, .step = .parse };
+    if (d.closing == null) d.closing = .{ .mode = mode, .step = .buffered };
     const c = &d.closing.?;
     std.debug.assert(c.mode == mode);
     while (d.pending_start == d.pending_end) {
         switch (c.step) {
+            // Output backpressure may leave accepted input unparsed.
+            // Finish the same ordinary parse that write would perform
+            // before the tail gains knowledge of the flush or input end.
+            .buffered => if (d.pump(.more) == .done) {
+                c.step = .parse;
+            },
             .parse => if (d.pump(if (mode == .finish) .final else .flush) == .done) {
                 c.step = .mark;
             },

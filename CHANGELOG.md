@@ -60,6 +60,9 @@ All notable changes to warp are documented here. The format follows
 
 ### Fixed
 
+- Streaming close parses accepted buffered input before the final or flush tail,
+  keeping block boundaries stable when pending output fills the caller buffer.
+
 - DEFLATE compressors keep optimal-parser state in their initialization buffer
   only when the configured levels can use it, reducing low-level value size.
 - Captured header verdicts retain static reason storage across later calls.
