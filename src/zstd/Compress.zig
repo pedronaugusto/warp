@@ -7,12 +7,14 @@ const Encoder = @import("Encoder.zig");
 const window_ = @import("match/window.zig");
 const encode = @import("encode.zig");
 const params_ = @import("params.zig");
+const Dictionary = @import("Dictionary.zig");
 
 pub const Options = struct {
     level: i32 = params_.default_level,
     tuning: Encoder.Tuning = .{},
     frame: Encoder.Frame = .{},
     pledged_size: ?u64 = null,
+    dictionary: ?*const Dictionary = null,
 };
 pub const Step = struct { in_len: usize, out_len: usize };
 pub const Drain = struct { out_len: usize, done: bool };
@@ -43,7 +45,7 @@ owned: []align(64) u8 = &.{},
 gpa: std.mem.Allocator = undefined,
 
 fn encoderOptions(options: Options) Encoder.Options {
-    return .{ .level = options.level, .tuning = options.tuning, .max_input = if (options.pledged_size) |n| if (n <= std.math.maxInt(usize)) @intCast(n) else null else null };
+    return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = if (options.pledged_size) |n| if (n <= std.math.maxInt(usize)) @intCast(n) else null else null };
 }
 
 fn blockMax(p: Encoder.Params) usize {
@@ -106,10 +108,11 @@ pub fn reset(s: *Compress) void {
 }
 
 fn startFrame(s: *Compress) void {
+    s.reps = s.encoder.initialReps();
     s.encoder.prepare(s.params, s.base);
     var frame = s.options.frame;
     frame.content_size = frame.content_size and s.options.pledged_size != null;
-    s.pending_end = Encoder.writeHeader(s.output, s.params, s.options.pledged_size orelse 0, frame) catch unreachable; // unreachable: output reserves the maximum 18-byte frame header
+    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged_size orelse 0, frame) catch unreachable; // unreachable: output reserves the maximum 18-byte frame header
 }
 
 /// Accept input and drain ready bytes. A full final block stays staged
@@ -201,6 +204,7 @@ fn emit(s: *Compress, finishing: bool) void {
         const tail = s.encoder.search(s.params, window, &next_reps, s.history, end);
         s.encoder.store.storeLast(s.window[end - tail .. end]);
     } else s.encoder.store.storeLast(s.window[s.history..end]);
+    s.encoder.mergeDictionary(s.window[0 .. s.history + s.have], s.history, end, s.total - s.have, s.params, s.reps, &next_reps);
     const raw = s.params.strategy == .fast and s.params.target_length > 0;
     const n = s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last) catch unreachable; // unreachable: output holds raw input plus headers for all 197 possible partitions
     s.savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));

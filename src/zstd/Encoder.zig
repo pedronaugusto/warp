@@ -21,6 +21,8 @@ const opt_ = match.opt;
 const split = @import("split.zig");
 const post = @import("post.zig");
 const sequences = @import("sequences.zig");
+const Dictionary = @import("Dictionary.zig");
+const dictionary_match = @import("match/dictionary.zig");
 
 pub const Strategy = encode.Strategy;
 pub const Params = params_.Params;
@@ -48,8 +50,12 @@ next_index: u32,
 /// Private: the memory `init` allocated, freed by `deinit`.
 owned: []align(64) u8,
 gpa: Allocator,
+/// Private: immutable dictionary index and prefix sequence scratch.
+dictionary_index: ?dictionary_match.Index,
+dictionary_sequences: []encode.Sequence,
 
 /// Settings the level does not decide: each null keeps the level's.
+/// Logs and minimum lengths outside the supported range are clamped.
 pub const Tuning = struct {
     window_log: ?u5 = null,
     hash_log: ?u5 = null,
@@ -67,6 +73,8 @@ pub const Options = struct {
     /// The largest input `compress` will see: it sizes the tables. A larger
     /// input still compresses, with tables of this size. null: any input.
     max_input: ?usize = null,
+    /// Borrowed and indexed once; must outlive the compressor.
+    dictionary: ?*const Dictionary = null,
 };
 
 /// What surrounds the compressed data.
@@ -76,29 +84,34 @@ pub const Frame = struct {
     /// The content size in the header.
     content_size: bool = true,
     format: frame.Format = .standard,
+    dictionary_id: bool = true,
 };
 
 pub fn resolve(options: Options, size: ?u64) Params {
-    var p = params_.forLevel(options.level, size, 0);
+    const dict_len = if (options.dictionary) |d| d.content.len else 0;
+    var p = params_.forLevel(options.level, size, dict_len);
     const t = options.tuning;
     var changed = false;
     if (t.window_log) |v| {
-        p.window_log = v;
+        p.window_log = std.math.clamp(v, params_.window_log_min, params_.window_log_max);
         changed = true;
     }
     if (t.hash_log) |v| {
-        p.hash_log = v;
+        p.hash_log = std.math.clamp(v, params_.hash_log_min, 30);
         changed = true;
     }
     if (t.chain_log) |v| {
-        p.chain_log = v;
+        p.chain_log = std.math.clamp(v, 6, 30);
         changed = true;
     }
-    if (t.search_log) |v| p.search_log = v;
-    if (t.min_match) |v| p.min_match = v;
+    if (t.search_log) |v| p.search_log = std.math.clamp(v, 1, 30);
+    if (t.min_match) |v| p.min_match = std.math.clamp(v, 3, 7);
     if (t.target_length) |v| p.target_length = v;
-    if (t.strategy) |v| p.strategy = v;
-    if (changed) p = params_.adjust(p, size, 0);
+    if (t.strategy) |v| {
+        p.strategy = v;
+        changed = true;
+    }
+    if (changed) p = params_.adjust(p, size, dict_len);
     return p;
 }
 
@@ -116,6 +129,9 @@ const Layout = struct {
     lits: usize,
     hash3: usize,
     opt: usize,
+    dict_heads: usize = 0,
+    dict_chain: usize = 0,
+    dict_sequences: usize = 0,
 
     fn fromParams(p: Params) Layout {
         const block: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
@@ -150,11 +166,16 @@ const Layout = struct {
                 @field(l, field) = @max(@field(l, field), @field(small, field));
             }
         }
+        if (options.dictionary) |d| {
+            l.dict_heads = @as(usize, 1) << dictionary_match.Index.hashLog(d.content.len);
+            l.dict_chain = d.content.len;
+            l.dict_sequences = l.seqs;
+        }
         return l;
     }
 
     fn bytes(l: Layout) usize {
-        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.hash3 * 4 + l.opt + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits, 64);
+        return std.mem.alignForward(usize, l.hash * 4 + l.chain * 4 + l.tags + l.hash3 * 4 + l.opt + l.seqs * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (l.dict_heads + l.dict_chain) + @sizeOf(encode.Sequence) * l.dict_sequences, 64);
     }
 };
 
@@ -178,6 +199,12 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
     const l = Layout.of(options);
     std.debug.assert(buffer.len >= l.bytes());
     var at: usize = 0;
+    const dictionary_heads: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_heads * 4])); // safe: base has 64-byte alignment
+    at += l.dict_heads * 4;
+    const dictionary_chain: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_chain * 4])); // safe: preceding table size is divisible by four
+    at += l.dict_chain * 4;
+    const dictionary_sequences: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.dict_sequences * @sizeOf(encode.Sequence)])); // safe: preceding tables and Sequence have four-byte alignment
+    at += l.dict_sequences * @sizeOf(encode.Sequence);
     const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
     at += l.hash * 4;
     const chain_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
@@ -212,6 +239,8 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
         .next_index = first_index,
         .owned = &.{},
         .gpa = undefined,
+        .dictionary_index = if (options.dictionary) |d| dictionary_match.Index.init(d.content, dictionary_heads, dictionary_chain) else null,
+        .dictionary_sequences = dictionary_sequences,
     };
     c.entropy[0].reset();
     c.entropy[1].reset();
@@ -237,15 +266,12 @@ pub const CompressError = error{
 /// The longest frame `compress` writes for `len` bytes of input.
 pub fn bound(len: usize) usize {
     const small = if (len < 128 * 1024) (128 * 1024 - len) >> 11 else 0;
-    return len + (len >> 8) + small;
+    return len +| (len >> 8) +| small;
 }
 
 /// One complete frame of `in` into `out`; returns its length.
 pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!usize {
-    var p = resolve(c.options, in.len);
-    p.window_log = @min(p.window_log, c.capacity.window_log);
-    p.hash_log = @min(p.hash_log, std.math.log2_int(usize, c.hash_table.len));
-    if (c.chain_table.len != 0) p.chain_log = @min(p.chain_log, std.math.log2_int(usize, c.chain_table.len));
+    const p = c.parameters(in.len);
     if (c.next_index + @as(u64, in.len) + encode.block_max >= index_limit) {
         @memset(c.hash_table, 0);
         @memset(c.chain_table, 0);
@@ -257,11 +283,11 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
     c.next_index += @intCast(in.len + 1);
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
     if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
-    var o = try writeHeader(out, p, in.len, f);
+    var o = try c.header(out, p, in.len, f);
     const block_max: usize = @min(encode.block_max, @as(usize, 1) << p.window_log);
-    var reps: [3]u32 = .{ 1, 4, 8 };
+    var reps = c.initialReps();
     var prev: usize = 0;
-    c.entropy[0].reset();
+    c.startEntropy();
     var pos: usize = 0;
     var first = true;
     // Bytes saved so far: a block is split only once there are some, so
@@ -292,6 +318,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
             const rest = c.search(p, block_w, &next_reps, pos, pos + len);
             c.store.storeLast(in[pos + len - rest .. pos + len]);
         } else c.store.storeLast(in[pos..][0..len]);
+        c.mergeDictionary(in, pos, pos + len, pos, p, reps, &next_reps);
         const bytes = try c.writeBlocks(p, in[pos..][0..len], out[o..], raw_literals, &reps, next_reps, &prev, first, last);
         savings += @as(i64, @intCast(len)) - @as(i64, @intCast(bytes));
         o += bytes;
@@ -383,7 +410,7 @@ fn allSame(bytes: []const u8) bool {
 
 /// Reset a frame's entropy and the insertion state for fixed parameters.
 pub fn prepare(c: *Encoder, p: Params, start: u32) void {
-    c.entropy[0].reset();
+    c.startEntropy();
     c.entropy[1].reset();
     if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
     if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
@@ -492,23 +519,41 @@ fn depthOf(s: Strategy) u2 {
 }
 
 pub fn writeHeader(out: []u8, p: Params, size: u64, f: Frame) CompressError!usize {
+    return writeHeaderWithDictionary(out, p, size, f, 0);
+}
+
+pub fn header(c: *const Encoder, out: []u8, p: Params, size: u64, f: Frame) CompressError!usize {
+    const id = if (f.dictionary_id) if (c.options.dictionary) |d| d.id else 0 else 0;
+    return writeHeaderWithDictionary(out, p, size, f, id);
+}
+
+fn writeHeaderWithDictionary(out: []u8, p: Params, size: u64, f: Frame, id: u32) CompressError!usize {
     const window_size = @as(u64, 1) << p.window_log;
     const single = f.content_size and window_size >= size;
     const fcs: u8 = if (f.content_size) @as(u8, @intFromBool(size >= 256)) + @intFromBool(size >= 65536 + 256) + @intFromBool(size >= 0xffff_ffff) else 0;
     const fields = [4]u8{ @intFromBool(single), 2, 4, 8 };
-    const header_len: usize = (if (f.format == .standard) @as(usize, 4) else 0) + 1 + @intFromBool(!single) + fields[fcs];
+    const dict_bytes: usize = if (id == 0) 0 else if (id < 256) 1 else if (id < 65536) 2 else 4;
+    const dict_flag: u8 = if (dict_bytes == 4) 3 else @intCast(dict_bytes);
+    const header_len: usize = (if (f.format == .standard) @as(usize, 4) else 0) + 1 + @intFromBool(!single) + fields[fcs] + dict_bytes;
     if (out.len < header_len) return error.OutputTooSmall;
     var o: usize = 0;
     if (f.format == .standard) {
         std.mem.writeInt(u32, out[0..4], frame.magic, .little);
         o = 4;
     }
-    out[o] = @as(u8, @intFromBool(f.checksum)) << 2 | @as(u8, @intFromBool(single)) << 5 | fcs << 6;
+    out[o] = @as(u8, @intFromBool(f.checksum)) << 2 | @as(u8, @intFromBool(single)) << 5 | fcs << 6 | dict_flag;
     o += 1;
     if (!single) {
         out[o] = (@as(u8, p.window_log) - params_.window_log_min) << 3;
         o += 1;
     }
+    switch (dict_bytes) {
+        1 => out[o] = @intCast(id),
+        2 => std.mem.writeInt(u16, out[o..][0..2], @intCast(id), .little),
+        4 => std.mem.writeInt(u32, out[o..][0..4], id, .little),
+        else => {},
+    }
+    o += dict_bytes;
     switch (fcs) {
         0 => if (single) {
             out[o] = @intCast(size);
@@ -528,4 +573,57 @@ pub fn writeHeader(out: []u8, p: Params, size: u64, f: Frame) CompressError!usiz
         },
     }
     return o;
+}
+
+/// Repeat offsets before the first compressed block.
+pub fn initialReps(c: *const Encoder) [3]u32 {
+    if (c.options.dictionary) |d| if (d.formatted) return d.entropy.reps;
+    return .{ 1, 4, 8 };
+}
+
+fn startEntropy(c: *Encoder) void {
+    if (c.options.dictionary) |d| if (d.formatted) {
+        c.entropy[0] = d.encoding;
+        return;
+    };
+    c.entropy[0].reset();
+}
+
+/// Dictionary candidates use the same block sequence and entropy engine.
+pub fn mergeDictionary(c: *Encoder, in: []const u8, start: usize, end: usize, frame_pos: u64, p: Params, before: [3]u32, after: *[3]u32) void {
+    if (c.dictionary_index) |*index| {
+        after.* = before;
+        dictionary_match.merge(index, &c.store, c.dictionary_sequences, in, start, end, frame_pos, p.window_log, p.search_log, after);
+    }
+}
+
+/// A training sample's sequences, using the same search and dictionary
+/// candidate paths as compression; samples fit one block.
+pub fn analyze(c: *Encoder, in: []const u8) void {
+    const p = c.parameters(in.len);
+    if (c.next_index + @as(u64, in.len) >= index_limit) {
+        @memset(c.hash_table, 0);
+        @memset(c.chain_table, 0);
+        @memset(c.tag_table, 0);
+        @memset(c.hash3_table, 0);
+        c.next_index = first_index;
+    }
+    const base = c.next_index;
+    c.next_index += @intCast(in.len + 1);
+    c.prepare(p, base);
+    c.store.reset();
+    var reps = c.initialReps();
+    if (in.len >= 7) {
+        const tail = c.search(p, .{ .in = in, .start = base, .low = base }, &reps, 0, in.len);
+        c.store.storeLast(in[in.len - tail ..]);
+    } else c.store.storeLast(in);
+    c.mergeDictionary(in, 0, in.len, 0, p, c.initialReps(), &reps);
+}
+
+fn parameters(c: *const Encoder, size: usize) Params {
+    var p = resolve(c.options, size);
+    p.window_log = @min(p.window_log, c.capacity.window_log);
+    p.hash_log = @min(p.hash_log, std.math.log2_int(usize, c.hash_table.len));
+    if (c.chain_table.len != 0) p.chain_log = @min(p.chain_log, std.math.log2_int(usize, c.chain_table.len));
+    return p;
 }

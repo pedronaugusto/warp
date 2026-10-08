@@ -7,6 +7,73 @@ const inputs = @import("gen");
 const zstd = @import("../zstd.zig");
 const Compressor = zstd.Compressor;
 
+test "zstd encoder: attached dictionaries, repeat histories and suppressed IDs" {
+    const gpa = testing.allocator;
+    const captured = @import("zstd_decode_test.zig");
+    var dictionaries = try captured.Dictionaries.load(gpa);
+    defer dictionaries.deinit(gpa);
+    const plain = try inputs.alloc(gpa, .json, 4, 4096);
+    defer gpa.free(plain);
+    var raw = zstd.Dictionary.raw(plain);
+    const all = try gpa.alloc(*const zstd.Dictionary, dictionaries.count + 1);
+    defer gpa.free(all);
+    for (dictionaries.values[0..dictionaries.count], all[0..dictionaries.count]) |d, *slot| slot.* = d;
+    all[dictionaries.count] = &raw;
+    const d = try gpa.create(zstd.Decompressor);
+    defer gpa.destroy(d);
+    var out: [8192]u8 = undefined;
+    var back: [4096]u8 = undefined;
+    for (all) |dictionary| for (std.enums.values(Compressor.Strategy)) |strategy| {
+        const options: Compressor.Options = .{ .max_input = plain.len, .dictionary = dictionary, .tuning = .{ .strategy = strategy } };
+        var counter: testing.FailingAllocator = .init(gpa, .{});
+        var c = try Compressor.init(counter.allocator(), options);
+        defer c.deinit();
+        try testing.expectEqual(Compressor.memory(options), counter.allocated_bytes);
+        const allocations = counter.allocations;
+        for ([_]bool{ true, false }) |id| {
+            const n = try c.compress(plain, &out, .{ .dictionary_id = id });
+            const header = (try zstd.frameHeader(out[0..n], .standard)).zstd;
+            try testing.expectEqual(if (id) dictionary.id else 0, header.dictionary_id);
+            d.* = .init;
+            const result = try d.decompress(out[0..n], &back, .{ .dictionaries = &.{dictionary} });
+            try testing.expectEqual(plain.len, result.out_len);
+            try testing.expectEqualSlices(u8, plain, &back);
+            if (dictionary == &raw) try testing.expect(n < 100);
+        }
+        try testing.expectEqual(allocations, counter.allocations);
+    };
+}
+
+test "zstd encoder: dictionary matches continue into the frame's prefix" {
+    const gpa = testing.allocator;
+    const dictionary = zstd.Dictionary.raw("abcdefgh");
+    var c = try Compressor.init(gpa, .{ .dictionary = &dictionary, .max_input = 48 });
+    defer c.deinit();
+    const plain = "abcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh";
+    var out: [128]u8 = undefined;
+    var back: [48]u8 = undefined;
+    const n = try c.compress(plain, &out, .{});
+    var d: zstd.Decompressor = .init;
+    _ = try d.decompress(out[0..n], &back, .{ .dictionaries = &.{&dictionary} });
+    try testing.expectEqualSlices(u8, plain, &back);
+    try testing.expect(n < 30);
+}
+
+test "zstd encoder: tuning extremes normalize before sizing or searching" {
+    const gpa = testing.allocator;
+    const in = try inputs.alloc(gpa, .json, 4, 2048);
+    defer gpa.free(in);
+    for (std.enums.values(Compressor.Strategy)) |strategy| {
+        var c = try Compressor.init(gpa, .{ .max_input = in.len, .tuning = .{ .strategy = strategy, .window_log = 0, .hash_log = 0, .chain_log = 0, .search_log = 0, .min_match = 0 } });
+        defer c.deinit();
+        try roundTrip(gpa, &c, in, .{});
+    }
+}
+
+test "zstd encoder: bounds saturate at the address space limit" {
+    try testing.expectEqual(std.math.maxInt(usize), Compressor.bound(std.math.maxInt(usize)));
+}
+
 fn roundTrip(gpa: std.mem.Allocator, c: *Compressor, in: []const u8, f: Compressor.Frame) !void {
     const out = try gpa.alloc(u8, Compressor.bound(in.len));
     defer gpa.free(out);

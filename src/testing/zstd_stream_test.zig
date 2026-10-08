@@ -214,6 +214,27 @@ test "zstd streaming encode: flush, unknown sizes, magicless and reset" {
     }
 }
 
+test "zstd streaming encode: attached dictionaries preserve whole-buffer parity and sliding history" {
+    const gpa = testing.allocator;
+    var dictionaries = try fixtures.Dictionaries.load(gpa);
+    defer dictionaries.deinit(gpa);
+    const in = try gen.alloc(gpa, .json, 4, 20_000);
+    defer gpa.free(in);
+    var raw = zstd.Dictionary.raw(in[0..4096]);
+    var out: [24_000]u8 = undefined;
+    const choices = [_]*const zstd.Dictionary{ &raw, dictionaries.values[0] };
+    for (choices) |dictionary| for ([_]i32{ 1, 3, 9, 19 }) |level| {
+        const tuning: zstd.Tuning = .{ .window_log = 10 };
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .tuning = tuning, .dictionary = dictionary, .max_input = in.len });
+        defer c.deinit();
+        const n = try c.compress(in, &out, .{});
+        const encoded = try streamEncode(gpa, in, .{ .level = level, .tuning = tuning, .dictionary = dictionary, .pledged_size = in.len }, 7, 13);
+        defer gpa.free(encoded);
+        try testing.expectEqualSlices(u8, out[0..n], encoded);
+        try chunked(gpa, encoded, in, .{ .dictionaries = &.{dictionary} }, 1, 1);
+    };
+}
+
 test "zstd streaming encode: pledge mismatch and single-byte finish" {
     const gpa = testing.allocator;
     var s = try zstd.Compress.init(gpa, .{ .pledged_size = 3 });

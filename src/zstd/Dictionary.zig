@@ -10,6 +10,7 @@ const fse = @import("fse.zig");
 const huffman = @import("huffman.zig");
 const codes = @import("codes.zig");
 const decode = @import("decode.zig");
+const encode = @import("encode.zig");
 
 pub const magic: u32 = 0xEC30A437;
 
@@ -21,6 +22,8 @@ content: []const u8,
 formatted: bool,
 /// Private: those tables (undefined for raw content).
 entropy: Entropy,
+/// Private: encoding tables, built once with the decoding tables.
+encoding: encode.Entropy,
 
 /// A formatted dictionary's tables, in the forms both directions need.
 pub const Entropy = struct {
@@ -42,7 +45,7 @@ pub const ParseError = error{InvalidDictionary};
 /// borrows `bytes`.
 pub fn parse(bytes: []const u8) ParseError!Dictionary {
     if (bytes.len < 8 or std.mem.readInt(u32, bytes[0..4], .little) != magic) return raw(bytes);
-    var d: Dictionary = .{ .id = std.mem.readInt(u32, bytes[4..8], .little), .content = undefined, .formatted = true, .entropy = undefined };
+    var d: Dictionary = .{ .id = std.mem.readInt(u32, bytes[4..8], .little), .content = undefined, .formatted = true, .entropy = undefined, .encoding = undefined };
     const e = &d.entropy;
     var pos: usize = 8;
     huffman.readWeights(bytes[pos..], &e.weights) catch return error.InvalidDictionary;
@@ -63,12 +66,20 @@ pub fn parse(bytes: []const u8) ParseError!Dictionary {
         if (rep.* == 0 or rep.* > content_len) return error.InvalidDictionary;
     }
     d.content = bytes[pos + 12 ..];
+    d.encoding.huf.fromWeights(&e.weights);
+    d.encoding.ll.build(e.ll_counts.norm[0 .. @as(usize, e.ll_counts.max_symbol) + 1], e.ll_counts.log);
+    d.encoding.of.build(e.of_counts.norm[0 .. @as(usize, e.of_counts.max_symbol) + 1], e.of_counts.log);
+    d.encoding.ml.build(e.ml_counts.norm[0 .. @as(usize, e.ml_counts.max_symbol) + 1], e.ml_counts.log);
+    d.encoding.huf_repeat = .check;
+    d.encoding.ll_repeat = .check;
+    d.encoding.of_repeat = .check;
+    d.encoding.ml_repeat = .check;
     return d;
 }
 
 /// `bytes` as raw content, even if they start with the magic number.
 pub fn raw(bytes: []const u8) Dictionary {
-    return .{ .id = 0, .content = bytes, .formatted = false, .entropy = undefined };
+    return .{ .id = 0, .content = bytes, .formatted = false, .entropy = undefined, .encoding = undefined };
 }
 
 fn counts(in: []const u8, max: u8, max_log: u4, c: *fse.Counts) ParseError!usize {

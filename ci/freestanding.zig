@@ -62,14 +62,26 @@ export fn warpGzipHeader(in: [*]const u8, in_len: usize, out: [*]u8, out_len: us
 }
 
 /// All zstd strategies, frame options and caller-provided storage.
-export fn warpZstdCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32) isize {
-    const options: warp.zstd.Compressor.Options = .{ .level = level, .max_input = in_len };
+export fn warpZstdCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32, dict: [*]const u8, dict_len: usize) isize {
+    const dictionary = warp.zstd.Dictionary.parse(dict[0..dict_len]) catch return -1;
+    const options: warp.zstd.Compressor.Options = .{ .level = level, .max_input = in_len, .dictionary = &dictionary };
     const size = warp.zstd.Compressor.memory(options);
     if (size > memory.len) return -1;
     var c: warp.zstd.Compressor = .initBuffer(memory[0..size], options);
     defer c.deinit();
     if (out_len < warp.zstd.Compressor.bound(in_len)) return -1;
     return @intCast(c.compress(in[0..in_len], out[0..out_len], .{}) catch return -1);
+}
+
+/// Dictionary trainers and finalization with caller-provided allocation.
+export fn warpZstdTrain(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, exact: bool) isize {
+    var allocator: std.heap.FixedBufferAllocator = .init(&memory);
+    const samples: []const []const u8 = &.{in[0..in_len]};
+    const options: warp.zstd.train.Options = .{ .algorithm = if (exact) .cover else .fast_cover, .steps = 1 };
+    const n = warp.zstd.train.train(allocator.allocator(), samples, out[0..out_len], options) catch return -1;
+    const dictionary = warp.zstd.Dictionary.parse(out[0..n]) catch return -1;
+    const finalized = warp.zstd.train.finalize(allocator.allocator(), dictionary.content, samples, out[0..out_len], options) catch return -1;
+    return @intCast(finalized);
 }
 
 /// Zstd decoding, reader decoding, dictionaries and frame inspection.

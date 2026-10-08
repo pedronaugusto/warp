@@ -151,8 +151,8 @@ pub const Table = struct {
         // Symbols in table order (weight, then symbol), and where each
         // weight's cells start over `log` bits.
         var sorted: [max_symbols]u8 = undefined;
-        var first: [max_log + 2]u32 = undefined;
-        var start: [max_log + 2]u32 = undefined;
+        var first: [max_log + 2]u32 = @splat(0);
+        var start: [max_log + 2]u32 = @splat(0);
         var n: u32 = 0;
         var pos: u32 = 0;
         var max_weight: u4 = 1;
@@ -439,6 +439,32 @@ pub const EncodeTable = struct {
     log: u4,
 
     const Node = struct { count: u32, parent: u16, symbol: u8, bits: u8 };
+
+    /// Canonical encoding codewords for a parsed dictionary's weights.
+    pub fn fromWeights(t: *EncodeTable, w: *const Weights) void {
+        @memset(&t.lens, 0);
+        var counts: [max_log + 2]u16 = @splat(0);
+        for (w.weights[0..w.count], 0..) |weight, symbol| {
+            if (weight == 0) continue;
+            const len = w.log + 1 - weight;
+            t.lens[symbol] = len;
+            counts[len] += 1;
+        }
+        var values: [max_log + 2]u16 = @splat(0);
+        var value: u16 = 0;
+        var len: usize = w.log;
+        while (len != 0) : (len -= 1) {
+            values[len] = value;
+            value = (value + counts[len]) >> 1;
+        }
+        for (&t.lens, &t.codes, &t.cells) |length, *code, *cell| {
+            code.* = if (length == 0) 0 else values[length];
+            cell.* = @as(u32, code.*) << 8 | length;
+            if (length != 0) values[length] += 1;
+        }
+        t.max_symbol = @intCast(w.count - 1);
+        t.log = w.log;
+    }
 
     /// A code for `counts` (symbols 0 to `counts.len - 1`, the last present),
     /// no code longer than `max_bits`; two or more symbols present.

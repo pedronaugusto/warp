@@ -178,12 +178,19 @@ through 22. Level 0 selects the default, 3. `init` takes its tables once;
 `max_input` to size the tables for a workload; larger calls still work with
 those tables. `Compressor.bound(len)` reserves enough output for every frame.
 `Frame` selects checksums, content sizes and standard or magicless framing.
-`Tuning` overrides the level's search strategy and parameters.
+`Tuning` overrides the level's search strategy and parameters; logs and minimum
+match lengths outside the supported range are clamped.
 
 `warp.zstd.Decompressor.decompress` and `decompressReader` decode concatenated
 frames, skippable frames and dictionary frames. Dictionary bytes are borrowed
 by `Dictionary.parse` or `Dictionary.raw`, and dictionaries can be shared
-between decoders. Checksums are verified by default; `partial` returns the
+between decoders and encoders. `Options.dictionary` binds one to a compressor;
+its match index is built at initialization and reused without allocation.
+`Frame.dictionary_id = false` suppresses its ID for an agreed reference prefix.
+`zstd.train.train` selects content with hashed or exact coverage and searches
+segment parameters; `zstd.train.finalize` adds entropy tables, repeat offsets
+and a stable ID to supplied content. Both write into caller-provided output.
+Checksums are verified by default; `partial` returns the
 output prefix, and `frames = .one` leaves the next frame unread. `max_window`
 defaults to 128 MiB. `Diagnostic` records the refusal's byte offset and reason.
 
@@ -197,8 +204,8 @@ its window holds the declared history plus one decoded block. Call
 `Decompress.finish` at end of input to check truncation. `Decompress.Reader`
 uses the same decoder, reserving 4 KiB of its buffer for reader buffering.
 
-Dictionary compression and training, long-distance and parallel compression,
-and seekable streams are still being built.
+Long-distance and parallel compression, seekable streams and latency-oriented
+compressed block sizing are still being built.
 
 ## Platforms
 

@@ -25,6 +25,8 @@ pub const Diagnostic = @import("zstd/Diagnostic.zig");
 /// A dictionary: content frames refer back into, with entropy tables when
 /// formatted.
 pub const Dictionary = @import("zstd/Dictionary.zig");
+/// Dictionary selection, parameter search and entropy finalization.
+pub const train = @import("zstd/train.zig");
 /// Whole-buffer decoding.
 pub const Decompressor = @import("zstd/Decompressor.zig");
 /// Resumable decoding and its reader adapter.
