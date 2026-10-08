@@ -46,3 +46,35 @@ test "zstd indices: normalization preserves history and positional rings" {
         try testing.expectEqualSlices(u8, output[0..a], other[0..b]);
     }
 }
+
+test "zstd indices: row searches preserve history when normalizing shared match storage" {
+    const gpa = testing.allocator;
+    const input = try gen.alloc(gpa, .json, 193, 1_400_000);
+    defer gpa.free(input);
+    const output = try gpa.alloc(u8, Encoder.bound(input.len));
+    defer gpa.free(output);
+    const other = try gpa.alloc(u8, output.len);
+    defer gpa.free(other);
+    for ([_]i32{ 6, 9, 12 }) |level| {
+        var c = try Encoder.init(gpa, .{ .level = level, .max_input = input.len, .tuning = .{ .window_log = 17 } });
+        defer c.deinit();
+        const n = try c.compress(input, output, .{});
+        const m = try c.compressLong(input, other, .{}, 1 << 19);
+        try testing.expectEqualSlices(u8, output[0..n], other[0..m]);
+    }
+}
+
+test "zstd indices: normalization follows the active strategy beyond a soft size hint" {
+    const gpa = testing.allocator;
+    const input = try gen.alloc(gpa, .json, 231, 600_000);
+    defer gpa.free(input);
+    const output = try gpa.alloc(u8, Encoder.bound(input.len));
+    defer gpa.free(output);
+    const other = try gpa.alloc(u8, output.len);
+    defer gpa.free(other);
+    var c = try Encoder.init(gpa, .{ .level = 13, .max_input = 37 });
+    defer c.deinit();
+    const n = try c.compress(input, output, .{});
+    const m = try c.compressLong(input, other, .{}, 1 << 15);
+    try testing.expectEqualSlices(u8, output[0..n], other[0..m]);
+}

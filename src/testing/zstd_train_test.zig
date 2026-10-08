@@ -112,3 +112,20 @@ test "zstd training: finalization learns repeat offsets from sample matches" {
     try testing.expectEqual(@as(u32, 17), dictionary.entropy.reps[0]);
     _ = try roundTrip(testing.allocator, dictionary, values);
 }
+
+test "zstd training: 256-byte dictionary buffers support training and finalization" {
+    const values = try samples(testing.allocator, 24);
+    defer freeSamples(testing.allocator, values);
+    var out: [256]u8 = undefined;
+    const dictionary = try testing.allocator.create(zstd.Dictionary);
+    defer testing.allocator.destroy(dictionary);
+    for ([_]zstd.train.Options{ .{ .k = 64, .d = 6 }, .{ .algorithm = .cover, .k = 64, .d = 6 } }) |options| {
+        const n = try zstd.train.train(testing.allocator, values[0..20], &out, options);
+        dictionary.* = try .parse(out[0..n]);
+        _ = try roundTrip(testing.allocator, dictionary, values[20..]);
+    }
+    const n = try zstd.train.finalize(testing.allocator, values[0], values[0..20], &out, .{});
+    dictionary.* = try .parse(out[0..n]);
+    try testing.expectEqualSlices(u8, values[0][values[0].len - dictionary.content.len ..], dictionary.content);
+    _ = try roundTrip(testing.allocator, dictionary, values[20..]);
+}

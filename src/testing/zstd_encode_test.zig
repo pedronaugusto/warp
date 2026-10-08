@@ -297,3 +297,25 @@ test "zstd encoder: fast and lazy levels meet captured size bounds" {
         };
     }
 }
+
+test "zstd encoder: level-six storage fits three MiB across row and chain size classes" {
+    const large = try inputs.alloc(testing.allocator, .json, 91, 200_000);
+    defer testing.allocator.free(large);
+    const small = large[0..8192];
+    var c = try zstd.Compressor.init(testing.allocator, .{ .level = 6, .max_input = large.len });
+    defer c.deinit();
+    const encoder = &c.encoder;
+    try testing.expect(zstd.Compressor.memory(.{ .level = 6, .max_input = large.len }) <= 3 << 20);
+    const output = try testing.allocator.alloc(u8, zstd.Compressor.bound(large.len));
+    defer testing.allocator.free(output);
+    const expected = try testing.allocator.alloc(u8, output.len);
+    defer testing.allocator.free(expected);
+    for ([_][]const u8{ large, small, large, small }) |input| {
+        var fresh = try zstd.Compressor.init(testing.allocator, .{ .level = 6, .max_input = input.len });
+        defer fresh.deinit();
+        const n = try c.compress(input, output, .{});
+        const m = try fresh.compress(input, expected, .{});
+        try testing.expectEqualSlices(u8, expected[0..m], output[0..n]);
+        encoder.reduceIndices(encoder.next_index - 2);
+    }
+}

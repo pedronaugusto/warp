@@ -24,7 +24,7 @@ pub const TrainError = Allocator.Error || error{ InvalidParameters, NotEnoughSam
 const header_reserve = 512;
 
 fn validate(samples: []const []const u8, out: []u8, options: Options) TrainError!void {
-    if (out.len <= header_reserve) return error.OutputTooSmall;
+    if (out.len < 256) return error.OutputTooSmall;
     if (options.steps == 0 or options.steps > 1000) return error.InvalidParameters;
     if (options.d) |d| if (d < 4 or d > 8) return error.InvalidParameters;
     if (options.k) |k| if (k < (options.d orelse 8) or k > out.len) return error.InvalidParameters;
@@ -34,7 +34,8 @@ fn validate(samples: []const []const u8, out: []u8, options: Options) TrainError
     if (total < 8 or total > std.math.maxInt(u32) / 2) return error.NotEnoughSamples;
 }
 
-/// Train at most `out.len` bytes. Null d/k search d-mers of 6 and 8 bytes
+/// Train at most `out.len` bytes; the buffer holds at least 256 bytes.
+/// Null d/k search d-mers of 6 and 8 bytes
 /// and segment sizes from 50 to 2000; held-out samples choose the result.
 pub fn train(gpa: Allocator, samples: []const []const u8, out: []u8, options: Options) TrainError!usize {
     try validate(samples, out, options);
@@ -175,6 +176,7 @@ pub fn finalize(gpa: Allocator, content: []const u8, samples: []const []const u8
     at += try writeDistribution(header[at..], stats.of[0 .. max_of + 1], codes.max_of_log);
     at += try writeDistribution(header[at..], &stats.ml, codes.max_ml_log);
     at += try writeDistribution(header[at..], &stats.ll, codes.max_ll_log);
+    if (out.len <= at + 12) return error.OutputTooSmall;
     const len = @min(content.len, out.len - at - 12);
     if (len == 0) return error.OutputTooSmall;
     const tail = content[content.len - len ..];

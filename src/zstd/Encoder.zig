@@ -33,9 +33,13 @@ pub const Params = params_.Params;
 options: Options,
 /// Private: the largest table logs the memory holds.
 capacity: Params,
+/// Private: the insertion state initialized for the current search.
+active_strategy: ?Strategy,
 /// Private: the match tables.
 hash_table: []u32,
 chain_table: []u32,
+/// Private: a chain stored in an inactive suffix of the hash table.
+chain_offset: ?usize,
 tag_table: []u8,
 /// Private: the chain and row matchfinders' insertion state.
 lazy: lazy_.State,
@@ -133,6 +137,8 @@ fn rows(p: Params) bool {
 const Layout = struct {
     hash: usize,
     chain: usize,
+    chain_hash: usize,
+    chain_offset: ?usize = null,
     tags: usize,
     seqs: usize,
     lits: usize,
@@ -154,6 +160,7 @@ const Layout = struct {
         return .{
             .hash = @as(usize, 1) << p.hash_log,
             .chain = chain,
+            .chain_hash = if (chain != 0 and !with_rows) @as(usize, 1) << p.hash_log else 0,
             .tags = if (with_rows) @as(usize, 1) << p.hash_log else 0,
             .seqs = encode.SeqStore.capacity(block, p.min_match),
             .lits = block + 32,
@@ -174,9 +181,14 @@ const Layout = struct {
             // table. Other roles must exist when a size class changes
             // strategy, but do not need a larger hash table.
             small.tags = @min(small.tags, l.hash);
-            inline for (.{ "chain", "tags", "seqs", "lits", "hash3", "opt" }) |field| {
+            inline for (.{ "chain", "chain_hash", "tags", "seqs", "lits", "hash3", "opt" }) |field| {
                 @field(l, field) = @max(@field(l, field), @field(small, field));
             }
+        }
+        // Chains and rows serve different size classes. The hash suffix
+        // beyond every chain class's active hashes can hold its chain.
+        if (l.chain != 0 and l.hash >= l.chain and l.chain_hash <= l.hash - l.chain) {
+            l.chain_offset = l.hash - l.chain;
         }
         if (options.dictionary) |d| {
             // Dictionary matches can cut a prefix match down to three bytes.
@@ -195,7 +207,7 @@ const Layout = struct {
     }
 
     fn bytes(l: Layout) usize {
-        const size = @as(u64, l.hash) * 4 + @as(u64, l.chain) * 4 + l.tags + @as(u64, l.hash3) * 4 + l.opt + @as(u64, l.seqs) * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (@as(u64, l.dict_heads) + l.dict_chain) + @sizeOf(encode.Sequence) * @as(u64, l.dict_sequences) + @as(u64, l.long_entries) * @sizeOf(long_match.Entry) + @as(u64, l.long_matches) * @sizeOf(long_match.Match) + l.long_heads;
+        const size = @as(u64, l.hash) * 4 + (if (l.chain_offset == null) @as(u64, l.chain) * 4 else 0) + l.tags + @as(u64, l.hash3) * 4 + l.opt + @as(u64, l.seqs) * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (@as(u64, l.dict_heads) + l.dict_chain) + @sizeOf(encode.Sequence) * @as(u64, l.dict_sequences) + @as(u64, l.long_entries) * @sizeOf(long_match.Entry) + @as(u64, l.long_matches) * @sizeOf(long_match.Match) + l.long_heads;
         if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
         return std.mem.alignForward(usize, @intCast(size), 64);
     }
@@ -239,8 +251,8 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
     at += l.dict_sequences * @sizeOf(encode.Sequence);
     const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
     at += l.hash * 4;
-    const chain_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
-    at += l.chain * 4;
+    const chain_table: []u32 = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
+    if (l.chain_offset == null) at += l.chain * 4;
     const tag_table = buffer[at..][0..l.tags];
     at += l.tags;
     const hash3_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash3 * 4])); // safe: preceding tables have sizes divisible by four
@@ -259,8 +271,10 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
     var c: Encoder = .{
         .options = options,
         .capacity = p,
+        .active_strategy = null,
         .hash_table = hash_table,
         .chain_table = chain_table,
+        .chain_offset = l.chain_offset,
         .tag_table = tag_table,
         .lazy = undefined,
         .optimal = undefined,
@@ -306,6 +320,7 @@ pub fn bound(len: usize) usize {
 pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!usize {
     if (in.len >= index_limit - encode.block_max) return c.compressLong(in, out, f, std.math.maxInt(u32));
     const p = c.parameters(in.len);
+    c.active_strategy = p.strategy;
     if (c.next_index + @as(u64, in.len) + encode.block_max >= index_limit) {
         @memset(c.hash_table, 0);
         @memset(c.chain_table, 0);
@@ -620,6 +635,7 @@ fn allSame(bytes: []const u8) bool {
 
 /// Reset a frame's entropy and the insertion state for fixed parameters.
 pub fn prepare(c: *Encoder, p: Params, start: u32) void {
+    c.active_strategy = p.strategy;
     c.startEntropy();
     c.entropy[1].reset();
     if (c.long) |*state| state.reset();
@@ -630,7 +646,11 @@ pub fn prepare(c: *Encoder, p: Params, start: u32) void {
 /// Keep indices bounded while preserving active match history.
 pub fn reduceIndices(c: *Encoder, amount: u32) void {
     if (c.long) |*state| state.reduceIndices(amount);
-    for (c.hash_table) |*n| n.* -|= amount;
+    // A shared chain is normalized once, retaining its unsorted markers.
+    const chain_from = c.chain_offset orelse c.hash_table.len;
+    const chain_to = if (c.chain_offset != null) chain_from + c.chain_table.len else chain_from;
+    for (c.hash_table[0..chain_from]) |*n| n.* -|= amount;
+    for (c.hash_table[chain_to..]) |*n| n.* -|= amount;
     // One is the lazy tree's unsorted marker, below every real index.
     // Preserving it is harmless in hash/chain tables and required for the
     // tree to retain candidates across normalization.
@@ -639,10 +659,12 @@ pub fn reduceIndices(c: *Encoder, amount: u32) void {
     };
     for (c.hash3_table) |*n| n.* -|= amount;
     c.next_index -|= amount;
-    if (params_.usesRows(c.capacity.strategy) or c.capacity.strategy == .btlazy2) c.lazy.next -|= amount;
-    if (@backingInt(c.capacity.strategy) >= @backingInt(Strategy.btopt)) {
-        c.optimal.next -|= amount;
-        c.optimal.next3 -|= amount;
+    if (c.active_strategy) |strategy| {
+        if (params_.usesRows(strategy) or strategy == .btlazy2) c.lazy.next -|= amount;
+        if (@backingInt(strategy) >= @backingInt(Strategy.btopt)) {
+            c.optimal.next -|= amount;
+            c.optimal.next3 -|= amount;
+        }
     }
 }
 
