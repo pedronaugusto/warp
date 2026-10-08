@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &buffer);
     const w = &stdout.interface;
-    try w.print("INDICATIVE Zig {s} target {s}-{s}; previous-main e607c194f837fa0a7a8c08914495d4cc0202eb91 enabled={}; 7 rotated adjacent samples; allocations outside timing; std resets per stream, Warp contexts reused; stages current/previous-main/std (zstd current/std)\n", .{ @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag), options.previous_main });
+    try w.print("INDICATIVE current {s} Zig {s} target {s}-{s}; previous-main e607c194f837fa0a7a8c08914495d4cc0202eb91 enabled={}; 7 rotated adjacent samples; allocations outside timing; std resets per stream, Warp contexts reused; stages current/previous-main/std (zstd current/std)\n", .{ options.commit, @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag), options.previous_main });
     const out = try gpa.alloc(u8, 5 << 20);
     const back = try gpa.alloc(u8, 4 << 20);
     const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
@@ -84,7 +84,7 @@ fn measure(gpa: std.mem.Allocator, io: Io, w: *Io.Writer, workload: []const u8, 
             var timed: Timed = .{ .inner = ctx, .stage = stage };
             var json_buffer: [4096]u8 = undefined;
             var json: Io.Writer = .fixed(&json_buffer);
-            try bench.run(gpa, io, &json, &timed, &.{.{ .name = name, .unit = "traversal", .run = Timed.run }}, .{ .commit = "workflow-revision" }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
+            try bench.run(gpa, io, &json, &timed, &.{.{ .name = name, .unit = "traversal", .run = Timed.run }}, .{ .commit = options.commit }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
             var parsed = try bench.parse(gpa, json.buffered());
             defer parsed.deinit();
             raw[stage][iteration] = @intFromFloat(parsed.rows.items[0].value.samples[0]);
