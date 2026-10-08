@@ -96,3 +96,19 @@ test "zstd training: impossible options and insufficient samples fail before all
     try testing.expectError(error.InvalidParameters, zstd.train.train(testing.failing_allocator, &.{"enough sample bytes"}, &out, .{ .d = 3 }));
     try testing.expectError(error.InvalidParameters, zstd.train.train(testing.failing_allocator, &.{"enough sample bytes"}, &out, .{ .id = 0 }));
 }
+
+test "zstd training: finalization learns repeat offsets from sample matches" {
+    const values: []const []const u8 = &.{
+        "abcdefghijklmnopq!abcdefghijklmnopq?",
+        "abcdefghijklmnopq@abcdefghijklmnopq#",
+        "abcdefghijklmnopq$abcdefghijklmnopq%",
+        "abcdefghijklmnopq^abcdefghijklmnopq&",
+    };
+    var out: [1024]u8 = undefined;
+    const n = try zstd.train.finalize(testing.allocator, "abcdefghijklmnopq", values, &out, .{});
+    const dictionary = try testing.allocator.create(zstd.Dictionary);
+    defer testing.allocator.destroy(dictionary);
+    dictionary.* = try .parse(out[0..n]);
+    try testing.expectEqual(@as(u32, 17), dictionary.entropy.reps[0]);
+    _ = try roundTrip(testing.allocator, dictionary, values);
+}

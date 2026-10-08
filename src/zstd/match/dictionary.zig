@@ -108,7 +108,7 @@ pub fn merge(index: *const Index, store: *sequences.SeqStore, scratch: []sequenc
             };
             sequence += 1;
         }
-        if (sequence != 0 and pos >= prefix_start and pos < prefix_end and prefix_end - pos >= 4) {
+        if (sequence != 0 and pos >= prefix_start and pos < prefix_end and prefix_end - pos >= 3) {
             const distance = scratch[sequence - 1].off - 3;
             emit(store, in, anchor, pos, end, distance, prefix_end - pos, reps);
             pos = prefix_end;
@@ -117,8 +117,15 @@ pub fn merge(index: *const Index, store: *sequences.SeqStore, scratch: []sequenc
         }
         const m = index.find(in, pos, end, frame_start + pos - start, window_log, attempts);
         if (m.len >= 4) {
-            emit(store, in, anchor, pos, end, m.distance, m.len, reps);
-            pos += m.len;
+            var at: usize = @intCast(frame_start + pos - start + index.content.len - m.distance);
+            var len = m.len;
+            while (pos > anchor and at > 0 and in[pos - 1] == index.content[at - 1]) {
+                pos -= 1;
+                at -= 1;
+                len += 1;
+            }
+            emit(store, in, anchor, pos, end, m.distance, len, reps);
+            pos += len;
             anchor = pos;
         } else pos += 1;
     }

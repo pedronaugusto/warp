@@ -96,6 +96,30 @@ test "zstd encoder: dictionary matches continue into the frame's prefix" {
     try testing.expect(n < 30);
 }
 
+test "zstd encoder: an unrelated dictionary preserves three-byte prefix matches" {
+    const gpa = testing.allocator;
+    var input: [2000]u8 = undefined;
+    // Repeated three-byte markers with a changing fourth byte: matches
+    // of length three must survive the dictionary candidate pass.
+    for (&input, 0..) |*byte, i| byte.* = if (i % 4 < 3) @intCast(i % 4 + 'A') else @truncate(i / 4);
+    const dictionary = zstd.Dictionary.raw("unrelated dictionary content for this input");
+    const tuning: Compressor.Tuning = .{ .min_match = 3, .strategy = .btultra2 };
+    var plain = try Compressor.init(gpa, .{ .level = 19, .max_input = input.len, .tuning = tuning });
+    defer plain.deinit();
+    var attached = try Compressor.init(gpa, .{ .level = 19, .dictionary = &dictionary, .max_input = input.len, .tuning = tuning });
+    defer attached.deinit();
+    var encoded: [3000]u8 = undefined;
+    const baseline = try plain.compress(&input, &encoded, .{ .checksum = false });
+    const len = try attached.compress(&input, &encoded, .{ .checksum = false });
+    try testing.expect(len <= baseline);
+    var decoded: [input.len]u8 = undefined;
+    const decoder = try gpa.create(zstd.Decompressor);
+    defer gpa.destroy(decoder);
+    decoder.* = .init;
+    _ = try decoder.decompress(encoded[0..len], &decoded, .{ .dictionaries = &.{&dictionary} });
+    try testing.expectEqualSlices(u8, &input, &decoded);
+}
+
 test "zstd encoder: tuning extremes normalize before sizing or searching" {
     const gpa = testing.allocator;
     const in = try inputs.alloc(gpa, .json, 4, 2048);

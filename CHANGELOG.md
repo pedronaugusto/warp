@@ -18,7 +18,8 @@ All notable changes to warp are documented here. The format follows
 - Bound raw and formatted dictionaries on both encoders, with immutable match
   indexes and encoding entropy; dictionary IDs can be suppressed for prefixes.
   `zstd.train` selects dictionary content by hashed or exact coverage, searches
-  segment parameters and finalizes supplied content into a formatted dictionary.
+  segment parameters and finalizes supplied content into a formatted dictionary
+  with entropy tables and repeat offsets learned from the samples.
 - Sparse long-distance matching on whole-buffer and streaming encoders,
   with a configurable window and deterministic bucket selection across frames.
 - `zstd.Compress.Options.target_block_size`: partitions parsed superblocks by

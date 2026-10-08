@@ -179,6 +179,8 @@ const Layout = struct {
             }
         }
         if (options.dictionary) |d| {
+            // Dictionary matches can cut a prefix match down to three bytes.
+            l.seqs = @max(l.seqs, encode.SeqStore.capacity(l.lits - 32, 3));
             l.dict_heads = @as(usize, 1) << dictionary_match.Index.hashLog(dictionary_match.Index.contentLen(d.content.len));
             l.dict_chain = dictionary_match.Index.contentLen(d.content.len);
             l.dict_sequences = l.seqs;

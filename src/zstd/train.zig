@@ -9,6 +9,8 @@ const huffman = @import("huffman.zig");
 const fse = @import("fse.zig");
 const codes = @import("codes.zig");
 const params = @import("params.zig");
+const sequences = @import("sequences.zig");
+const encode = @import("encode.zig");
 
 pub const Options = struct {
     algorithm: enum { fast_cover, cover } = .fast_cover,
@@ -36,7 +38,7 @@ fn validate(samples: []const []const u8, out: []u8, options: Options) TrainError
 /// and segment sizes from 50 to 2000; held-out samples choose the result.
 pub fn train(gpa: Allocator, samples: []const []const u8, out: []u8, options: Options) TrainError!usize {
     try validate(samples, out, options);
-    const content = try gpa.alloc(u8, out.len - header_reserve);
+    const content = try gpa.alloc(u8, out.len);
     defer gpa.free(content);
     const candidate = try gpa.alloc(u8, out.len);
     defer gpa.free(candidate);
@@ -90,8 +92,17 @@ const Stats = struct {
     ll: [codes.max_ll + 1]u32 = @splat(1),
     of: [codes.max_of + 1]u32 = @splat(1),
     ml: [codes.max_ml + 1]u32 = @splat(1),
+    offsets: [1024]u32 = initialOffsets(),
 
-    fn collect(stats: *Stats, encoder: *Encoder, samples: []const []const u8) void {
+    fn initialOffsets() [1024]u32 {
+        var counts: [1024]u32 = @splat(0);
+        for ([_]usize{ 1, 4, 8 }) |offset| counts[offset] = 1;
+        return counts;
+    }
+
+    fn collect(stats: *Stats, gpa: Allocator, encoder: *Encoder, samples: []const []const u8) Allocator.Error!void {
+        const out = try gpa.alloc(u8, Encoder.bound(128 << 10));
+        defer gpa.free(out);
         // A slight prior avoids an unrepresentable all-equal weight table.
         stats.literals[0] += 1;
         for (samples) |sample| {
@@ -100,15 +111,42 @@ const Stats = struct {
                 const len = @min(128 << 10, sample.len - at);
                 encoder.analyze(sample[at..][0..len]);
                 const store = &encoder.store;
+                const p = Encoder.resolve(encoder.options, len);
+                at += len;
+                if (len < 7) continue;
+                if (encode.compressBlock(store, len, &encoder.entropy[0], &encoder.entropy[1], p.strategy, false, out) == 0) continue;
                 for (store.lits[0..store.lit_len]) |literal| stats.literals[literal] += 1;
+                var reps: [3]u32 = .{ 1, 4, 8 };
                 for (store.seqs[0..store.count], 0..) |q, i| {
+                    const zero = store.litLen(i) == 0;
+                    const offset = sequences.distance(reps, q.off, zero);
+                    // Early matches benefit most from dictionary repeats.
+                    if (store.count >= 2 and i < 2 and offset < stats.offsets.len) {
+                        stats.offsets[offset] += if (i == 0) @as(u32, 3) else 1;
+                    }
+                    reps = sequences.updateReps(reps, q.off, zero);
                     stats.ll[codes.llCode(store.litLen(i))] += 1;
                     stats.ml[codes.mlCode(store.matchLen(i) + 3)] += 1;
                     stats.of[codes.ofCode(q.off)] += 1;
                 }
-                at += len;
             }
         }
+    }
+
+    fn repeatOffsets(stats: *const Stats, content_len: usize) [3]u32 {
+        var selected: [3]u32 = undefined;
+        for (&selected, 0..) |*offset, i| {
+            offset.* = 1;
+            var best: u32 = 0;
+            for (1..@min(stats.offsets.len, content_len + 1)) |candidate| {
+                if (std.mem.findScalar(u32, selected[0..i], @intCast(candidate)) != null) continue;
+                if (stats.offsets[candidate] > best) {
+                    best = stats.offsets[candidate];
+                    offset.* = @intCast(candidate);
+                }
+            }
+        }
+        return selected;
     }
 };
 
@@ -122,7 +160,7 @@ pub fn finalize(gpa: Allocator, content: []const u8, samples: []const []const u8
     var encoder = try Encoder.init(gpa, .{ .dictionary = &raw, .level = options.level, .max_input = 128 << 10 });
     defer encoder.deinit();
     var stats: Stats = .{};
-    stats.collect(&encoder, samples);
+    try stats.collect(gpa, &encoder, samples);
     scale(&stats.literals);
     scale(&stats.ll);
     scale(&stats.ml);
@@ -132,7 +170,9 @@ pub fn finalize(gpa: Allocator, content: []const u8, samples: []const []const u8
     var table: huffman.EncodeTable = undefined;
     table.build(&stats.literals, huffman.encode_log);
     var at = 8 + (table.writeDescription(header[8..]) orelse return error.InvalidParameters);
-    at += try writeDistribution(header[at..], &stats.of, codes.max_of_log);
+    // A sample fits one block, so larger offset codes cannot occur.
+    const max_of = @min(codes.max_of, std.math.log2_int(u64, @as(u64, content.len) +| (128 << 10) +| 3));
+    at += try writeDistribution(header[at..], stats.of[0 .. max_of + 1], codes.max_of_log);
     at += try writeDistribution(header[at..], &stats.ml, codes.max_ml_log);
     at += try writeDistribution(header[at..], &stats.ll, codes.max_ll_log);
     const len = @min(content.len, out.len - at - 12);
@@ -140,8 +180,8 @@ pub fn finalize(gpa: Allocator, content: []const u8, samples: []const []const u8
     const tail = content[content.len - len ..];
     const id = options.id orelse @as(u32, @intCast(32768 + std.hash.XxHash64.hash(0, tail) % (0x7fff_ffff - 32768)));
     std.mem.writeInt(u32, header[4..8], id, .little);
-    for ([_]u32{ 1, 4, 8 }) |rep| {
-        std.mem.writeInt(u32, header[at..][0..4], @intCast(@min(rep, len)), .little);
+    for (stats.repeatOffsets(len)) |rep| {
+        std.mem.writeInt(u32, header[at..][0..4], rep, .little);
         at += 4;
     }
     @memmove(out[at..][0..len], tail);
@@ -154,7 +194,7 @@ fn writeDistribution(out: []u8, counts: []const u32, log: u4) TrainError!usize {
     var total: usize = 0;
     for (counts) |count| total += count;
     const used = norm[0..counts.len];
-    fse.normalize(used, log, counts, total, false) catch return error.InvalidParameters;
+    fse.normalize(used, log, counts, total, true) catch return error.InvalidParameters;
     std.debug.assert(out.len >= fse.countsBound(@intCast(counts.len - 1), log));
     return fse.writeCounts(out, used, log);
 }
