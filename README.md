@@ -6,8 +6,8 @@ CRC-32C and Adler-32. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization. Checksum dispatch selects
 a kernel supported by the CPU.
 
-W5 integration is in progress: performance acceptance and final merge-tier
-validation remain pending. All required targets and gates still apply.
+W5 integration is in progress: final merge-tier validation remains pending.
+Measured performance targets are tracked separately from correctness gates.
 
 ## Install
 

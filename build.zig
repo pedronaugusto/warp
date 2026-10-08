@@ -327,6 +327,9 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
         },
     });
     m.addOptions("options", options);
+    if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .fast })) |shakedown| {
+        m.addImport("shakedown", shakedown.module("shakedown"));
+    } else |_| return;
     const artifact = b.addExecutable(.{ .name = "hosted-bench", .root_module = m });
     check.dependOn(&artifact.step);
     const step = b.step("hosted-bench", "Run indicative paired own/std/previous-main measurements");

@@ -21,7 +21,7 @@ on:
   merge_group:
 concurrency:
   # Main status runs must not share the replaceable branch queue.
-  group: ci-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('main-status-{0}', github.run_id) || github.head_ref || github.ref_name }}
+  group: ci-${{ inputs.indicative && format('indicative-{0}', github.ref_name) || github.event_name == 'push' && github.ref == 'refs/heads/main' && format('main-status-{0}', github.run_id) || github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 permissions:
   contents: read

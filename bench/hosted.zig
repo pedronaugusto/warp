@@ -7,6 +7,7 @@ const previous = @import("previous");
 const gen = @import("gen");
 const options = @import("options");
 const Io = std.Io;
+const bench = @import("shakedown").bench;
 const samples = 7;
 
 pub fn main(init: std.process.Init) !void {
@@ -30,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
         const input = try gen.alloc(gpa, kind, 4, back.len);
         for (0..3) |algorithm| {
             const ctx: Checksum = .{ .input = input, .algorithm = algorithm };
-            try measure(io, w, @tagName(kind), switch (algorithm) {
+            try measure(gpa, io, w, @tagName(kind), switch (algorithm) {
                 0 => "crc32",
                 1 => "crc32c",
                 else => "adler32",
@@ -46,34 +47,48 @@ pub fn main(init: std.process.Init) !void {
                 6 => .level_6,
                 else => .level_9,
             } };
-            try measure(io, w, @tagName(kind), try std.fmt.allocPrint(gpa, "deflate-encode-L{d}", .{level}), ctx, if (options.previous_main) 3 else 2);
+            try measure(gpa, io, w, @tagName(kind), try std.fmt.allocPrint(gpa, "deflate-encode-L{d}", .{level}), ctx, if (options.previous_main) 3 else 2);
         }
         var encoded: Io.Writer = .fixed(out);
         var sc = try std.compress.flate.Compress.init(&encoded, window, .zlib, .level_6);
         try sc.writer.writeAll(input);
         try sc.finish();
         const frame = try gpa.dupe(u8, encoded.buffered());
-        try measure(io, w, @tagName(kind), "deflate-decode-std-L6-exact", Decode{ .input = input, .frame = frame, .back = back, .window = window, .d = d, .old = old_d }, if (options.previous_main) 3 else 2);
+        try measure(gpa, io, w, @tagName(kind), "deflate-decode-std-L6-exact", Decode{ .input = input, .frame = frame, .back = back, .window = window, .d = d, .old = old_d }, if (options.previous_main) 3 else 2);
         var zc = try warp.zstd.Compressor.init(gpa, .{ .level = 3, .max_input = input.len });
         defer zc.deinit();
         const zn = try zc.compress(input, out, .{ .checksum = false });
         const zframe = try gpa.dupe(u8, out[0..zn]);
-        try measure(io, w, @tagName(kind), "zstd-decode-L3-checksum-off", Zdecode{ .input = input, .frame = zframe, .back = back, .window = zwindow, .d = zd }, 2);
-        try measure(io, w, @tagName(kind), "zstd-encode-L3-checksum-off", Zencode{ .input = input, .out = out, .back = back, .c = &zc, .d = zd }, 1);
+        try measure(gpa, io, w, @tagName(kind), "zstd-decode-L3-checksum-off", Zdecode{ .input = input, .frame = zframe, .back = back, .window = zwindow, .d = zd }, 2);
+        try measure(gpa, io, w, @tagName(kind), "zstd-encode-L3-checksum-off", Zencode{ .input = input, .out = out, .back = back, .c = &zc, .d = zd }, 1);
         try w.writeAll("N/A zstd previous-main: API absent; N/A std zstd encode: API absent\n");
         try w.flush();
     }
 }
 
-fn measure(io: Io, w: *Io.Writer, workload: []const u8, name: []const u8, ctx: anytype, count: usize) !void {
+fn measure(gpa: std.mem.Allocator, io: Io, w: *Io.Writer, workload: []const u8, name: []const u8, ctx: anytype, count: usize) !void {
     for (0..count) |stage| try ctx.validate(stage, try ctx.run(stage));
     var raw: [3][samples]u64 = undefined;
     for (0..samples) |iteration| {
         for (0..count) |index| {
             const stage = if (iteration & 1 == 0) index else count - 1 - index;
-            const start = Io.Clock.awake.now(io).nanoseconds;
-            const n = try ctx.run(stage);
-            raw[stage][iteration] = @intCast(Io.Clock.awake.now(io).nanoseconds - start);
+            const Timed = struct {
+                inner: @TypeOf(ctx),
+                stage: usize,
+                n: usize = 0,
+                fn run(c: *@This(), units: u64) !void {
+                    if (units != 1) return error.InvalidBatch;
+                    c.n = try c.inner.run(c.stage);
+                }
+            };
+            var timed: Timed = .{ .inner = ctx, .stage = stage };
+            var json_buffer: [4096]u8 = undefined;
+            var json: Io.Writer = .fixed(&json_buffer);
+            try bench.run(gpa, io, &json, &timed, &.{.{ .name = name, .unit = "traversal", .run = Timed.run }}, .{ .commit = "workflow-revision" }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
+            var parsed = try bench.parse(gpa, json.buffered());
+            defer parsed.deinit();
+            raw[stage][iteration] = @intFromFloat(parsed.rows.items[0].value.samples[0]);
+            const n = timed.n;
             try ctx.validate(stage, n);
             try w.print("raw {s} {s} sample {d} stage {d} ns {d} result {d}\n", .{ workload, name, iteration, stage, raw[stage][iteration], n });
         }
