@@ -184,8 +184,8 @@ pub const Entropy = struct {
 
 /// The bytes a block saves at least for its compressed form to be kept.
 pub fn minGain(len: usize, strategy: Strategy) usize {
-    const s = @intFromEnum(strategy);
-    const log: u6 = if (s >= @intFromEnum(Strategy.btultra)) s - 1 else 6;
+    const s = @backingInt(strategy);
+    const log: u6 = if (s >= @backingInt(Strategy.btultra)) s - 1 else 6;
     return (len >> log) + 2;
 }
 
@@ -246,7 +246,7 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
     const ml = codeTable(MlTable, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, out[o..]) orelse return null;
     o += ml.len;
     if (ml.mode == .compressed) last_table = ml.len;
-    out[modes_at] = @as(u8, @intFromEnum(ll.mode)) << 6 | @as(u8, @intFromEnum(of.mode)) << 4 | @as(u8, @intFromEnum(ml.mode)) << 2;
+    out[modes_at] = @as(u8, @backingInt(ll.mode)) << 6 | @as(u8, @backingInt(of.mode)) << 4 | @as(u8, @backingInt(ml.mode)) << 2;
     const stream = encodeSequences(store, &next.ll, &next.of, &next.ml, out[o..]) orelse return null;
     // Decoders up to zstd 1.3.4 refuse a last table description shorter
     // than 4 bytes with the stream; the reference sends such a block raw.
@@ -289,15 +289,15 @@ fn allSame(bytes: []const u8) bool {
 fn compressLiterals(lits: []const u8, out: []u8, prev: *const Entropy, next: *Entropy, strategy: Strategy, suspect: bool) ?usize {
     next.huf = prev.huf;
     next.huf_repeat = prev.huf_repeat;
-    const s = @intFromEnum(strategy);
+    const s = @backingInt(strategy);
     const min_len: usize = if (prev.huf_repeat == .valid) 6 else @as(usize, 8) << @intCast(@min(9 - s, 3));
     if (lits.len < min_len) return rawLiterals(lits, out);
     const header: usize = 3 + @as(usize, @intFromBool(lits.len >= 1024)) + @intFromBool(lits.len >= 16 * 1024);
     if (out.len < header + 1) return null;
     var single = lits.len < 256;
     if (prev.huf_repeat == .valid and header == 3) single = true;
-    const prefer_repeat = s < @intFromEnum(Strategy.lazy) and lits.len <= 1024;
-    const optimal_depth = s >= @intFromEnum(Strategy.btultra);
+    const prefer_repeat = s < @backingInt(Strategy.lazy) and lits.len <= 1024;
+    const optimal_depth = s >= @backingInt(Strategy.btultra);
     var repeat = prev.huf_repeat;
     const result = huffmanLiterals(lits, out[header..], &prev.huf, &next.huf, &repeat, single, prefer_repeat, optimal_depth, suspect);
     const size = result orelse 0;
@@ -516,8 +516,8 @@ fn selectMode(
         if (default_allowed and total <= 2) return .predefined;
         return .rle;
     }
-    const s = @intFromEnum(strategy);
-    if (s < @intFromEnum(Strategy.lazy)) {
+    const s = @backingInt(strategy);
+    if (s < @backingInt(Strategy.lazy)) {
         if (default_allowed) {
             const mult: usize = 10 - @as(usize, s);
             const dynamic_min = ((@as(usize, 1) << default_log) * mult) >> 3;

@@ -4,7 +4,10 @@
 //! for a better one, with a gain rule weighing length against the offset's
 //! cost. Candidates come from hash chains (small windows) or from rows of
 //! a hash table, each entry tagged with 8 more bits of the hash so a vector
-//! compare picks the candidates worth reading (larger windows).
+//! compare picks the candidates worth reading (larger windows). btlazy2
+//! (levels 13-15) is lazy2 over a binary tree of the positions sharing a
+//! hash, sorted lazily: positions are chained as they come and put in the
+//! tree only when a search passes them.
 
 const std = @import("std");
 const window = @import("window.zig");
@@ -13,7 +16,7 @@ const encode = @import("../encode.zig");
 const Window = window.Window;
 const Bytes = window.Bytes;
 
-pub const Search = enum { chain, row };
+pub const Search = enum { chain, row, tree };
 
 const tag_bits = 8;
 const cache_size = 8;
@@ -27,6 +30,8 @@ pub const State = struct {
     /// row, entry 0 unused.
     hash: []u32,
     /// Chains: the previous position with the same hash, per position.
+    /// Trees: two entries per position, its smaller and larger subtrees
+    /// (until sorted: the previous position and `unsorted`).
     chain: []u32 = &.{},
     /// Rows: each entry's tag; a row's byte 0 holds its head.
     tags: []u8 = &.{},
@@ -209,6 +214,7 @@ inline fn find(st: *State, w: Window, b: Bytes, ip: usize, i_end: usize, comptim
     return switch (search) {
         .chain => findInChain(st, w, b, ip, i_end, mls),
         .row => findInRow(st, w, b, ip, i_end, mls),
+        .tree => findInTree(st, w, b, ip, i_end, mls),
     };
 }
 
@@ -379,4 +385,158 @@ fn findInRow(st: *State, w: Window, b: Bytes, ip: usize, i_end: usize, comptime 
         }
     }
     return best;
+}
+
+// ---- binary tree ----
+
+/// A tree entry whose position is chained but not yet sorted. Indices
+/// start above it.
+const unsorted = 1;
+
+/// Chain the positions up to `ip` (excluded) as unsorted.
+fn updateTree(st: *State, b: Bytes, ip: usize, comptime mls: u4) void {
+    const mask = (@as(usize, 1) << (st.chain_log - 1)) - 1;
+    var i = st.next;
+    while (i < ip) : (i += 1) {
+        const h = b.hash(i, st.hash_log, mls);
+        const e = 2 * (i & mask);
+        st.chain[e] = st.hash[h];
+        st.chain[e + 1] = unsorted;
+        st.hash[h] = @intCast(i);
+    }
+    st.next = ip;
+}
+
+/// Sort the chained position `curr` into the tree below it.
+fn insertTree(st: *State, w: Window, b: Bytes, curr: usize, i_end: usize, compares_: usize, bt_low: usize) void {
+    const mask = (@as(usize, 1) << (st.chain_log - 1)) - 1;
+    // A local copy: stores into the tree cannot change it.
+    const bt = st.chain;
+    var compares = compares_;
+    var common_smaller: usize = 0;
+    var common_larger: usize = 0;
+    // The chain link to the next older position; it is overwritten.
+    var m: usize = bt[2 * (curr & mask)];
+    var dummy: u32 = 0;
+    const low = lowest(st, w, curr);
+    var smaller_ptr: *u32 = &bt[2 * (curr & mask)];
+    var larger_ptr: *u32 = &bt[2 * (curr & mask) + 1];
+    while (compares > 0 and m > low) : (compares -= 1) {
+        const next = 2 * (m & mask);
+        var len = @min(common_smaller, common_larger);
+        len += b.count(m + len, curr + len, i_end);
+        if (curr + len == i_end) break;
+        if (b.byte(m + len) < b.byte(curr + len)) {
+            smaller_ptr.* = @intCast(m);
+            common_smaller = len;
+            if (m <= bt_low) {
+                smaller_ptr = &dummy;
+                break;
+            }
+            smaller_ptr = &bt[next + 1];
+            m = bt[next + 1];
+        } else {
+            larger_ptr.* = @intCast(m);
+            common_larger = len;
+            if (m <= bt_low) {
+                larger_ptr = &dummy;
+                break;
+            }
+            larger_ptr = &bt[next];
+            m = bt[next];
+        }
+    }
+    smaller_ptr.* = 0;
+    larger_ptr.* = 0;
+}
+
+fn findInTree(st: *State, w: Window, b: Bytes, ip: usize, i_end: usize, comptime mls: u4) Found {
+    // Inside a long match just taken: not searched.
+    if (ip < st.next) return .{ .len = 0, .off = 0 };
+    updateTree(st, b, ip, mls);
+    const mask = (@as(usize, 1) << (st.chain_log - 1)) - 1;
+    // A local copy: stores into the tree cannot change it.
+    const bt = st.chain;
+    const h = b.hash(ip, st.hash_log, mls);
+    const low = lowest(st, w, ip);
+    const bt_low = if (mask >= ip) 0 else ip - mask;
+    const unsort_limit = @max(bt_low, low);
+    var compares = @as(usize, 1) << st.search_log;
+    var candidates = compares;
+    var previous: usize = 0;
+    // Walk the unsorted positions, linking them back in a reversed chain.
+    var m: usize = st.hash[h];
+    while (m > unsort_limit and bt[2 * (m & mask) + 1] == unsorted and candidates > 1) {
+        const e = 2 * (m & mask);
+        bt[e + 1] = @intCast(previous);
+        previous = m;
+        m = bt[e];
+        candidates -= 1;
+    }
+    // The last one left unsorted is dropped: faster, a little worse.
+    if (m > unsort_limit and bt[2 * (m & mask) + 1] == unsorted) {
+        const e = 2 * (m & mask);
+        bt[e] = 0;
+        bt[e + 1] = 0;
+    }
+    // Sort them, oldest first.
+    m = previous;
+    while (m != 0) {
+        const next = bt[2 * (m & mask) + 1];
+        insertTree(st, w, b, m, i_end, candidates, unsort_limit);
+        m = next;
+        candidates += 1;
+    }
+    // Insert `ip`, finding the longest match on the way down.
+    var common_smaller: usize = 0;
+    var common_larger: usize = 0;
+    var dummy: u32 = 0;
+    var smaller_ptr: *u32 = &bt[2 * (ip & mask)];
+    var larger_ptr: *u32 = &bt[2 * (ip & mask) + 1];
+    var match_end = ip + 8 + 1;
+    var best: usize = 0;
+    var off: usize = 999999999;
+    m = st.hash[h];
+    st.hash[h] = @intCast(ip);
+    while (compares > 0 and m > low) : (compares -= 1) {
+        const next = 2 * (m & mask);
+        var len = @min(common_smaller, common_larger);
+        len += b.count(m + len, ip + len, i_end);
+        if (len > best) {
+            if (len > match_end - m) match_end = m + len;
+            if (4 * @as(i64, @intCast(len - best)) > @as(i64, highbit(ip - m + 1)) - highbit(off)) {
+                best = len;
+                off = ip - m + 3;
+            }
+            if (ip + len == i_end) break;
+        }
+        if (b.byte(m + len) < b.byte(ip + len)) {
+            smaller_ptr.* = @intCast(m);
+            common_smaller = len;
+            if (m <= bt_low) {
+                smaller_ptr = &dummy;
+                break;
+            }
+            smaller_ptr = &bt[next + 1];
+            m = bt[next + 1];
+        } else {
+            larger_ptr.* = @intCast(m);
+            common_larger = len;
+            if (m <= bt_low) {
+                larger_ptr = &dummy;
+                break;
+            }
+            larger_ptr = &bt[next];
+            m = bt[next];
+        }
+    }
+    smaller_ptr.* = 0;
+    larger_ptr.* = 0;
+    // Positions inside a long match are not inserted.
+    st.next = match_end - 8;
+    return .{ .len = best, .off = off };
+}
+
+inline fn highbit(v: usize) i64 {
+    return std.math.log2_int(u32, @intCast(v));
 }

@@ -282,7 +282,7 @@ fn blockSize(rest: []const u8, block_max: usize, strategy: Strategy, savings: i6
     if (rest.len < full or block_max < full) return @min(rest.len, block_max);
     if (savings < 3) return full;
     const levels = [10]u3{ 0, 0, 1, 2, 2, 3, 3, 4, 4, 4 };
-    return split.split(rest[0..full], levels[@intFromEnum(strategy)]);
+    return split.split(rest[0..full], levels[@backingInt(strategy)]);
 }
 
 fn allSame(bytes: []const u8) bool {
@@ -320,6 +320,10 @@ fn search(c: *Compressor, p: Params, w: window.Window, reps: *[3]u32, start: usi
         },
         .dfast => switch (@max(4, @min(p.min_match, 7))) {
             inline 4, 5, 6, 7 => |mls| dfast.compress(table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, &c.store, reps, start, end, mls),
+            else => unreachable,
+        },
+        .btlazy2 => switch (@max(4, @min(p.min_match, 6))) {
+            inline 4, 5, 6 => |mls| lazy_.compress(&c.lazy, w, &c.store, reps, start, end, .tree, 2, mls),
             else => unreachable,
         },
         .greedy, .lazy, .lazy2 => switch (@max(4, @min(p.min_match, 6))) {

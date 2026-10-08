@@ -34,43 +34,43 @@ fn row(p: P) Params {
 /// [size class][level]: any size, up to 256 KiB, up to 128 KiB, up to 16 KiB.
 const table = [4][23]Params{
     .{
-        row(.{ 19, 12, 13, 1, 6, 1, .fast }),      row(.{ 19, 13, 14, 1, 7, 0, .fast }),      row(.{ 20, 15, 16, 1, 6, 0, .fast }),
-        row(.{ 21, 16, 17, 1, 5, 0, .dfast }),     row(.{ 21, 18, 18, 1, 5, 0, .dfast }),     row(.{ 21, 18, 19, 3, 5, 2, .greedy }),
-        row(.{ 21, 18, 19, 3, 5, 4, .lazy }),      row(.{ 21, 19, 20, 4, 5, 8, .lazy }),      row(.{ 21, 19, 20, 4, 5, 16, .lazy2 }),
-        row(.{ 22, 20, 21, 4, 5, 16, .lazy2 }),    row(.{ 22, 21, 22, 5, 5, 16, .lazy2 }),    row(.{ 22, 21, 22, 6, 5, 16, .lazy2 }),
-        row(.{ 22, 22, 23, 6, 5, 32, .lazy2 }),    row(.{ 22, 22, 22, 4, 5, 32, .btlazy2 }),  row(.{ 22, 22, 23, 5, 5, 32, .btlazy2 }),
-        row(.{ 22, 23, 23, 6, 5, 32, .btlazy2 }),  row(.{ 22, 22, 22, 5, 5, 48, .btopt }),    row(.{ 23, 23, 22, 5, 4, 64, .btopt }),
-        row(.{ 23, 23, 22, 6, 3, 64, .btultra }),  row(.{ 23, 24, 22, 7, 3, 256, .btultra2 }), row(.{ 25, 25, 23, 7, 3, 256, .btultra2 }),
+        row(.{ 19, 12, 13, 1, 6, 1, .fast }),       row(.{ 19, 13, 14, 1, 7, 0, .fast }),       row(.{ 20, 15, 16, 1, 6, 0, .fast }),
+        row(.{ 21, 16, 17, 1, 5, 0, .dfast }),      row(.{ 21, 18, 18, 1, 5, 0, .dfast }),      row(.{ 21, 18, 19, 3, 5, 2, .greedy }),
+        row(.{ 21, 18, 19, 3, 5, 4, .lazy }),       row(.{ 21, 19, 20, 4, 5, 8, .lazy }),       row(.{ 21, 19, 20, 4, 5, 16, .lazy2 }),
+        row(.{ 22, 20, 21, 4, 5, 16, .lazy2 }),     row(.{ 22, 21, 22, 5, 5, 16, .lazy2 }),     row(.{ 22, 21, 22, 6, 5, 16, .lazy2 }),
+        row(.{ 22, 22, 23, 6, 5, 32, .lazy2 }),     row(.{ 22, 22, 22, 4, 5, 32, .btlazy2 }),   row(.{ 22, 22, 23, 5, 5, 32, .btlazy2 }),
+        row(.{ 22, 23, 23, 6, 5, 32, .btlazy2 }),   row(.{ 22, 22, 22, 5, 5, 48, .btopt }),     row(.{ 23, 23, 22, 5, 4, 64, .btopt }),
+        row(.{ 23, 23, 22, 6, 3, 64, .btultra }),   row(.{ 23, 24, 22, 7, 3, 256, .btultra2 }), row(.{ 25, 25, 23, 7, 3, 256, .btultra2 }),
         row(.{ 26, 26, 24, 7, 3, 512, .btultra2 }), row(.{ 27, 27, 25, 9, 3, 999, .btultra2 }),
     },
     .{
-        row(.{ 18, 12, 13, 1, 5, 1, .fast }),      row(.{ 18, 13, 14, 1, 6, 0, .fast }),      row(.{ 18, 14, 14, 1, 5, 0, .dfast }),
-        row(.{ 18, 16, 16, 1, 4, 0, .dfast }),     row(.{ 18, 16, 17, 3, 5, 2, .greedy }),    row(.{ 18, 17, 18, 5, 5, 2, .greedy }),
-        row(.{ 18, 18, 19, 3, 5, 4, .lazy }),      row(.{ 18, 18, 19, 4, 4, 4, .lazy }),      row(.{ 18, 18, 19, 4, 4, 8, .lazy2 }),
-        row(.{ 18, 18, 19, 5, 4, 8, .lazy2 }),     row(.{ 18, 18, 19, 6, 4, 8, .lazy2 }),     row(.{ 18, 18, 19, 5, 4, 12, .btlazy2 }),
-        row(.{ 18, 19, 19, 7, 4, 12, .btlazy2 }),  row(.{ 18, 18, 19, 4, 4, 16, .btopt }),    row(.{ 18, 18, 19, 4, 3, 32, .btopt }),
-        row(.{ 18, 18, 19, 6, 3, 128, .btopt }),   row(.{ 18, 19, 19, 6, 3, 128, .btultra }), row(.{ 18, 19, 19, 8, 3, 256, .btultra }),
-        row(.{ 18, 19, 19, 6, 3, 128, .btultra2 }), row(.{ 18, 19, 19, 8, 3, 256, .btultra2 }), row(.{ 18, 19, 19, 10, 3, 512, .btultra2 }),
+        row(.{ 18, 12, 13, 1, 5, 1, .fast }),        row(.{ 18, 13, 14, 1, 6, 0, .fast }),        row(.{ 18, 14, 14, 1, 5, 0, .dfast }),
+        row(.{ 18, 16, 16, 1, 4, 0, .dfast }),       row(.{ 18, 16, 17, 3, 5, 2, .greedy }),      row(.{ 18, 17, 18, 5, 5, 2, .greedy }),
+        row(.{ 18, 18, 19, 3, 5, 4, .lazy }),        row(.{ 18, 18, 19, 4, 4, 4, .lazy }),        row(.{ 18, 18, 19, 4, 4, 8, .lazy2 }),
+        row(.{ 18, 18, 19, 5, 4, 8, .lazy2 }),       row(.{ 18, 18, 19, 6, 4, 8, .lazy2 }),       row(.{ 18, 18, 19, 5, 4, 12, .btlazy2 }),
+        row(.{ 18, 19, 19, 7, 4, 12, .btlazy2 }),    row(.{ 18, 18, 19, 4, 4, 16, .btopt }),      row(.{ 18, 18, 19, 4, 3, 32, .btopt }),
+        row(.{ 18, 18, 19, 6, 3, 128, .btopt }),     row(.{ 18, 19, 19, 6, 3, 128, .btultra }),   row(.{ 18, 19, 19, 8, 3, 256, .btultra }),
+        row(.{ 18, 19, 19, 6, 3, 128, .btultra2 }),  row(.{ 18, 19, 19, 8, 3, 256, .btultra2 }),  row(.{ 18, 19, 19, 10, 3, 512, .btultra2 }),
         row(.{ 18, 19, 19, 12, 3, 512, .btultra2 }), row(.{ 18, 19, 19, 13, 3, 999, .btultra2 }),
     },
     .{
-        row(.{ 17, 12, 12, 1, 5, 1, .fast }),      row(.{ 17, 12, 13, 1, 6, 0, .fast }),      row(.{ 17, 13, 15, 1, 5, 0, .fast }),
-        row(.{ 17, 15, 16, 2, 5, 0, .dfast }),     row(.{ 17, 17, 17, 2, 4, 0, .dfast }),     row(.{ 17, 16, 17, 3, 4, 2, .greedy }),
-        row(.{ 17, 16, 17, 3, 4, 4, .lazy }),      row(.{ 17, 16, 17, 3, 4, 8, .lazy2 }),     row(.{ 17, 16, 17, 4, 4, 8, .lazy2 }),
-        row(.{ 17, 16, 17, 5, 4, 8, .lazy2 }),     row(.{ 17, 16, 17, 6, 4, 8, .lazy2 }),     row(.{ 17, 17, 17, 5, 4, 8, .btlazy2 }),
-        row(.{ 17, 18, 17, 7, 4, 12, .btlazy2 }),  row(.{ 17, 18, 17, 3, 4, 12, .btopt }),    row(.{ 17, 18, 17, 4, 3, 32, .btopt }),
-        row(.{ 17, 18, 17, 6, 3, 256, .btopt }),   row(.{ 17, 18, 17, 6, 3, 128, .btultra }), row(.{ 17, 18, 17, 8, 3, 256, .btultra }),
-        row(.{ 17, 18, 17, 10, 3, 512, .btultra }), row(.{ 17, 18, 17, 5, 3, 256, .btultra2 }), row(.{ 17, 18, 17, 7, 3, 512, .btultra2 }),
+        row(.{ 17, 12, 12, 1, 5, 1, .fast }),       row(.{ 17, 12, 13, 1, 6, 0, .fast }),        row(.{ 17, 13, 15, 1, 5, 0, .fast }),
+        row(.{ 17, 15, 16, 2, 5, 0, .dfast }),      row(.{ 17, 17, 17, 2, 4, 0, .dfast }),       row(.{ 17, 16, 17, 3, 4, 2, .greedy }),
+        row(.{ 17, 16, 17, 3, 4, 4, .lazy }),       row(.{ 17, 16, 17, 3, 4, 8, .lazy2 }),       row(.{ 17, 16, 17, 4, 4, 8, .lazy2 }),
+        row(.{ 17, 16, 17, 5, 4, 8, .lazy2 }),      row(.{ 17, 16, 17, 6, 4, 8, .lazy2 }),       row(.{ 17, 17, 17, 5, 4, 8, .btlazy2 }),
+        row(.{ 17, 18, 17, 7, 4, 12, .btlazy2 }),   row(.{ 17, 18, 17, 3, 4, 12, .btopt }),      row(.{ 17, 18, 17, 4, 3, 32, .btopt }),
+        row(.{ 17, 18, 17, 6, 3, 256, .btopt }),    row(.{ 17, 18, 17, 6, 3, 128, .btultra }),   row(.{ 17, 18, 17, 8, 3, 256, .btultra }),
+        row(.{ 17, 18, 17, 10, 3, 512, .btultra }), row(.{ 17, 18, 17, 5, 3, 256, .btultra2 }),  row(.{ 17, 18, 17, 7, 3, 512, .btultra2 }),
         row(.{ 17, 18, 17, 9, 3, 512, .btultra2 }), row(.{ 17, 18, 17, 11, 3, 999, .btultra2 }),
     },
     .{
-        row(.{ 14, 12, 13, 1, 5, 1, .fast }),      row(.{ 14, 14, 15, 1, 5, 0, .fast }),      row(.{ 14, 14, 15, 1, 4, 0, .fast }),
-        row(.{ 14, 14, 15, 2, 4, 0, .dfast }),     row(.{ 14, 14, 14, 4, 4, 2, .greedy }),    row(.{ 14, 14, 14, 3, 4, 4, .lazy }),
-        row(.{ 14, 14, 14, 4, 4, 8, .lazy2 }),     row(.{ 14, 14, 14, 6, 4, 8, .lazy2 }),     row(.{ 14, 14, 14, 8, 4, 8, .lazy2 }),
-        row(.{ 14, 15, 14, 5, 4, 8, .btlazy2 }),   row(.{ 14, 15, 14, 9, 4, 8, .btlazy2 }),   row(.{ 14, 15, 14, 3, 4, 12, .btopt }),
-        row(.{ 14, 15, 14, 4, 3, 24, .btopt }),    row(.{ 14, 15, 14, 5, 3, 32, .btultra }),  row(.{ 14, 15, 15, 6, 3, 64, .btultra }),
-        row(.{ 14, 15, 15, 7, 3, 256, .btultra }), row(.{ 14, 15, 15, 5, 3, 48, .btultra2 }), row(.{ 14, 15, 15, 6, 3, 128, .btultra2 }),
-        row(.{ 14, 15, 15, 7, 3, 256, .btultra2 }), row(.{ 14, 15, 15, 8, 3, 256, .btultra2 }), row(.{ 14, 15, 15, 8, 3, 512, .btultra2 }),
+        row(.{ 14, 12, 13, 1, 5, 1, .fast }),       row(.{ 14, 14, 15, 1, 5, 0, .fast }),        row(.{ 14, 14, 15, 1, 4, 0, .fast }),
+        row(.{ 14, 14, 15, 2, 4, 0, .dfast }),      row(.{ 14, 14, 14, 4, 4, 2, .greedy }),      row(.{ 14, 14, 14, 3, 4, 4, .lazy }),
+        row(.{ 14, 14, 14, 4, 4, 8, .lazy2 }),      row(.{ 14, 14, 14, 6, 4, 8, .lazy2 }),       row(.{ 14, 14, 14, 8, 4, 8, .lazy2 }),
+        row(.{ 14, 15, 14, 5, 4, 8, .btlazy2 }),    row(.{ 14, 15, 14, 9, 4, 8, .btlazy2 }),     row(.{ 14, 15, 14, 3, 4, 12, .btopt }),
+        row(.{ 14, 15, 14, 4, 3, 24, .btopt }),     row(.{ 14, 15, 14, 5, 3, 32, .btultra }),    row(.{ 14, 15, 15, 6, 3, 64, .btultra }),
+        row(.{ 14, 15, 15, 7, 3, 256, .btultra }),  row(.{ 14, 15, 15, 5, 3, 48, .btultra2 }),   row(.{ 14, 15, 15, 6, 3, 128, .btultra2 }),
+        row(.{ 14, 15, 15, 7, 3, 256, .btultra2 }), row(.{ 14, 15, 15, 8, 3, 256, .btultra2 }),  row(.{ 14, 15, 15, 8, 3, 512, .btultra2 }),
         row(.{ 14, 15, 15, 9, 3, 512, .btultra2 }), row(.{ 14, 15, 15, 10, 3, 999, .btultra2 }),
     },
 };
@@ -121,7 +121,7 @@ fn dictAndWindowLog(window_log: u5, size: u64, dict: u64) u5 {
 
 /// The span a chain or tree covers: binary trees use two entries a position.
 pub fn cycleLog(chain_log: u5, strategy: Strategy) u5 {
-    return chain_log - @intFromBool(@intFromEnum(strategy) >= @intFromEnum(Strategy.btlazy2));
+    return chain_log - @intFromBool(@backingInt(strategy) >= @backingInt(Strategy.btlazy2));
 }
 
 /// Whether greedy, lazy and lazy2 search rows of a hash table rather than
