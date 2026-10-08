@@ -7,11 +7,35 @@ All notable changes to warp are documented here. The format follows
 
 ### Added
 
+- `zstd`: whole-buffer compression at levels −131072 through 22, with all
+  nine search strategies, adaptive optimal parsing, and block splitting.
+  Decoder support includes dictionaries, checksums, concatenated, skippable
+  and magicless frames, reader input, partial output and diagnostics.
+  Frame inspection and caller-provided compressor storage are available.
+- `zstd.Compress` and `zstd.Decompress`: resumable encoding and decoding,
+  flush and end-of-input checks, pledged sizes, and `std.Io` writer and
+  reader adapters over the same codec engines.
+- Bound raw and formatted dictionaries on both encoders, with immutable match
+  indexes and encoding entropy; dictionary IDs can be suppressed for prefixes.
+  `zstd.train` selects dictionary content by hashed or exact coverage, searches
+  segment parameters and finalizes supplied content into a formatted dictionary
+  with entropy tables and repeat offsets learned from the samples.
+- Sparse long-distance matching on whole-buffer and streaming encoders,
+  with a configurable window and deterministic bucket selection across frames.
+- `zstd.Compress.Options.target_block_size`: partitions parsed superblocks by
+  encoded cost, cuts long literal runs and preserves match and repeat histories.
+- `zstd.parallel.Decompressor`: entropy workers with ordered match execution
+  and checksums, caller storage and cancellation.
+- `zstd.parallel`: ordered compression jobs in one frame, overlap priming,
+  rsyncable cuts, reader input and output independent of concurrency;
+  parallel independent-frame writers with a bounded seek table.
+- `zstd.seekable`: independent-frame output, seek-table validation, frame
+  indexing and range reads, with caller storage and checksum verification.
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every
   member, or one), from memory or a `std.Io.Reader`, with dictionaries, partial
   output, and the reason and bit offset of every refusal.
 - `Compressor`: whole-buffer compression at levels 0 to 12, with
-  zlib's strategies, dictionaries and gzip headers, in allocated or given memory.
+  literal-only, run-length, filtered and fixed-code strategies, dictionaries and gzip headers, in allocated or given memory.
 - CRC-32, CRC-32C and Adler-32, running and combined, on folding, CRC32, UDOT
   and AVX2 kernels chosen at run time.
 - `gzip.parseHeader` and `gzip.writeHeader` for every header field.
@@ -29,6 +53,8 @@ All notable changes to warp are documented here. The format follows
 - C retained-history resets, sync points, validation control, decode marks,
   table-use introspection and reusable CRC combine operators.
 
+- Streaming zstd command example under `bench/cli/`.
+
 ### Fixed
 
 - Explicitly disabling CRC in the target CPU no longer prevents checksum
@@ -43,7 +69,19 @@ All notable changes to warp are documented here. The format follows
 - C decoding reports progress before an error and supports full-flush recovery.
 - Refined dynamic headers use their final item count when choosing a block's code.
 
-[Unreleased]: https://github.com/pedronaugusto/warp/commits/main
 - Level 10 considers a fixed-code parse for short blocks.
 - C block flushes stop before the final wrapper trailer; C ABI exports are
   compiled for 32-bit targets and CPUs with CRC disabled.
+- Bound zstd long-distance warm-up state, avoiding counter overflow on long
+  streams, and size its match storage to the physical block capacity.
+- Refill parallel zstd compression workers as their ordered output is written,
+  retaining the shared wait for input that fits in one batch.
+
+
+- Zstd compressed block targets prepare entropy once and reuse it across
+  partitions. Repeat history is replayed only when a raw partition or a literal
+  cut requires it.
+- Zstd handles whole-buffer inputs beyond the virtual index range and preserves
+  match history and lazy-tree markers when streaming indices normalize.
+
+[Unreleased]: https://github.com/pedronaugusto/warp/commits/main

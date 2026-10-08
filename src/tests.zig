@@ -21,4 +21,13 @@ test {
     _ = @import("testing/index_test.zig");
     _ = @import("testing/deflate64_test.zig");
     _ = @import("testing/c_test.zig");
+    _ = @import("zstd.zig");
+    _ = @import("testing/zstd_decode_test.zig");
+    _ = @import("testing/zstd_encode_test.zig");
+    _ = @import("testing/zstd_stream_test.zig");
+    _ = @import("testing/zstd_train_test.zig");
+    _ = @import("testing/zstd_seekable_test.zig");
+    _ = @import("testing/zstd_parallel_test.zig");
+    _ = @import("testing/zstd_super_test.zig");
+    _ = @import("testing/zstd_index_test.zig");
 }

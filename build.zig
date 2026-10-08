@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) !void {
     addKernels(b, test_module, target, optimize);
     // The differential corpus, captured once from other implementations
     // (pedronaugusto/trials, warp/), and the inputs it names.
-    for ([_][]const u8{ "streams", "sizes", "invalid" }) |name| {
+    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
         test_module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = b.path(b.fmt("testdata/{s}.corpus", .{name})) });
     }
     test_module.addAnonymousImport("gen", .{ .root_source_file = b.path("bench/gen.zig") });
@@ -76,6 +76,16 @@ pub fn build(b: *std.Build) !void {
     examples.dependOn(&b.addRunArtifact(example).step);
     test_step.dependOn(examples);
     check.dependOn(&example.step);
+
+    const zstd_cli = b.addExecutable(.{
+        .name = "zstd-cli",
+        .root_module = b.createModule(.{ .root_source_file = b.path("bench/cli/zstd.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "warp", .module = module }} }),
+    });
+    const zstd_cli_run = b.addRunArtifact(zstd_cli);
+    zstd_cli_run.stdio = .inherit;
+    zstd_cli_run.addPassthruArgs();
+    b.step("zstd-cli", "Run the streaming zstd command example").dependOn(&zstd_cli_run.step);
+    check.dependOn(&zstd_cli.step);
 
     // No Io and no OS calls but CPU detection: the library builds for a
     // target with no OS at all, and for a 32-bit and a big-endian one.
@@ -144,7 +154,7 @@ pub fn build(b: *std.Build) !void {
             .tests = test_step,
             .portable_tests = true,
             .bench = .{
-                .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }},
+                .programs = &.{ .{ .name = "bench", .source = "bench/main.zig" }, .{ .name = "zstd-bench", .source = "bench/zstd.zig" } },
                 .imports = benchImports,
                 .target = target,
                 .optimize = optimize,
