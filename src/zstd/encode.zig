@@ -132,8 +132,9 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
     const lits = store.lits[0..store.lit_len];
     const count = store.count;
     const suspect = count == 0 or lits.len / count >= 20;
+    // Only installed tables can be repeated; absent tables need no copy.
     var o = if (raw_literals) blk: {
-        next.huf = prev.huf;
+        if (prev.huf_repeat != .none) next.huf = prev.huf;
         next.huf_repeat = prev.huf_repeat;
         break :blk rawLiterals(lits, out) orelse return null;
     } else compressLiterals(lits, out, prev, next, strategy, suspect) orelse return null;
@@ -153,9 +154,9 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
         o += 3;
     }
     if (count == 0) {
-        next.ll = prev.ll;
-        next.of = prev.of;
-        next.ml = prev.ml;
+        if (prev.ll_repeat != .none) next.ll = prev.ll;
+        if (prev.of_repeat != .none) next.of = prev.of;
+        if (prev.ml_repeat != .none) next.ml = prev.ml;
         next.ll_repeat = prev.ll_repeat;
         next.of_repeat = prev.of_repeat;
         next.ml_repeat = prev.ml_repeat;
@@ -392,7 +393,7 @@ fn allSame(bytes: []const u8) bool {
 
 /// The literals section; `next` gets the Huffman table the block leaves.
 fn compressLiterals(lits: []const u8, out: []u8, prev: *const Entropy, next: *Entropy, strategy: Strategy, suspect: bool) ?usize {
-    next.huf = prev.huf;
+    if (prev.huf_repeat != .none) next.huf = prev.huf;
     next.huf_repeat = prev.huf_repeat;
     const s = @backingInt(strategy);
     const min_len: usize = if (prev.huf_repeat == .valid) 6 else @as(usize, 8) << @intCast(@min(9 - s, 3));
@@ -408,13 +409,13 @@ fn compressLiterals(lits: []const u8, out: []u8, prev: *const Entropy, next: *En
     const size = result orelse 0;
     const kind: u32 = if (repeat != .none) 3 else 2;
     if (size == 0 or size >= lits.len - minGain(lits.len, strategy)) {
-        next.huf = prev.huf;
+        if (prev.huf_repeat != .none) next.huf = prev.huf;
         next.huf_repeat = prev.huf_repeat;
         return rawLiterals(lits, out);
     }
     if (size == 1) {
         if (lits.len >= 8 or allSame(lits)) {
-            next.huf = prev.huf;
+            if (prev.huf_repeat != .none) next.huf = prev.huf;
             next.huf_repeat = prev.huf_repeat;
             return rleLiterals(lits, out);
         }
