@@ -12,6 +12,9 @@ All notable changes to warp are documented here. The format follows
   Decoder support includes dictionaries, checksums, concatenated, skippable
   and magicless frames, reader input, partial output and diagnostics.
   Frame inspection and caller-provided compressor storage are available.
+- `zstd.Compress` and `zstd.Decompress`: resumable encoding and decoding,
+  flush and end-of-input checks, pledged sizes, and `std.Io` writer and
+  reader adapters over the same codec engines.
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every
   member, or one), from memory or a `std.Io.Reader`, with dictionaries, partial
   output, and the reason and bit offset of every refusal.

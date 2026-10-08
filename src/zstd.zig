@@ -27,8 +27,12 @@ pub const Diagnostic = @import("zstd/Diagnostic.zig");
 pub const Dictionary = @import("zstd/Dictionary.zig");
 /// Whole-buffer decoding.
 pub const Decompressor = @import("zstd/Decompressor.zig");
+/// Resumable decoding and its reader adapter.
+pub const Decompress = @import("zstd/Decompress.zig");
 /// Whole-buffer compression.
 pub const Compressor = @import("zstd/Compressor.zig");
+/// Resumable compression and its writer adapter.
+pub const Compress = @import("zstd/Compress.zig");
 /// How many frames a decoder reads.
 pub const Frames = Decompressor.Frames;
 

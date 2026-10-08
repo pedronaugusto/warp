@@ -88,3 +88,39 @@ export fn warpZstdDecompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len
     _ = warp.zstd.writeSkippable(out[0..out_len], 0, in[0..in_len]) catch return -1;
     return @intCast(whole.out_len);
 }
+
+/// The streaming encoder and writer adapter, using the same caller storage.
+export fn warpZstdStreamCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32) isize {
+    const options: warp.zstd.Compress.Options = .{ .level = level, .pledged_size = in_len };
+    const size = warp.zstd.Compress.memory(options);
+    if (size > memory.len) return -1;
+    var s: warp.zstd.Compress = .initBuffer(memory[0..size], options);
+    defer s.deinit();
+    const step = s.write(in[0..in_len], out[0..out_len]) catch return -1;
+    if (step.in_len != in_len) return -1;
+    const final = s.finish(out[step.out_len..out_len]) catch return -1;
+    if (!final.done) return -1;
+    s.reset();
+    var sink: std.Io.Writer = .fixed(out[0..out_len]);
+    var adapter: warp.zstd.Compress.Writer = .init(&s, &sink, &.{});
+    adapter.interface.writeAll(in[0..in_len]) catch return -1;
+    adapter.finish() catch return -1;
+    if (adapter.err() != null) return -1;
+    return @intCast(sink.buffered().len);
+}
+
+/// The streaming decoder and its reader adapter.
+export fn warpZstdStreamDecompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize) isize {
+    var s: warp.zstd.Decompress = .init(&memory, .{ .frames = .one });
+    const step = s.decode(in[0..in_len], out[0..out_len]) catch return -1;
+    s.finish() catch return -1;
+    s.reset();
+    var input: std.Io.Reader = .fixed(in[0..in_len]);
+    var adapter: warp.zstd.Decompress.Reader = .init(&input, &memory, .{ .frames = .one });
+    adapter.interface.readSliceAll(out[0..step.out_len]) catch return -1;
+    _ = adapter.interface.takeByte() catch |err| {
+        if (err != error.EndOfStream or adapter.err() != null) return -1;
+        return @intCast(step.out_len);
+    };
+    return -1;
+}

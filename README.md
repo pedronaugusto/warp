@@ -189,8 +189,16 @@ defaults to 128 MiB. `Diagnostic` records the refusal's byte offset and reason.
 
 `frameHeader`, `frameLength`, `contentSize` and `decompressBound` inspect frames
 without decompressing them. `writeSkippable` writes an application payload.
-Streaming, dictionary compression, dictionary training, long-distance and
-parallel compression, and seekable streams are still being built.
+`Compress.write`, `flush` and `finish` accept arbitrary input and output
+chunks. `pledged_size` writes and checks a known content size; a mismatch is
+`SizeMismatch`. `Compress.Writer` wraps an existing compressor and output
+writer. `Decompress.decode` is resumable at every input and output byte;
+its window holds the declared history plus one decoded block. Call
+`Decompress.finish` at end of input to check truncation. `Decompress.Reader`
+uses the same decoder, reserving 4 KiB of its buffer for reader buffering.
+
+Dictionary compression and training, long-distance and parallel compression,
+and seekable streams are still being built.
 
 ## Platforms
 

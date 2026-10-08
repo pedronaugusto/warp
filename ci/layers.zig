@@ -40,7 +40,9 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "zstd engines", .patterns = &.{ "src/zstd/decode.zig", "src/zstd/encode.zig" } },
     .{ .name = "zstd partitions", .patterns = &.{"src/zstd/post.zig"} },
     .{ .name = "zstd dictionary", .patterns = &.{"src/zstd/Dictionary.zig"} },
+    .{ .name = "zstd encoder state", .patterns = &.{"src/zstd/Encoder.zig"} },
     .{ .name = "zstd frame", .patterns = &.{ "src/zstd/Decompressor.zig", "src/zstd/Compressor.zig" } },
+    .{ .name = "zstd streams", .patterns = &.{ "src/zstd/Decompress.zig", "src/zstd/Compress.zig" } },
     .{ .name = "zstd", .patterns = &.{"src/zstd.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };

@@ -193,7 +193,7 @@ pub const Table = struct {
                 var sub = at + skip;
                 for (min_weight..@as(usize, w.log) + 1) |weight2| {
                     const len2: u32 = baseline - @as(u32, @intCast(weight2));
-                    const span2 = @as(u32, 1) << @intCast(rest - len2);
+                    const span2 = span1 >> @intCast(len2);
                     const cell = @as(u32, s1) | len1 + len2 << 16 | 2 << 24;
                     for (sorted[first[weight2]..first[weight2 + 1]]) |s2| {
                         @memset(cells[sub..][0..span2], cell | @as(u32, s2) << 8);
@@ -817,6 +817,41 @@ test "a direct description: weights read, the last implied, and the table's code
     try std.testing.expectEqual(@as(u4, 11), t.log);
     const pair = t.cells.double[0b101 << 8];
     try std.testing.expectEqual(@as(u32, 0 | 1 << 8 | 3 << 16 | 2 << 24), pair);
+}
+
+test "double tables agree with two single lookups at every code length" {
+    var single: Table = undefined;
+    var double: Table = undefined;
+    for (1..max_log + 1) |log| {
+        var w: Weights = .{ .log = @intCast(log), .count = @intCast(log + 1), .weights = @splat(0), .rank = @splat(0), .len = 0 };
+        w.weights[0] = 1;
+        w.weights[1] = 1;
+        w.rank[1] = 2;
+        for (2..log + 1) |weight| {
+            w.weights[weight] = @intCast(weight);
+            w.rank[weight] = 1;
+        }
+        single.buildSingle(&w);
+        double.buildDouble(&w);
+        const shift: u4 = double.log - single.log;
+        const mask = (@as(usize, 1) << double.log) - 1;
+        for (double.cells.double[0 .. mask + 1], 0..) |cell, index| {
+            const first = single.cells.single[index >> shift];
+            const len1 = first >> 8;
+            try std.testing.expectEqual(@as(u8, @truncate(first)), @as(u8, @truncate(cell)));
+            const second_index = ((index << @intCast(len1)) & mask) >> shift;
+            const second = single.cells.single[second_index];
+            const len2 = second >> 8;
+            if (len1 + len2 <= double.log) {
+                try std.testing.expectEqual(@as(u32, 2), cell >> 24);
+                try std.testing.expectEqual(@as(u8, @truncate(second)), @as(u8, @truncate(cell >> 8)));
+                try std.testing.expectEqual(@as(u32, len1 + len2), (cell >> 16) & 255);
+            } else {
+                try std.testing.expectEqual(@as(u32, 1), cell >> 24);
+                try std.testing.expectEqual(@as(u32, len1), (cell >> 16) & 255);
+            }
+        }
+    }
 }
 
 test "descriptions whose weights do not form a code are refused" {
