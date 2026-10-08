@@ -465,8 +465,8 @@ test "C ABI table usage describes a dynamic block and resets" {
     defer testing.allocator.free(input);
     const encoded = try testing.allocator.alloc(u8, input.len);
     defer testing.allocator.free(encoded);
-    var length: c_ulong = encoded.len;
-    try testing.expectEqual(@as(c_int, 0), abi.compress2(encoded.ptr, &length, input.ptr, input.len, 6));
+    var length: c_ulong = @intCast(encoded.len); // safe: this fixture contains 4096 bytes
+    try testing.expectEqual(@as(c_int, 0), abi.compress2(encoded.ptr, &length, input.ptr, @intCast(input.len), 6)); // safe: the fixture contains 4096 bytes
     var d: abi.Stream = .{};
     try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
     defer _ = abi.inflateEnd(&d);
