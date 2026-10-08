@@ -290,3 +290,43 @@ test "C ABI compression bounds include custom gzip headers" {
     try testing.expectEqual(@as(c_int, 0), abi.deflateSetHeader(&z, &header));
     try testing.expect(abi.deflateBound(&z, 0) >= 10 + name.len + 1 + 8 + 2);
 }
+
+test "C ABI sync recovers after a full-flush marker split across calls" {
+    const encoded = [_]u8{ 0x78, 0x9c, 7, 0, 0, 255, 255, 1, 3, 0, 252, 255, 'a', 'b', 'c', 0, 0, 0, 0 };
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [16]u8 = undefined;
+    d.next_in = &encoded;
+    d.avail_in = 3;
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, -3), abi.inflate(&d, 0));
+    d.avail_in = 2;
+    try testing.expectEqual(@as(c_int, -3), abi.inflateSync(&d));
+    d.avail_in = 3;
+    try testing.expectEqual(@as(c_int, 0), abi.inflateSync(&d));
+    d.avail_in = @intCast(encoded.len - d.total_in);
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 0));
+    try testing.expectEqualStrings("abc", out[0..d.total_out]);
+    try testing.expectEqual(@as(c_ulong, encoded.len), d.total_in);
+}
+
+test "C ABI decoding reports progress before a checksum error once" {
+    const encoded = [_]u8{ 0x78, 0x9c, 1, 3, 0, 252, 255, 'a', 'b', 'c', 0, 0, 0, 0 };
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [16]u8 = undefined;
+    d.next_in = &encoded;
+    d.avail_in = encoded.len;
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, -3), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_ulong, 3), d.total_out);
+    try testing.expectEqual(@as(c_ulong, encoded.len), d.total_in);
+    try testing.expectEqualStrings("abc", out[0..d.total_out]);
+    try testing.expectEqual(@as(c_int, -3), abi.inflate(&d, 0));
+    try testing.expectEqual(@as(c_ulong, 3), d.total_out);
+    try testing.expectEqual(@as(c_ulong, encoded.len), d.total_in);
+}

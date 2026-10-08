@@ -3,6 +3,7 @@
 //! fixed-code or dynamic-code block for them, by exact bit cost.
 
 const std = @import("std");
+const gen = @import("gen");
 const bits = @import("../bits.zig");
 const huffman = @import("../huffman.zig");
 
@@ -192,17 +193,7 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_hea
     header.hclen = @intCast(hclen);
 
     if (optimize_header and header.n_items > 16) optimizeHeader(header, lens[0..total]);
-    var cost: u64 = 5 + 5 + 4 + 3 * @as(u64, header.hclen);
-    for (header.items[0..n]) |item| {
-        const sym = item & 0xff;
-        cost += header.pre_lens[sym] + @as(u64, switch (sym) {
-            16 => 2,
-            17 => 3,
-            18 => 7,
-            else => 0,
-        });
-    }
-    return cost + dataCost(counts, code);
+    return 14 + headerCost(header) + dataCost(counts, code);
 }
 
 /// Price the header's run symbols under its current code, then rebuild
@@ -553,4 +544,23 @@ test "length and distance symbols are RFC 1951's" {
     try std.testing.expectEqual(@as(u32, 29), distSymbol(32768));
     try std.testing.expectEqual(@as(u32, 29), distSymbol(24577));
     try std.testing.expectEqual(@as(u32, 28), distSymbol(24576));
+}
+
+test "refined dynamic header cost matches its serialized bits" {
+    for (0..64) |seed| {
+        const input = try gen.alloc(std.testing.allocator, .text, seed, 1024);
+        defer std.testing.allocator.free(input);
+        var counts: Counts = .{};
+        for (input) |byte| counts.literal(byte);
+        counts.litlen[end_of_block] += 1;
+        var code: Code = undefined;
+        var header: Header = undefined;
+        const expected = dynamicCode(&counts, &code, &header, true);
+        codewords(&code, &header);
+        var buffer: [2048]u8 = undefined;
+        var writer: bits.Writer = .init(&buffer, 0);
+        writeHeader(&writer, &header);
+        writeData(false, &writer, input, &.{}, @intCast(input.len), &code);
+        try std.testing.expectEqual(expected, writer.bitPosition());
+    }
 }

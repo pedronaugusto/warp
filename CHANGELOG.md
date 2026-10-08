@@ -35,5 +35,9 @@ All notable changes to warp are documented here. The format follows
   Huffman-only and RLE streams at high levels need no optimal-parser storage.
 - C compression bounds include custom gzip headers and small windows, and
   convenience calls report the bytes consumed on short output buffers.
+- The parallel compressor refills completed slots while later chunks run.
+- C decoding reports progress before an error and supports full-flush recovery.
+- Refined dynamic headers use their final item count when choosing a block's code.
 
 [Unreleased]: https://github.com/pedronaugusto/warp/commits/main
+- Level 10 considers a fixed-code parse for short blocks.

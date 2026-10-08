@@ -45,6 +45,9 @@ out_total: u64 = 0,
 at_boundary: bool = false,
 /// Private: the C stream ABI's block and tree flush boundaries.
 stop: enum { none, block, trees } = .none,
+/// Private: progress made by a failing decode, for the C stream ABI.
+error_in_len: usize = 0,
+error_out_len: usize = 0,
 
 pub const Options = struct {
     accept: container.Accept = .zlib,
@@ -131,6 +134,8 @@ pub fn reset(z: *Inflate, keep: Keep) void {
     z.bitsleft = 0;
     z.in_total = 0;
     z.failed = null;
+    z.error_in_len = 0;
+    z.error_out_len = 0;
     z.out_total = 0;
     z.at_boundary = false;
     z.keep_history = keep == .history;
@@ -270,6 +275,9 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         error.OutputTooSmall => unreachable, // unreachable: a partial decode stops at a full output
         error.InvalidStream, error.ChecksumMismatch, error.DictionaryMismatch => |e| {
             if (z.options.diagnostic) |d| d.* = diagnostic;
+            z.state.sum(&s);
+            z.error_in_len = @min(in.len, s.ip -| (s.bitsleft / 8));
+            z.error_out_len = s.op - op;
             z.failed = e;
             return e;
         },

@@ -23,6 +23,7 @@ pub const Options = struct {
 };
 
 const Worker = struct {
+    group: Io.Group = .init,
     engine: deflate.Engine,
     input: []u8,
     output: []u8,
@@ -113,38 +114,33 @@ pub const Compressor = struct {
         try p.header(out);
         var total: u64 = 0;
         var check: u32 = if (p.options.container == .zlib) 1 else 0;
+        defer for (p.workers) |*worker| worker.group.cancel(io);
         var final = false;
-        while (!final) {
-            var group: Io.Group = .init;
-            defer group.cancel(io);
-            var count: usize = 0;
-            for (p.workers) |*worker| {
-                worker.in_len = try in.readSliceShort(worker.input);
-                final = worker.in_len < worker.input.len;
-                if (!final) {
-                    _ = in.peekByte() catch |err| switch (err) {
-                        error.EndOfStream => final = true,
-                        error.ReadFailed => return error.ReadFailed,
-                    };
-                }
-                worker.final = final;
-                worker.dict_len = if (p.options.independent) 0 else p.history_len;
-                @memcpy(worker.dictionary[0..worker.dict_len], p.history[0..worker.dict_len]);
-                p.remember(worker.input[0..worker.in_len]);
-                group.async(io, run, .{ worker, p.options });
-                count += 1;
-                if (final) break;
+        var active: usize = 0;
+        for (p.workers) |*worker| {
+            final = try p.submit(io, in, worker);
+            active += 1;
+            if (final) break;
+        }
+        var next: usize = 0;
+        while (active != 0) {
+            const worker = &p.workers[next];
+            try worker.group.await(io);
+            try out.writeAll(worker.output[0..worker.out_len]);
+            check = switch (p.options.container) {
+                .raw => 0,
+                .zlib => checksum.adler32Combine(check, worker.check, worker.in_len),
+                .gzip => checksum.crc32Combine(check, worker.check, worker.in_len),
+            };
+            total += worker.in_len;
+            active -= 1;
+            // Refill the released slot while later chunks still run. The
+            // ring keeps input and output ordered without a batch barrier.
+            if (!final) {
+                final = try p.submit(io, in, worker);
+                active += 1;
             }
-            try group.await(io);
-            for (p.workers[0..count]) |*worker| {
-                try out.writeAll(worker.output[0..worker.out_len]);
-                check = switch (p.options.container) {
-                    .raw => 0,
-                    .zlib => checksum.adler32Combine(check, worker.check, worker.in_len),
-                    .gzip => checksum.crc32Combine(check, worker.check, worker.in_len),
-                };
-                total += worker.in_len;
-            }
+            next = (next + 1) % p.workers.len;
         }
         var trailer: [8]u8 = undefined;
         switch (p.options.container) {
@@ -159,6 +155,23 @@ pub const Compressor = struct {
                 try out.writeAll(&trailer);
             },
         }
+    }
+
+    fn submit(p: *Compressor, io: Io, in: *Io.Reader, worker: *Worker) error{ReadFailed}!bool {
+        worker.in_len = try in.readSliceShort(worker.input);
+        var final = worker.in_len < worker.input.len;
+        if (!final) {
+            _ = in.peekByte() catch |err| switch (err) {
+                error.EndOfStream => final = true,
+                error.ReadFailed => return error.ReadFailed,
+            };
+        }
+        worker.final = final;
+        worker.dict_len = if (p.options.independent) 0 else p.history_len;
+        @memcpy(worker.dictionary[0..worker.dict_len], p.history[0..worker.dict_len]);
+        p.remember(worker.input[0..worker.in_len]);
+        worker.group.async(io, run, .{ worker, p.options });
+        return final;
     }
 
     fn remember(p: *Compressor, bytes: []const u8) void {

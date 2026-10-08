@@ -8,6 +8,7 @@ const checksum = @import("checksum.zig");
 const container = @import("container.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const gzip = @import("gzip.zig");
+const crc = @import("checksum/crc.zig");
 
 pub const Stream = extern struct {
     next_in: [*c]const u8 = null,
@@ -61,6 +62,8 @@ const State = struct {
     name_length: usize = 0,
     comment_length: usize = 0,
     gzip_fields: gzip.Fields = .{},
+    sync_match: u3 = 0,
+    syncing: bool = false,
 };
 
 fn state(z: *Stream, direction: @TypeOf(@as(State, undefined).direction)) ?*State {
@@ -325,6 +328,10 @@ pub export fn inflate(stream: ?*Stream, flush: c_int) c_int {
     }
     while (true) {
         const step = s.decoder.decode(if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in], z.next_out[0..z.avail_out]) catch |err| {
+            advance(z, s.decoder.error_in_len, s.decoder.error_out_len);
+            s.decoder.error_in_len = 0;
+            s.decoder.error_out_len = 0;
+            z.adler = s.decoder.state.check;
             z.msg = @errorName(err).ptr;
             return data_error;
         };
@@ -370,7 +377,11 @@ pub export fn inflateSetDictionary(stream: ?*Stream, dictionary: [*c]const u8, l
 pub export fn inflateReset(stream: ?*Stream) c_int {
     const z = stream orelse return stream_error;
     const s = state(z, .decode) orelse return stream_error;
+    const verify = s.decoder.state.verify;
     s.decoder.reset(.nothing);
+    s.decoder.state.verify = verify;
+    s.syncing = false;
+    s.sync_match = 0;
     s.gzip_header = null;
     s.decoder.options.gzip_fields = null;
     s.header_len = 0;
@@ -388,6 +399,46 @@ pub export fn inflateEnd(stream: ?*Stream) c_int {
     const s = state(z, .decode) orelse return stream_error;
     destroy(z, s);
     return ok;
+}
+
+fn syncByte(s: *State, byte: u8) void {
+    if (byte == (if (s.sync_match < 2) @as(u8, 0) else 255)) s.sync_match += 1 else if (byte != 0) s.sync_match = 0 else s.sync_match = 4 - s.sync_match;
+}
+
+pub export fn inflateSync(stream: ?*Stream) c_int {
+    const z = stream orelse return stream_error;
+    const s = state(z, .decode) orelse return stream_error;
+    if (z.avail_in != 0 and z.next_in == null) return stream_error;
+    if (z.avail_in == 0 and s.decoder.bitsleft < 8) return buf_error;
+    if (!s.syncing) {
+        s.syncing = true;
+        s.sync_match = 0;
+        const discard = s.decoder.bitsleft & 7;
+        s.decoder.bitbuf >>= @intCast(discard);
+        s.decoder.bitsleft -= discard;
+        while (s.decoder.bitsleft >= 8 and s.sync_match < 4) {
+            syncByte(s, @truncate(s.decoder.bitbuf));
+            s.decoder.bitbuf >>= 8;
+            s.decoder.bitsleft -= 8;
+        }
+    }
+    var taken: usize = 0;
+    while (taken < z.avail_in and s.sync_match < 4) : (taken += 1) syncByte(s, z.next_in[taken]);
+    advance(z, taken, 0);
+    if (s.sync_match != 4) return data_error;
+    const wrapper = if (s.header_ready) s.decoder.state.wrapper else .raw;
+    s.decoder.reset(.nothing);
+    s.decoder.state = .{ .phase = .body, .wrapper = wrapper, .verify = false };
+    s.decoder.in_total = z.total_in;
+    s.decoder.out_total = z.total_out;
+    s.header_ready = true;
+    s.syncing = false;
+    z.msg = null;
+    return ok;
+}
+
+pub fn getCrcTable() callconv(.c) [*]const u32 {
+    return &crc.Crc(0xedb8_8320).tables[0];
 }
 
 /// zlib's gzip header layout; variable fields borrow the caller's buffers.
@@ -712,6 +763,7 @@ pub fn adler32Combine64(a: c_ulong, b: c_ulong, len: i64) callconv(.c) c_ulong {
 }
 
 comptime {
+    @export(&getCrcTable, .{ .name = "get_crc_table" });
     @export(&deflateInit, .{ .name = "deflateInit_" });
     @export(&deflateInit2, .{ .name = "deflateInit2_" });
     @export(&inflateInit, .{ .name = "inflateInit_" });

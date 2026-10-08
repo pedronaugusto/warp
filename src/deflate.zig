@@ -60,7 +60,7 @@ const levels = [13]Level{
     .{ .parser = .lazy, .depth = 192, .nice = 258 },
     .{ .parser = .lazy, .depth = 1024, .nice = 258 },
     .{ .parser = .lazy, .depth = 4096, .nice = 258 },
-    .{ .parser = .optimal, .optimal = .{ .depth = 35, .nice = 75, .passes = 2, .min_improvement = 32, .min_bits_earlier = 32, .fixed_max = 0 } },
+    .{ .parser = .optimal, .optimal = .{ .depth = 35, .nice = 75, .passes = 2, .min_improvement = 32, .min_bits_earlier = 32, .fixed_max = 1000 } },
     .{ .parser = .optimal, .optimal = .{ .depth = 100, .nice = 150, .passes = 4, .min_improvement = 16, .min_bits_earlier = 16, .fixed_max = 1000 } },
     .{ .parser = .optimal, .optimal = .{ .depth = 300, .nice = 258, .passes = 10, .min_improvement = 1, .min_bits_earlier = 0, .fixed_max = 10000 } },
 };

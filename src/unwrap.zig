@@ -73,6 +73,8 @@ pub const State = struct {
     /// The history changed in the last run: a dictionary, or a new
     /// member's empty one, replaced it.
     history_replaced: bool = false,
+    /// The C ABI disables checking after recovering from a full flush.
+    verify: bool = true,
 
     /// Count the output written since the last call, into the checksum.
     pub fn sum(st: *State, s: *const inflate.Stream) void {
@@ -145,7 +147,7 @@ pub fn run(t: *inflate.Tables, st: *State, s: *inflate.Stream, source: anytype, 
             st.phase = .zlib_trailer;
             s.consume(@intCast(s.bitsleft & 7));
             const want = @byteSwap(try s.take(source, 32));
-            if (st.check != want) return mismatch(s, .adler32);
+            if (st.verify and st.check != want) return mismatch(s, .adler32);
             st.phase = .done;
             source.commit(s);
             return .done;
@@ -154,13 +156,15 @@ pub fn run(t: *inflate.Tables, st: *State, s: *inflate.Stream, source: anytype, 
             st.phase = .gzip_crc;
             s.consume(@intCast(s.bitsleft & 7));
             // Each check as soon as its bytes are read, as zlib makes them.
-            if (st.check != try s.take(source, 32)) return mismatch(s, .crc32);
+            const expected = try s.take(source, 32);
+            if (st.verify and st.check != expected) return mismatch(s, .crc32);
             st.phase = .gzip_size;
             source.commit(s);
             continue :phase .gzip_size;
         },
         .gzip_size => {
-            if (st.size != try s.take(source, 32)) return mismatch(s, .size);
+            const expected = try s.take(source, 32);
+            if (st.verify and st.size != expected) return mismatch(s, .size);
             st.members += 1;
             st.phase = if (options.members == .one) .done else .member_end;
             st.member_offset = s.bitOffset();

@@ -66,17 +66,21 @@ test "parallel compression reuses its exact allocation, including empty input" {
 }
 
 test "parallel compressor caller memory survives a failed sink and reuse" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const input = try gen.alloc(testing.allocator, .noise, 47, 100000);
+    defer testing.allocator.free(input);
     const options: parallel.Options = .{ .chunk_len = 8192, .concurrency = 2 };
     const memory = try testing.allocator.alignedAlloc(u8, .@"64", parallel.Compressor.memory(options));
     defer testing.allocator.free(memory);
     var p = parallel.Compressor.initBuffer(memory, options);
     defer p.deinit();
-    var tiny: [1]u8 = undefined;
+    var tiny: [1000]u8 = undefined;
     var failed: std.Io.Writer = .fixed(&tiny);
-    try testing.expectError(error.WriteFailed, p.compress(testing.io, "hello", &failed));
+    try testing.expectError(error.WriteFailed, p.compress(threaded.io(), input, &failed));
     var storage: [256]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&storage);
-    try p.compress(testing.io, "hello", &sink);
+    try p.compress(threaded.io(), "hello", &sink);
     var back: [5]u8 = undefined;
     var d: Decompressor = .init;
     _ = try d.inflate(sink.buffered(), &back, .{ .accept = .gzip });
