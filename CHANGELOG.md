@@ -7,6 +7,9 @@ All notable changes to warp are documented here. The format follows
 
 ### Added
 
+- A deterministic per-level size gate over fixed, hashed standard input snapshots.
+- Shared fast Huffman decoding for symbolic history and branchless history resolution.
+
 - `zstd`: whole-buffer compression at levels −131072 through 22, with all
   nine search strategies, adaptive optimal parsing, and block splitting.
   Decoder support includes dictionaries, checksums, concatenated, skippable

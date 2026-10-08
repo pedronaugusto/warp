@@ -49,6 +49,12 @@ pub const Decoder = struct {
         var units: usize = 0;
         while (true) : (units += 1) {
             if (units & 4095 == 0) try io.checkCancel();
+            if (d.stream.virtual == 0 and d.stream.ip + 16 <= d.stream.in.len and d.written + 274 <= d.tokens.len) {
+                if (try engine.fast(4096, &d.stream, Tokens{ .decoder = d }, ll, lb, dd, db)) return;
+                // A bounded fast batch keeps cancellation responsive even
+                // when the entire block has real input and output room.
+                try io.checkCancel();
+            }
             const lit = try engine.symbol(&d.stream, engine.no_more, ll, lb);
             d.stream.consume(lit.bits);
             if (lit.entry & huffman.end_flag != 0) return;
@@ -65,17 +71,51 @@ pub const Decoder = struct {
             if (back > engine.max_distance) return error.InvalidStream;
             d.max_distance = @max(d.max_distance, back);
             if (len > d.tokens.len - d.written) return error.OutputTooSmall;
-            d.copy(back, len);
+            d.copy(false, back, len);
         }
     }
 
-    fn copy(d: *Decoder, back: usize, len: usize) void {
+    /// Marker output shares symbol decoding with ordinary byte output.
+    const Tokens = struct {
+        decoder: *Decoder,
+
+        pub inline fn position(t: Tokens) usize {
+            return t.decoder.written;
+        }
+
+        pub inline fn capacity(t: Tokens) usize {
+            return t.decoder.tokens.len;
+        }
+
+        pub inline fn buffer(t: Tokens) []u16 {
+            return t.decoder.tokens;
+        }
+
+        pub inline fn match(t: Tokens, op: usize, distance: usize, length: usize, _: usize, _: u32) engine.Error!void {
+            if (distance > engine.max_distance) return error.InvalidStream;
+            const d = t.decoder;
+            d.max_distance = @max(d.max_distance, @as(u32, @intCast(distance))); // safe: validated DEFLATE window
+            d.written = op;
+            d.copy(true, distance, length);
+        }
+
+        pub inline fn finish(t: Tokens, op: usize) void {
+            t.decoder.written = op;
+        }
+    };
+
+    fn copy(d: *Decoder, comptime wild: bool, back: usize, len: usize) void {
         var count: usize = 0;
         if (back > d.written) {
             const missing = back - d.written;
             d.required = @max(d.required, missing);
             count = @min(len, missing);
             for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // safe: window markers fit u16
+        }
+        if (wild and count < len) {
+            engine.copyMatch(u16, d.tokens, d.written + count, back, len - count);
+            d.written += len;
+            return;
         }
         if (back >= 16) {
             while (count + 16 <= len) : (count += 16) d.tokens[d.written + count ..][0..16].* = d.tokens[d.written + count - back ..][0..16].*;

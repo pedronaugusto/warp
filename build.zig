@@ -148,18 +148,60 @@ pub fn build(b: *std.Build) !void {
     if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize })) |shakedown| {
         test_module.addImport("shakedown", shakedown.module("shakedown"));
     } else |err| needed = err;
+    const size_module = b.createModule(.{
+        .root_source_file = b.path("ci/sizes.zig"),
+        .target = b.graph.host,
+        .optimize = .fast,
+        .imports = &.{
+            .{ .name = "warp", .module = warpModule(b, b.graph.host, .fast) },
+            .{ .name = "gen", .module = b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = b.graph.host, .optimize = .fast }) },
+        },
+    });
+    const captured_module = b.createModule(.{ .root_source_file = b.path("src/testing/corpus/data.zig"), .target = b.graph.host, .optimize = .fast });
+    captured_module.addImport("gen", size_module.import_table.get("gen").?);
+    captured_module.addAnonymousImport("sizes.corpus", .{ .root_source_file = b.path("testdata/sizes.corpus") });
+    size_module.addImport("captured", captured_module);
+    const size_gate = b.addExecutable(.{ .name = "check-sizes", .root_module = size_module });
+    const size_run = b.addRunArtifact(size_gate);
+    size_run.setCwd(b.path("."));
+    size_run.has_side_effects = true;
+    b.step("check-sizes", "Check each level's total against the captured limit on every standard corpus").dependOn(&size_run.step);
+    check.dependOn(&size_gate.step);
     // CI wiring. preflight is lazy and only the root build asks for it.
     if (b.lazyImport(@This(), "preflight")) |preflight| {
         preflight.addCi(b, .{
             .tests = test_step,
             .portable_tests = true,
+            // This ship requires compile-only benchmarks in CI. Their
+            // manual runs and compile dependencies are owned below.
             .bench = .{
-                .programs = &.{ .{ .name = "bench", .source = "bench/main.zig" }, .{ .name = "zstd-bench", .source = "bench/zstd.zig" } },
+                .programs = &.{},
                 .imports = benchImports,
                 .target = target,
                 .optimize = optimize,
             },
         });
+        const bench_step = &b.top_level_steps.get("bench").?.step;
+        const programs = [_]struct { name: []const u8, source: []const u8 }{
+            .{ .name = "bench", .source = "bench/main.zig" },
+            .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
+        };
+        var previous: ?*std.Build.Step = null;
+        for (programs) |program| {
+            const artifact = b.addExecutable(.{
+                .name = program.name,
+                .root_module = b.createModule(.{ .root_source_file = b.path(program.source), .target = target, .optimize = .fast, .imports = benchImports(b, target, .fast) }),
+            });
+            check.dependOn(&artifact.step);
+            test_step.dependOn(&artifact.step);
+            bench_step.dependOn(&b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
+            const run = b.addRunArtifact(artifact);
+            run.setCwd(b.tmpPath());
+            run.has_side_effects = true;
+            if (previous) |before| run.step.dependOn(before);
+            previous = &run.step;
+            bench_step.dependOn(&run.step);
+        }
         // A project that depends on warp by path, with no packages to
         // fetch: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "warp", .program = b.path("ci/consumer.zig") });

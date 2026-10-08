@@ -195,29 +195,27 @@ fn setBit(s: *engine.Stream, bit: usize) void {
 }
 
 fn resolve(tokens: []const u16, s: *engine.Stream, required: usize) void {
-    var history: [engine.max_distance]u8 = undefined;
+    // Both literal bytes and history markers index the same byte table.
+    // Mixed vectors therefore need no unpredictable branch per element.
+    var values: [256 + engine.max_distance]u8 = undefined;
+    const history = values[256..];
     const n = @min(engine.max_distance, s.op - s.start);
     const dict = @min(engine.max_distance - n, s.history.len());
     if (required > 0) {
+        for (values[0..256], 0..) |*value, i| value.* = @intCast(i); // safe: identity entries are bytes
         if (dict > 0) s.history.copyOut(dict, history[engine.max_distance - n - dict ..][0..dict]);
         @memcpy(history[engine.max_distance - n ..], s.out[s.op - n .. s.op]);
     }
     const out = s.out[s.op..][0..tokens.len];
     var at: usize = 0;
     while (tokens.len - at >= 16) : (at += 16) {
-        const values: @Vector(16, u16) = tokens[at..][0..16].*;
-        if (!@reduce(.Or, values >= @as(@Vector(16, u16), @splat(256)))) {
-            out[at..][0..16].* = @as(@Vector(16, u8), @truncate(values)); // safe: this vector has only byte symbols
-        } else resolveBytes(tokens[at..][0..16], out[at..][0..16], &history);
+        const symbols: @Vector(16, u16) = tokens[at..][0..16].*;
+        if (required == 0 or !@reduce(.Or, symbols >= @as(@Vector(16, u16), @splat(256)))) {
+            out[at..][0..16].* = @as(@Vector(16, u8), @truncate(symbols)); // safe: this vector has only byte symbols
+        } else for (tokens[at..][0..16], out[at..][0..16]) |token, *byte| byte.* = values[token];
     }
-    resolveBytes(tokens[at..], out[at..], &history);
+    for (tokens[at..], out[at..]) |token, *byte| byte.* = if (required == 0) @truncate(token) else values[token]; // safe: no markers exist when no history is required
     s.op += tokens.len;
-}
-
-fn resolveBytes(tokens: []const u16, out: []u8, history: *const [engine.max_distance]u8) void {
-    for (tokens, out) |token, *byte| {
-        byte.* = if (token < 256) @intCast(token) else history[token - 256]; // safe: byte symbols are 0-255; markers reference the validated history
-    }
 }
 
 fn submit(p: *Speculative, io: Io, w: *Worker, input: []const u8, next: *usize) void {

@@ -332,6 +332,10 @@ bitwise reference at every length to 4 KiB and every alignment, and combining to
 inputs through every level; compression allocates nothing after `init`, and
 `init` survives every allocation failure.
 
+`zig build check-sizes` verifies the fixed standard input snapshots and checks
+all levels against the captured size limits, summed separately for each corpus.
+The gate has no single-input bound.
+
 `zig build bench` times the default rows in ReleaseFast, beside the code warp
 replaces. Run `zig-out/bench/bench --runs 3 parallel` to select rows, or add
 `--smoke` or `--corpus <dir>`. The `speculative` rows include discovery and

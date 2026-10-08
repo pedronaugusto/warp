@@ -484,7 +484,7 @@ fn codeReason(err: huffman.BuildError) Diagnostic.Reason {
 inline fn codes(s: *Stream, source: anytype, state: *State, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
     while (true) {
         if (fastReady(s)) {
-            if (try fast(s, litlen, lbits, dist, dbits)) return true;
+            if (try fast(std.math.maxInt(usize), s, Bytes{ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits)) return true;
             source.commit(s);
         }
         // One symbol at a time until the fast loop can run again.
@@ -509,8 +509,10 @@ inline fn fastReady(s: *const Stream) bool {
 
 /// Decode while `fastReady`; whether the block ended. Every bit this reads
 /// is real.
-fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
-    std.debug.assert(fastReady(s));
+pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
+    std.debug.assert(s.virtual == 0);
+    std.debug.assert(s.ip + fast_input <= s.in.len);
+    std.debug.assert(output.position() + margin <= output.capacity());
     var r: Fast = .{
         .in = s.in,
         .ip = s.ip,
@@ -519,19 +521,23 @@ fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5
         .lmask = (@as(u64, 1) << lbits) - 1,
         .dmask = (@as(u64, 1) << dbits) - 1,
     };
-    const out = s.out;
-    const start = s.start;
-    const window = s.window;
-    var op = s.op;
+    const out = output.buffer();
+    const capacity = out.len;
+    var op = output.position();
+    var left = rounds;
     defer {
         s.ip = r.ip;
-        s.op = op;
+        output.finish(op);
         s.bitbuf = r.bitbuf;
         s.bitsleft = r.bitsleft & 63;
     }
     r.refill();
     var entry = litlen[r.low(r.lmask)];
     while (true) {
+        if (comptime rounds != std.math.maxInt(usize)) {
+            if (left == 0) return false;
+            left -= 1;
+        }
         // At the top: `entry` is the next litlen entry, at least 56 bits in
         // hand. Up to three literals a round: 45 bits.
         var saved = r.bitbuf;
@@ -541,21 +547,21 @@ fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5
             entry = litlen[r.low(r.lmask)];
             saved = r.bitbuf;
             r.consume(entry);
-            out[op] = @truncate(lit1 >> 16);
+            out[op] = @as(u8, @truncate(lit1 >> 16)); // safe: the payload low byte is a literal
             op += 1;
             if (entry & literal_flag != 0) {
                 const lit2 = entry;
                 entry = litlen[r.low(r.lmask)];
                 saved = r.bitbuf;
                 r.consume(entry);
-                out[op] = @truncate(lit2 >> 16);
+                out[op] = @as(u8, @truncate(lit2 >> 16)); // safe: the payload low byte is a literal
                 op += 1;
                 if (entry & literal_flag != 0) {
                     const lit3 = entry;
                     entry = litlen[r.low(r.lmask)];
-                    out[op] = @truncate(lit3 >> 16);
+                    out[op] = @as(u8, @truncate(lit3 >> 16)); // safe: the payload low byte is a literal
                     op += 1;
-                    if (!r.more(op, out.len)) return false;
+                    if (!r.more(op, capacity)) return false;
                     continue;
                 }
             }
@@ -573,10 +579,10 @@ fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5
             saved = r.bitbuf;
             r.consume(entry);
             if (entry & literal_flag != 0) {
-                out[op] = @truncate(entry >> 16);
+                out[op] = @as(u8, @truncate(entry >> 16)); // safe: the payload low byte is a literal
                 op += 1;
                 entry = litlen[r.low(r.lmask)];
-                if (!r.more(op, out.len)) return false;
+                if (!r.more(op, capacity)) return false;
                 continue;
             }
             if (entry & exceptional != 0) {
@@ -606,16 +612,45 @@ fn fast(s: *Stream, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5
         const distance = huffman.value(entry) + huffman.extra(saved, entry);
         // The next symbol's entry and the refill go ahead of the copy.
         entry = litlen[r.low(r.lmask)];
-        if (distance > @min(op - start, window)) {
-            @branchHint(.cold);
-            if (distance > window) return s.failAt(.window_exceeded, r.ip, r.bitsleft & 63);
-            if (distance > op - start + s.history.len()) return s.failAt(.distance_too_far, r.ip, r.bitsleft & 63);
-            copyFromHistory(s, op, distance, length);
-        } else copyMatch(out, op, distance, length);
+        try output.match(op, distance, length, r.ip, r.bitsleft & 63);
         op += length;
-        if (!r.more(op, out.len)) return false;
+        if (!r.more(op, capacity)) return false;
     }
 }
+
+/// Ordinary output: the stream owns the history and output position.
+const Bytes = struct {
+    stream: *Stream,
+    out: []u8,
+    start: usize,
+    window: usize,
+
+    inline fn position(b: Bytes) usize {
+        return b.stream.op;
+    }
+
+    inline fn capacity(b: Bytes) usize {
+        return b.out.len;
+    }
+
+    inline fn buffer(b: Bytes) []u8 {
+        return b.out;
+    }
+
+    inline fn match(b: Bytes, op: usize, distance: usize, length: usize, ip: usize, bits: u32) Error!void {
+        const s = b.stream;
+        if (distance > @min(op - b.start, b.window)) {
+            @branchHint(.cold);
+            if (distance > b.window) return s.failAt(.window_exceeded, ip, bits);
+            if (distance > op - b.start + s.history.len()) return s.failAt(.distance_too_far, ip, bits);
+            copyFromHistory(s, op, distance, length);
+        } else copyMatch(u8, b.out, op, distance, length);
+    }
+
+    inline fn finish(b: Bytes, op: usize) void {
+        b.stream.op = op;
+    }
+};
 
 /// The fast loop's input state, in registers.
 const Fast = struct {
@@ -761,12 +796,12 @@ fn copyFromHistory(s: *Stream, op: usize, distance: usize, length: usize) void {
         var i: usize = 0;
         while (i < from_history) : (i += 16) dst[i..][0..16].* = piece[i..][0..16].*;
     } else h.copyOut(k, s.out[op..][0..from_history]);
-    if (from_history < length) copyMatch(s.out, op + from_history, distance, length - from_history);
+    if (from_history < length) copyMatch(u8, s.out, op + from_history, distance, length - from_history);
 }
 
-/// Copy `length` bytes from `distance` back to `op`, sixteen at a time; up
-/// to fifteen bytes past the end are written, inside the margin.
-inline fn copyMatch(out: []u8, op: usize, distance: usize, length: usize) void {
+/// Copy `length` elements from `distance` back to `op`, sixteen at a time;
+/// up to thirty-one elements past the end fit within the fast-loop margin.
+pub inline fn copyMatch(comptime T: type, out: []T, op: usize, distance: usize, length: usize) void {
     const dst = out[op..].ptr;
     const src = dst - distance;
     if (distance >= 16) {
@@ -786,7 +821,7 @@ inline fn copyMatch(out: []u8, op: usize, distance: usize, length: usize) void {
         // rather than a call to memset.
         var i: usize = 0;
         while (true) {
-            dst[i..][0..16].* = @as(@Vector(16, u8), @splat(src[i]));
+            dst[i..][0..16].* = @as(@Vector(16, T), @splat(src[i]));
             i += 16;
             if (i >= length) break;
         }

@@ -46,9 +46,11 @@ single cached feature choice. There is no shared mutable codec state.
 Checkpoints capture owned history, bit position and wrapper progress. Index
 construction validates the stream; indexed parallel decoding checks each region
 against its next checkpoint. Unindexed parallel decoding discovers candidate
-block boundaries and emits symbolic history references. Its coordinator accepts
-only boundaries connected to the actual stream, resolves references and checks
-trailers. Exhausted search bounds and partial output use the core decoder.
+block boundaries and emits symbolic history references. Marker and byte output
+share the fast Huffman loop and match copies. Bounded batches retain cancellation
+points. The coordinator accepts only boundaries
+connected to the actual stream, resolves literals and history markers through
+one byte table, and checks trailers. Exhausted search bounds and partial output use the core decoder.
 
 Deflate64 parameterizes the shared decoder's alphabet and window. BGZF writes
 bounded complete gzip members with virtual offsets. Additional optimal parsing

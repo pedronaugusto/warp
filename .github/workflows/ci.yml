@@ -56,3 +56,12 @@ jobs:
       release-run-matrix: >-
         {"include":[{"os":"macos-latest","name":"test (macos-latest, Debug)","step":"ci-run","args":"-Doptimize=debug -Dci-lint=false -Dci-timings=true","shard":"","setup":true,"job_timeout":20,"cache_key":"ebda036faf315e75","artifact":"preflight-ebda036faf315e75"},{"os":"macos-latest","name":"test (macos-latest, ReleaseSafe)","step":"ci-run","args":"-Doptimize=safe -Dci-lint=false -Dci-timings=true","shard":"","setup":true,"job_timeout":20,"cache_key":"b231e36a5f15deb2","artifact":"preflight-b231e36a5f15deb2"},{"os":"windows-latest","name":"test (windows-latest, Debug)","step":"ci-run","args":"-Doptimize=debug -Dci-lint=false -Dci-timings=true","shard":"","setup":true,"job_timeout":20,"cache_key":"03c230abe180e8e9","artifact":"preflight-03c230abe180e8e9"},{"os":"windows-latest","name":"test (windows-latest, ReleaseSafe)","step":"ci-run","args":"-Doptimize=safe -Dci-lint=false -Dci-timings=true","shard":"","setup":true,"job_timeout":20,"cache_key":"79f6a6b2846d7f58","artifact":"preflight-79f6a6b2846d7f58"}]}
       compile-once: true
+  sizes:
+    needs: skip
+    if: always() && (github.event_name == 'push' || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
+    uses: pedronaugusto/preflight/.github/workflows/zig.yml@9af905ed85cab6dbb19d9431c65ee3f41fbaa74d
+    with:
+      preflight-ref: 9af905ed85cab6dbb19d9431c65ee3f41fbaa74d
+      tier: fast
+      fast-matrix: >-
+        {"include":[{"os":"ubuntu-latest","name":"standard corpus size totals","step":"check-sizes","args":"-Doptimize=fast","shard":"","setup":true,"job_timeout":30,"cache_key":"sizes-linux-fast","artifact":""}]}

@@ -1,12 +1,11 @@
 //! The compressor: every level, strategy and container round-trips through
 //! warp's decoder and std's, the same input always gives the same bytes,
-//! and the output is no larger than zlib 1.3.1's at levels 1-9 and
-//! zlib level 9 at 10-12.
+//! and the output is deterministic. ci/sizes.zig checks the aggregate
+//! size contract over the standard corpora.
 
 const std = @import("std");
 const testing = std.testing;
 const gen = @import("gen");
-const corpus = @import("corpus.zig");
 const Compressor = @import("../Compressor.zig");
 const Decompressor = @import("../Decompressor.zig");
 const container = @import("../container.zig");
@@ -155,90 +154,6 @@ test "memory is what init takes, and a compression allocates nothing" {
         _ = try c.compress("abcabcabcabcabcabc", &out, .{});
         try testing.expectEqual(allocations, counting.allocations);
     };
-}
-
-/// Level `level`'s output, summed per kind of input over the size corpus,
-/// is no larger than the captured size reference at that level.
-fn expectContract(level: u4) !void {
-    const gpa = testing.allocator;
-    const c_ = try corpus.Corpus.parse(corpus.sizes);
-    const kinds = std.enums.values(gen.Kind);
-    var totals: [kinds.len][2]u64 = std.mem.zeroes([kinds.len][2]u64);
-    var c = try Compressor.init(gpa, .{ .level = level });
-    defer c.deinit();
-    var it = c_.records();
-    var out: []u8 = &.{};
-    defer gpa.free(out);
-    while (it.next()) |r| {
-        const spec = try gen.Spec.parse(r.fields[0]);
-        const in = try gen.alloc(gpa, spec.kind, spec.seed, spec.len);
-        defer gpa.free(in);
-        if (out.len < Compressor.bound(in.len, .{})) {
-            gpa.free(out);
-            out = try gpa.alloc(u8, Compressor.bound(in.len, .{}));
-        }
-        var sizes = std.mem.tokenizeScalar(u8, r.fields[1], ' ');
-        for (1..@min(level, 9)) |_| _ = sizes.next();
-        const zlib_size = try std.fmt.parseInt(u64, sizes.next().?, 10);
-        const total = &totals[@backingInt(spec.kind)];
-        const written = try c.compress(in, out, .{});
-        total[0] += written;
-        total[1] += zlib_size;
-    }
-    var failed = false;
-    for (kinds, totals) |kind, t| if (t[0] > t[1]) {
-        std.debug.print("level {d} {t}: warp {d}, {s} {d} ({d:.2}%)\n", .{ level, kind, t[0], "zlib", t[1], 100.0 * (@as(f64, @floatFromInt(t[0])) / @as(f64, @floatFromInt(t[1])) - 1) });
-        failed = true;
-    };
-    try testing.expect(!failed);
-}
-
-test "level contract: level 1 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(1);
-}
-
-test "level contract: level 2 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(2);
-}
-
-test "level contract: level 3 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(3);
-}
-
-test "level contract: level 4 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(4);
-}
-
-test "level contract: level 5 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(5);
-}
-
-test "level contract: level 6 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(6);
-}
-
-test "level contract: level 7 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(7);
-}
-
-test "level contract: level 8 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(8);
-}
-
-test "level contract: level 9 is no larger than zlib 1.3.1's, per kind of input" {
-    try expectContract(9);
-}
-
-test "level contract: level 10 is no larger than zlib level 9, per kind of input" {
-    try expectContract(10);
-}
-
-test "level contract: level 11 is no larger than zlib level 9, per kind of input" {
-    try expectContract(11);
-}
-
-test "level contract: level 12 is no larger than zlib level 9, per kind of input" {
-    try expectContract(12);
 }
 
 test "extra optimal passes preserve the best single-block size and round-trip" {
