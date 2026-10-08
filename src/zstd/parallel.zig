@@ -6,6 +6,9 @@ const Encoder = @import("Encoder.zig");
 const Dictionary = @import("Dictionary.zig");
 const encode = @import("encode.zig");
 
+/// Pipelined entropy decoding with ordered history execution.
+pub const Decompressor = @import("parallel/Decompressor.zig");
+
 /// Job sizing and the frame written around the ordered blocks.
 pub const Options = struct {
     level: i32 = 3,

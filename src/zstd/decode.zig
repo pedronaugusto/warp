@@ -90,14 +90,14 @@ pub const Frame = struct {
         f.stopped = false;
         if (in.len > f.block_max) return f.fail(error.InvalidStream, 0, .block_too_large);
         var cursor: LiteralCursor = undefined;
-        const section = try f.literalCursor(in, &cursor);
+        const section = try f.literalCursor(in, &cursor, null);
         var lits: Literals = .{ .bytes = &.{}, .len = section.len, .in_out = null, .limit = f.out.len, .cursor = &cursor };
         return f.sequences(true, in, section.bytes, op, &lits);
     }
 
     const LiteralSection = struct { bytes: usize, len: usize };
 
-    fn literalCursor(f: *Frame, in: []const u8, cursor: *LiteralCursor) Error!LiteralSection {
+    fn literalCursor(f: *Frame, in: []const u8, cursor: *LiteralCursor, metadata: ?*LiteralSection) Error!LiteralSection {
         if (in.len < 2) return f.fail(error.InvalidStream, 0, .bad_literals_header);
         const kind: u2 = @truncate(in[0]);
         const size_format: u2 = @truncate(in[0] >> 2);
@@ -114,6 +114,7 @@ pub const Frame = struct {
                 else => std.mem.readInt(u24, in[0..3], .little) >> 4,
             };
             if (len > f.block_max) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+            if (metadata) |m| m.* = .{ .bytes = header, .len = len };
             if (kind == 0) {
                 if (in.len - header < len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
                 cursor.* = .{ .raw = in[header..][0..len] };
@@ -136,6 +137,7 @@ pub const Frame = struct {
         };
         const single = size_format == 0;
         if (len > f.block_max or (!single and len < 6) or header + csize > in.len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
+        if (metadata) |m| m.* = .{ .bytes = header, .len = len };
         var src = in[header..][0..csize];
         if (kind == 2) {
             try f.huffmanTable(src, header, false);
@@ -282,7 +284,9 @@ pub const Frame = struct {
 
     // ---- sequences ----
 
-    fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals) Error!usize {
+    const SequenceHeader = struct { count: usize, ip: usize };
+
+    fn sequenceHeader(f: *Frame, in: []const u8, lit_len: usize) Error!SequenceHeader {
         var ip = lit_len;
         const at = ip;
         if (ip >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
@@ -299,8 +303,6 @@ pub const Frame = struct {
                 ip += 1;
             }
         }
-        var op = op_start;
-        var lp: usize = 0;
         if (count == 0) {
             if (ip != in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
         } else {
@@ -311,6 +313,19 @@ pub const Frame = struct {
             ip += try f.codeTable(fse.LlTable, &f.tables.ll, &f.entropy.ll, @truncate(modes >> 6), codes.max_ll, codes.max_ll_log, &codes.ll_base, &codes.ll_bits, &fse.ll_default, in, ip);
             ip += try f.codeTable(fse.OfTable, &f.tables.of, &f.entropy.of, @truncate(modes >> 4), codes.max_of, codes.max_of_log, &codes.of_base, &codes.of_bits, &fse.of_default, in, ip);
             ip += try f.codeTable(fse.MlTable, &f.tables.ml, &f.entropy.ml, @truncate(modes >> 2), codes.max_ml, codes.max_ml_log, &codes.ml_base, &codes.ml_bits, &fse.ml_default, in, ip);
+            f.entropy.fse_ready = true;
+        }
+        return .{ .count = count, .ip = ip };
+    }
+
+    fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals) Error!usize {
+        const header = try f.sequenceHeader(in, lit_len);
+        const ip = header.ip;
+        const count = header.count;
+        const at = lit_len;
+        var op = op_start;
+        var lp: usize = 0;
+        if (count != 0) {
             if (f.out.len == op) {
                 if (partial) {
                     f.stopped = true;
@@ -344,6 +359,105 @@ pub const Frame = struct {
             op += last;
         }
         return op - op_start;
+    }
+
+    /// Parse a block's headers in order, snapshotting its entropy for a worker.
+    pub fn prepareBlock(f: *Frame, in: []const u8, prepared: *Prepared) Error!void {
+        if (in.len > f.block_max) return f.fail(error.InvalidStream, 0, .block_too_large);
+        var metadata: LiteralSection = .{ .bytes = 0, .len = 0 };
+        const section = f.literalCursor(in, &prepared.cursor, &metadata) catch |err| {
+            prepared.literal_len = metadata.len;
+            prepared.literal_at = metadata.bytes;
+            return err;
+        };
+        prepared.literal_len = section.len;
+        prepared.literal_at = metadata.bytes;
+        prepared.sequence_at = section.bytes;
+        const header = try f.sequenceHeader(in, section.bytes);
+        prepared.count = header.count;
+        prepared.stream = in[header.ip..];
+        prepared.at = header.ip;
+        prepared.tables.ll = f.entropy.ll.*;
+        prepared.tables.ml = f.entropy.ml.*;
+        prepared.tables.of = f.entropy.of.*;
+        switch (prepared.cursor) {
+            .huffman => |*symbols| {
+                if (symbols.table == &f.tables.huffman and symbols.table.kind == .single and huffman.chooseDouble(section.len, symbols.source.len)) f.tables.huffman.buildDouble(&f.tables.weights);
+                prepared.tables.huffman = symbols.table.*;
+                symbols.table = &prepared.tables.huffman;
+            },
+            else => {},
+        }
+    }
+
+    /// Execute an entropy-decoded block in order against the frame's history.
+    pub fn applyBlock(f: *Frame, prepared: *const Prepared, op_start: usize) Error!usize {
+        var o = op_start;
+        var l: usize = 0;
+        var rep0 = f.entropy.reps[0];
+        var rep1 = f.entropy.reps[1];
+        var rep2 = f.entropy.reps[2];
+        const out = f.out;
+        const prefix = f.start;
+        const dict = f.dict;
+        const literal_len = prepared.literal_len;
+        const at = prepared.at;
+        const lit = prepared.literals;
+        for (prepared.seqs[0..prepared.count]) |q| {
+            const ll: usize = q.ll;
+            const ml: usize = q.ml;
+            var offset: u32 = undefined;
+            if (q.off > 3) {
+                offset = q.off - 3;
+                rep2 = rep1;
+                rep1 = rep0;
+                rep0 = offset;
+            } else if (q.off == 1) {
+                offset = if (ll == 0) rep1 else rep0;
+                rep1 = if (ll == 0) rep0 else rep1;
+                rep0 = offset;
+            } else {
+                const index = q.off - 1 + @intFromBool(ll == 0);
+                var distance: u32 = switch (index) {
+                    1 => rep1,
+                    2 => rep2,
+                    else => rep0 -% 1,
+                };
+                if (distance == 0) distance = std.math.maxInt(u32);
+                if (index != 1) rep2 = rep1;
+                rep1 = rep0;
+                rep0 = distance;
+                offset = distance;
+            }
+            const o_lit = o + ll;
+            const o_end = o_lit + ml;
+            const l_end = l + ll;
+            if (l_end <= literal_len and o_end <= out.len -| margin) {
+                const dst = out.ptr + o;
+                copy16(dst, lit.ptr + l);
+                if (ll > 16) wildCopy16(dst + 16, lit.ptr + l + 16, ll - 16);
+                if (offset <= o_lit - prefix) {
+                    const match = out.ptr + o_lit;
+                    if (offset >= 16) wildCopy16(match, match - offset, ml) else overlapCopy(match, match - offset, offset, ml);
+                } else {
+                    const back = offset - (o_lit - prefix);
+                    if (back > dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
+                    const first = @min(ml, back);
+                    @memcpy(out[o_lit..][0..first], dict[dict.len - back ..][0..first]);
+                    if (first < ml) repeat(out[o_lit + first ..].ptr, out[prefix..].ptr, ml - first);
+                }
+            } else {
+                try f.executeCarefully(o, lit[l..literal_len], ll, ml, offset, out.len, at);
+            }
+            o = o_end;
+            l = l_end;
+        }
+        if (!prepared.complete) return f.fail(error.InvalidStream, at, .bitstream_left);
+        const last = literal_len - l;
+        if (last > out.len - o) return f.fail(error.OutputTooSmall, at, .bad_length);
+        @memcpy(out[o..][0..last], lit[l..][0..last]);
+        f.entropy.reps = .{ rep0, rep1, rep2 };
+        return o + last - op_start;
     }
 
     /// Set up one code's table from its mode; returns the bytes of its
@@ -562,7 +676,69 @@ pub const Frame = struct {
     }
 };
 
-const LiteralCursor = union(enum) {
+/// Entropy-decoded sequences, with repeat codes still resolved in output order.
+pub const PreparedSequence = struct { ll: u32, ml: u32, off: u32 };
+
+/// A block's entropy snapshot and caller-provided literal and sequence storage.
+pub const Prepared = struct {
+    tables: Tables,
+    cursor: LiteralCursor,
+    literal_len: usize = 0,
+    count: usize = 0,
+    stream: []const u8 = &.{},
+    at: usize = 0,
+    literal_at: usize = 0,
+    sequence_at: usize = 0,
+    complete: bool = true,
+    failure: Diagnostic.Reason = .bitstream_left,
+    literals: []u8,
+    seqs: []PreparedSequence,
+
+    pub fn decode(prepared: *Prepared) Error!void {
+        prepared.failure = .literals_size;
+        switch (prepared.cursor) {
+            .raw => |bytes| @memcpy(prepared.literals[0..prepared.literal_len], bytes),
+            .rle => |byte| @memset(prepared.literals[0..prepared.literal_len], byte),
+            .huffman => |symbols| {
+                if (symbols.ends[0] == symbols.ends[3]) {
+                    try huffman.decode1(symbols.table, symbols.source, prepared.literals[0..prepared.literal_len]);
+                } else try huffman.decode4(symbols.table, symbols.source, prepared.literals[0..prepared.literal_len]);
+            },
+        }
+        prepared.failure = .bitstream_left;
+        prepared.complete = true;
+        if (prepared.count == 0) return;
+        if (prepared.count > prepared.seqs.len) return error.InvalidStream;
+        var r = try bits.Reader.init(prepared.stream);
+        const ll_cells = &prepared.tables.ll.cells;
+        const ml_cells = &prepared.tables.ml.cells;
+        const of_cells = &prepared.tables.of.cells;
+        var ll_state = readState(&r, prepared.tables.ll.log);
+        var of_state = readState(&r, prepared.tables.of.log);
+        var ml_state = readState(&r, prepared.tables.ml.log);
+        for (prepared.seqs[0..prepared.count], 0..) |*sequence, i| {
+            const llc = ll_cells[ll_state];
+            const mlc = ml_cells[ml_state];
+            const ofc = of_cells[of_state];
+            const off = if (ofc.extra_bits > 1) ofc.base + @as(u32, @intCast(r.readFast(@intCast(ofc.extra_bits)))) + 3 else if (ofc.extra_bits == 1) 2 + @as(u32, @intCast(r.readFast(1))) else 1;
+            var ml = mlc.base;
+            if (mlc.extra_bits > 0) ml += @intCast(r.readFast(@intCast(mlc.extra_bits)));
+            if (@as(u32, ofc.extra_bits) + mlc.extra_bits + llc.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
+            var ll = llc.base;
+            if (llc.extra_bits > 0) ll += @intCast(r.readFast(@intCast(llc.extra_bits)));
+            sequence.* = .{ .ll = ll, .ml = ml, .off = off };
+            if (i + 1 < prepared.count) {
+                ll_state = llc.next_state + @as(u32, @intCast(r.read(@intCast(llc.nb_bits))));
+                ml_state = mlc.next_state + @as(u32, @intCast(r.read(@intCast(mlc.nb_bits))));
+                of_state = ofc.next_state + @as(u32, @intCast(r.read(@intCast(ofc.nb_bits))));
+                _ = r.reload();
+            }
+        }
+        prepared.complete = r.finished();
+    }
+};
+
+pub const LiteralCursor = union(enum) {
     raw: []const u8,
     rle: u8,
     huffman: huffman.Symbols,

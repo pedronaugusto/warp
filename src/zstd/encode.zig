@@ -72,20 +72,25 @@ pub fn compressBlock(store: *SeqStore, block_len: usize, prev: *const Entropy, n
 /// Estimated encoded bytes, including block and entropy headers, for
 /// post-parse splitting. Tables use the same mode selection as emission.
 pub fn estimateBlock(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy: Strategy) usize {
+    return estimateDetailed(store, prev, next, strategy).size;
+}
+
+/// Block and literal costs, sharing the table selection and histogram.
+pub fn estimateDetailed(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy: Strategy) struct { size: usize, literals: usize } {
     const literals = estimateLiterals(store.lits[0..store.lit_len], prev, strategy);
     const count = store.count;
-    if (count == 0) return literals + 4;
+    if (count == 0) return .{ .size = literals + 4, .literals = literals };
     var counts: SeqStore.Counts = undefined;
     store.toCodes(&counts);
     const original = counts;
     var description: [128]u8 = undefined;
-    const ll = codeTable(LlTable, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, &description) orelse return store.decodedLen() + 3;
-    const of = codeTable(OfTable, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, &description) orelse return store.decodedLen() + 3;
-    const ml = codeTable(MlTable, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, &description) orelse return store.decodedLen() + 3;
+    const ll = codeTable(LlTable, &counts.ll, store.ll_codes[count - 1], count, codes.max_ll, codes.max_ll_log, &codes.ll_default, codes.ll_default_log, null, &prev.ll, prev.ll_repeat, &next.ll, &next.ll_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
+    const of = codeTable(OfTable, &counts.of, store.of_codes[count - 1], count, codes.max_of, codes.max_of_log, &codes.of_default, codes.of_default_log, 28, &prev.of, prev.of_repeat, &next.of, &next.of_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
+    const ml = codeTable(MlTable, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, &codes.ml_default, codes.ml_default_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, &description) orelse return .{ .size = store.decodedLen() + 3, .literals = literals };
     const ll_size = estimateSymbols(ll.mode, &next.ll, &original.ll, &codes.ll_bits, &codes.ll_default, codes.ll_default_log);
     const of_size = estimateSymbols(of.mode, &next.of, &original.of, &codes.of_bits, &codes.of_default, codes.of_default_log);
     const ml_size = estimateSymbols(ml.mode, &next.ml, &original.ml, &codes.ml_bits, &codes.ml_default, codes.ml_default_log);
-    return literals + 5 + @as(usize, @intFromBool(count >= 128)) + @intFromBool(count >= 0x7f00) + ll.len + of.len + ml.len + ll_size + of_size + ml_size;
+    return .{ .size = literals + 5 + @as(usize, @intFromBool(count >= 128)) + @intFromBool(count >= 0x7f00) + ll.len + of.len + ml.len + ll_size + of_size + ml_size, .literals = literals };
 }
 
 fn estimateSymbols(mode: Mode, table: anytype, counts: *const [64]u32, extra: []const u8, norm: []const i16, log: u4) usize {
@@ -105,7 +110,8 @@ fn estimateSymbols(mode: Mode, table: anytype, counts: *const [64]u32, extra: []
     return cost >> 3;
 }
 
-fn estimateLiterals(lits: []const u8, prev: *const Entropy, strategy: Strategy) usize {
+/// Literal section size using the same table selection as emission.
+pub fn estimateLiterals(lits: []const u8, prev: *const Entropy, strategy: Strategy) usize {
     if (lits.len == 0) return 0;
     var counts: [huffman.max_symbols]u32 = undefined;
     const h = huffman.histogram(lits, &counts);

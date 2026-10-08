@@ -18,4 +18,5 @@ test {
     _ = @import("testing/zstd_train_test.zig");
     _ = @import("testing/zstd_seekable_test.zig");
     _ = @import("testing/zstd_parallel_test.zig");
+    _ = @import("testing/zstd_super_test.zig");
 }

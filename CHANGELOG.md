@@ -21,6 +21,10 @@ All notable changes to warp are documented here. The format follows
   segment parameters and finalizes supplied content into a formatted dictionary.
 - Sparse long-distance matching on whole-buffer and streaming encoders,
   with a configurable window and deterministic bucket selection across frames.
+- `zstd.Compress.Options.target_block_size`: partitions parsed superblocks by
+  encoded cost, cuts long literal runs and preserves match and repeat histories.
+- `zstd.parallel.Decompressor`: entropy workers with ordered match execution
+  and checksums, caller storage and cancellation.
 - `zstd.parallel`: ordered compression jobs in one frame, overlap priming,
   rsyncable cuts, reader input and output independent of concurrency.
 - `zstd.seekable`: independent-frame output, seek-table validation, frame

@@ -20,6 +20,7 @@ const lazy_ = match.lazy;
 const opt_ = match.opt;
 const split = @import("split.zig");
 const post = @import("post.zig");
+const super_ = @import("super.zig");
 const sequences = @import("sequences.zig");
 const Dictionary = @import("Dictionary.zig");
 const dictionary_match = @import("match/dictionary.zig");
@@ -443,6 +444,49 @@ pub fn writeBlocks(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_litera
         o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, next_reps, prev, first and i == 0, last and i + 1 == plan.count);
         at += len;
         from = to;
+    }
+    return o;
+}
+
+/// Partition a parsed superblock by estimated compressed cost, preserving
+/// match distances across literal cuts and raw partitions.
+pub fn writeTarget(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, searched_reps: [3]u32, prev: *usize, first: bool, last: bool, wanted: u32) CompressError!usize {
+    const target = super_.target(wanted);
+    const estimate = encode.estimateDetailed(&c.store, &c.entropy[prev.*], &c.entropy[1 - prev.*], p.strategy);
+    if (estimate.size <= target or in.len == 0) return c.writeBlocks(p, in, out, raw_literals, reps, searched_reps, prev, first, last);
+    if (estimate.size >= in.len) return c.writeLiteralTargets(p, in, out, raw_literals, reps, prev, first, last, target);
+    var cursor = super_.Cursor.init(&c.store, &c.entropy[1 - prev.*], reps.*, target, if (raw_literals) c.store.lit_len else estimate.literals);
+    var at: usize = 0;
+    var o: usize = 0;
+    var beginning = first;
+    while (!cursor.done()) {
+        var part = cursor.next();
+        const len = part.decodedLen();
+        var next_reps = reps.*;
+        for (part.seqs[0..part.count], 0..) |*q, i| {
+            q.off = super_.offset(next_reps, q.off - 3, part.litLen(i) == 0);
+            next_reps = sequences.updateReps(next_reps, q.off, part.litLen(i) == 0);
+        }
+        o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, next_reps, prev, beginning, last and cursor.done());
+        at += len;
+        beginning = false;
+    }
+    std.debug.assert(at == in.len);
+    return o;
+}
+
+fn writeLiteralTargets(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_literals: bool, reps: *[3]u32, prev: *usize, first: bool, last: bool, target: usize) CompressError!usize {
+    var at: usize = 0;
+    var o: usize = 0;
+    while (at < in.len) {
+        const len = @min(in.len - at, target - 3);
+        var part = c.store;
+        part.count = 0;
+        part.long = null;
+        part.lits = @constCast(in[at..][0..len]); // safe: emission only reads literals
+        part.lit_len = len;
+        o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, reps.*, prev, first and at == 0, last and at + len == in.len);
+        at += len;
     }
     return o;
 }

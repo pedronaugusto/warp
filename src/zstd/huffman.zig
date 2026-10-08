@@ -864,6 +864,7 @@ test "descriptions whose weights do not form a code are refused" {
 /// into their final output positions, without a temporary literal buffer.
 pub const Symbols = struct {
     table: *const Table,
+    source: []const u8,
     streams: [4]bits.Reader,
     ends: [4]usize,
     index: usize = 0,
@@ -871,7 +872,7 @@ pub const Symbols = struct {
     pending: ?u8 = null,
 
     pub fn init(t: *const Table, in: []const u8, len: usize, single: bool) Error!Symbols {
-        var s: Symbols = .{ .table = t, .streams = undefined, .ends = undefined };
+        var s: Symbols = .{ .table = t, .source = in, .streams = undefined, .ends = undefined };
         if (single) {
             s.streams[0] = try .init(in);
             s.ends = @splat(len);

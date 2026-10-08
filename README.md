@@ -218,7 +218,13 @@ storage. Frame and table checksums are verified by default. The writer's
 priming and optional `rsyncable` cuts. `compress` and `compressReader` take
 `Io` per call; concurrency does not change the encoded bytes. Job and overlap
 storage are reserved at initialization. Invalid job sizes are `InvalidOptions`.
-Latency-oriented compressed block sizing is still being built.
+`zstd.parallel.Decompressor` decodes block entropy in workers while executing
+matches and verifying checksums in order. It reserves worker storage at
+initialization and takes `Io` per call; short inputs and partial output use
+the core decoder directly.
+`Compress.Options.target_block_size` partitions parsed superblocks by estimated
+compressed cost for latency. Targets are best effort and clamped to 1340..128 KiB;
+raw blocks fit the target, and entropy tables carry across compressed partitions.
 
 ## Platforms
 

@@ -15,6 +15,8 @@ pub const Options = struct {
     frame: Encoder.Frame = .{},
     pledged_size: ?u64 = null,
     dictionary: ?*const Dictionary = null,
+    /// Best-effort compressed block size, clamped to 1340..128 KiB.
+    target_block_size: ?u32 = null,
 };
 pub const Step = struct { in_len: usize, out_len: usize };
 pub const Drain = struct { out_len: usize, done: bool };
@@ -52,11 +54,15 @@ fn blockMax(p: Encoder.Params) usize {
     return @min(encode.block_max, @as(usize, 1) << p.window_log);
 }
 
+fn staging(p: Encoder.Params) usize {
+    return @max(blockMax(p), @min(8 << 20, @as(usize, 1) << p.window_log));
+}
+
 /// Exact storage for tables, the retained history, input and pending output.
 pub fn memory(options: Options) usize {
     const p = Encoder.resolve(encoderOptions(options), options.pledged_size);
     const block = blockMax(p);
-    const size = Encoder.memory(encoderOptions(options)) +| (@as(usize, 1) << p.window_log) +| (2 * block + 3 * 197 + 22);
+    const size = Encoder.memory(encoderOptions(options)) +| (@as(usize, 1) << p.window_log) +| (staging(p) + block + 3 * 197 + 22);
     if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
     return std.mem.alignForward(usize, size, 64);
 }
@@ -78,7 +84,7 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
     const enc_size = Encoder.memory(enc_options);
     const p = Encoder.resolve(enc_options, options.pledged_size);
     const block = blockMax(p);
-    const window_size = (@as(usize, 1) << p.window_log) + block;
+    const window_size = (@as(usize, 1) << p.window_log) + staging(p);
     var s: Compress = .{ .options = options, .encoder = Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = block, .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
     s.startFrame();
     return s;
@@ -210,19 +216,24 @@ fn emit(s: *Compress, finishing: bool) void {
     } else s.encoder.store.storeLast(s.window[s.history..end]);
     s.encoder.mergeDictionary(s.window[0 .. s.history + s.have], s.history, end, s.total - s.have, s.params, s.reps, &next_reps);
     const raw = s.params.strategy == .fast and s.params.target_length > 0;
-    const n = s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last) catch unreachable; // unreachable: output holds raw input plus headers for all 197 possible partitions
+    const n = (if (s.options.target_block_size) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch unreachable; // unreachable: output holds raw input plus headers for all 197 possible partitions
     s.savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));
     s.pending = 0;
     s.pending_end = n;
     s.first = false;
     s.last_emitted = last;
     const keep = @min(end, @as(usize, 1) << s.params.window_log);
-    const discard = end - keep;
     const buffered = s.history + s.have;
-    if (discard != 0) @memmove(s.window[0 .. buffered - discard], s.window[discard..buffered]);
-    s.history = keep;
     s.have -= len;
-    s.base += @intCast(discard);
+    s.history = end;
+    // Keep positions contiguous until staging fills; moving a full window
+    // once per staging interval avoids copying it for every small block.
+    if (end + s.block_max > s.window.len) {
+        const discard = end - keep;
+        if (discard != 0) @memmove(s.window[0 .. buffered - discard], s.window[discard..buffered]);
+        s.history = keep;
+        s.base += @intCast(discard);
+    }
     if (s.base > 1 << 29) {
         const amount = s.base - 2;
         s.encoder.reduceIndices(amount);

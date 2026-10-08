@@ -7,6 +7,7 @@ const std = @import("std");
 const warp = @import("warp");
 
 var memory: [1 << 20]u8 align(64) = undefined;
+var pipeline_memory: [3 << 20]u8 align(64) = undefined;
 
 /// Every checksum, continued, combined, and the kernels chosen.
 export fn warpChecksums(bytes: [*]const u8, len: usize) u32 {
@@ -123,7 +124,7 @@ export fn warpZstdDecompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len
 
 /// The streaming encoder and writer adapter, using the same caller storage.
 export fn warpZstdStreamCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32) isize {
-    const options: warp.zstd.Compress.Options = .{ .level = level, .pledged_size = in_len };
+    const options: warp.zstd.Compress.Options = .{ .level = level, .target_block_size = 2048, .pledged_size = in_len };
     const size = warp.zstd.Compress.memory(options);
     if (size > memory.len) return -1;
     var s: warp.zstd.Compress = .initBuffer(memory[0..size], options);
@@ -170,4 +171,15 @@ export fn warpZstdParallel(io: *const std.Io, in: [*]const u8, in_len: usize, ou
     var reader: std.Io.Reader = .fixed(in[0..in_len]);
     p.compressReader(io.*, &reader, &sink) catch return -1;
     return @intCast(sink.buffered().len);
+}
+
+/// Pipelined block entropy and ordered history execution on every target.
+export fn warpZstdPipeline(io: *const std.Io, in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, partial: bool) isize {
+    const options: warp.zstd.parallel.Decompressor.Options = .{ .concurrency = 1 };
+    const size = warp.zstd.parallel.Decompressor.memory(options);
+    if (size > pipeline_memory.len) return -1;
+    var d = warp.zstd.parallel.Decompressor.initBuffer(pipeline_memory[0..size], options);
+    defer d.deinit();
+    const result = d.decompress(io.*, in[0..in_len], out[0..out_len], .{ .partial = partial }) catch return -1;
+    return @intCast(result.out_len);
 }
