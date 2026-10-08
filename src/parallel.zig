@@ -229,36 +229,63 @@ fn run(worker: *Worker, options: Options) void {
 
 const Inflate = @import("stream/Inflate.zig");
 const Index = @import("Index.zig");
+const Speculative = @import("parallel/Speculative.zig");
+const Native = @import("Decompressor.zig");
 
 /// Decode indexed regions concurrently into disjoint caller slices. An
 /// index is built and validated separately; reuse it for repeated reads.
 pub const Decompressor = struct {
     workers: []DecodeWorker,
     gpa: std.mem.Allocator,
-    owned: bool = false,
+    owned: []align(64) u8 = &.{},
+    speculative: ?Speculative = null,
 
-    pub const Options = struct { concurrency: u16 = 8 };
+    pub const Statistics = Speculative.Statistics;
+    pub const Options = struct {
+        concurrency: u16 = 8,
+        /// Reserve bounded marker buffers for unindexed inflate calls.
+        /// null keeps the compact indexed-only allocation.
+        speculative: ?Speculative.Options = null,
+    };
     pub const DecodeError = Inflate.DecodeError || Io.Cancelable || error{ OutputTooSmall, InvalidIndex, Truncated };
 
     pub fn memory(options: Decompressor.Options) usize {
         std.debug.assert(options.concurrency > 0);
-        return @as(usize, @sizeOf(DecodeWorker)) * options.concurrency;
+        const records = std.mem.alignForward(usize, @as(usize, @sizeOf(DecodeWorker)) * options.concurrency, 64);
+        return records + if (options.speculative) |spec| Speculative.memory(options.concurrency, spec) else 0;
     }
 
     pub fn init(gpa: std.mem.Allocator, options: Decompressor.Options) std.mem.Allocator.Error!Decompressor {
-        std.debug.assert(options.concurrency > 0);
-        return .{ .workers = try gpa.alloc(DecodeWorker, options.concurrency), .gpa = gpa, .owned = true };
+        const owned = try gpa.alignedAlloc(u8, .@"64", memory(options));
+        var p = initBuffer(owned, options);
+        p.owned = owned;
+        p.gpa = gpa;
+        return p;
     }
 
     /// Caller memory, aligned to 64 bytes; deinit frees nothing.
     pub fn initBuffer(buffer: []align(64) u8, options: Decompressor.Options) Decompressor {
         std.debug.assert(buffer.len >= memory(options));
-        return .{ .workers = @as([*]DecodeWorker, @ptrCast(buffer.ptr))[0..options.concurrency], .gpa = undefined }; // safe: buffer is aligned and holds memory(options) bytes
+        const records = std.mem.alignForward(usize, @as(usize, @sizeOf(DecodeWorker)) * options.concurrency, 64);
+        return .{
+            .workers = @as([*]DecodeWorker, @ptrCast(buffer.ptr))[0..options.concurrency], // safe: buffer is aligned and reserves these worker records
+            .gpa = undefined,
+            .speculative = if (options.speculative) |spec| Speculative.initBuffer(@alignCast(buffer[records..]), options.concurrency, spec) else null, // safe: records and the following marker storage are padded to 64 bytes
+        };
     }
 
     pub fn deinit(p: *Decompressor) void {
-        if (p.owned) p.gpa.free(p.workers);
+        if (p.owned.len != 0) p.gpa.free(p.owned);
         p.* = undefined;
+    }
+
+    /// Any single stream, without an index. Reserve speculative buffers at
+    /// init to search and decode unknown block starts concurrently. Small
+    /// streams, partial output and exhausted searches use the native engine.
+    pub fn inflate(p: *Decompressor, io: Io, in: []const u8, out: []u8, options: Native.Options) (Native.InflateError || Io.Cancelable)!Native.Result {
+        if (p.speculative) |*spec| return spec.inflate(io, in, out, options);
+        var native: Native = .init;
+        return native.inflate(in, out, options);
     }
 
     /// The index must describe this stream. Every region verifies its

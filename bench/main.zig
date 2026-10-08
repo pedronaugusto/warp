@@ -15,6 +15,7 @@ const gen = @import("gen");
 const baseline = @import("baseline");
 const stream = @import("stream.zig");
 const parallel = @import("parallel.zig");
+const speculative = @import("speculative.zig");
 
 const Options = struct {
     smoke: bool = false,
@@ -48,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
             options.runs = try std.fmt.parseInt(usize, args[i], 10);
         } else try what.append(arena, args[i]);
     }
-    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup", "stream-decode", "stream-compress", "websocket", "parallel" });
+    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup", "stream-decode", "stream-compress", "websocket", "parallel", "speculative" });
     if (options.smoke) options.runs = 1;
 
     var out_buf: [4096]u8 = undefined;
@@ -78,10 +79,10 @@ pub fn main(init: std.process.Init) !void {
             try stream.compress(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke }, try streamWorkloads(arena, workloads));
         } else if (std.mem.eql(u8, name, "websocket")) {
             try stream.websocket(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke });
-        } else if (std.mem.eql(u8, name, "parallel")) {
+        } else if (std.mem.eql(u8, name, "parallel") or std.mem.eql(u8, name, "speculative")) {
             const list = try arena.alloc(parallel.Workload, workloads.len);
             for (list, workloads) |*p, wl| p.* = .{ .name = wl.name, .inputs = wl.inputs };
-            try parallel.run(init.gpa, io, w, list, options.runs);
+            if (std.mem.eql(u8, name, "parallel")) try parallel.run(init.gpa, io, w, list, options.runs) else try speculative.run(init.gpa, io, w, list, options.runs);
         } else return error.UnknownBenchmark;
         try w.flush();
     }

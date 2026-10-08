@@ -697,12 +697,12 @@ inline fn careful(s: *Stream, source: anytype, state: *State, litlen: []const u3
 }
 
 /// A decoded symbol: its entry, and the codeword's and extra bits' counts.
-const Symbol = struct { entry: u32, bits: u6, extra: u6 };
+pub const Symbol = struct { entry: u32, bits: u6, extra: u6 };
 
 /// The next symbol, not yet consumed. A code with no symbol is refused if
 /// its bits are real; a symbol whose codeword reaches past the end of the
 /// input is `Truncated`.
-inline fn symbol(s: *Stream, source: anytype, table: []const u32, bits: u5) Error!Symbol {
+pub inline fn symbol(s: *Stream, source: anytype, table: []const u32, bits: u5) Error!Symbol {
     s.need(source, 15);
     var e = table[s.peek(bits)];
     var main: u6 = 0;

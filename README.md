@@ -190,6 +190,20 @@ its compressed reader to `point.in_offset`. `parallel.Decompressor.decompress`
 uses an index to decode disjoint output regions concurrently. Building the
 index is a separate sequential pass.
 
+For streams without an index, reserve marker buffers with
+`parallel.Decompressor.init(gpa, .{ .concurrency = 8, .speculative = .{} })`, then
+call `inflate(io, input, output, .{ .accept = .gzip })`. This searches bit offsets
+and decodes blocks concurrently before their history is known. The coordinator
+accepts only boundaries reached from the real header, resolves unknown-window
+references, and validates the original wrapper checksums. Raw DEFLATE, zlib,
+dictionaries and concatenated gzip members use the same call. No index pass is
+required. `speculative.chunk_len`, `search_len`, `max_blocks` and `work_limit`
+bound retained output, search partitions, descriptors and failed-candidate work.
+Large single blocks, exhausted searches and partial requests use the native
+engine. `speculative = null` keeps the compact indexed allocation; `inflate`
+then uses the native decoder. All worker storage is reserved at initialization,
+and cancellation or an error joins workers before returning.
+
 `gzip.Bgzf` writes members with the BC extra field, bounds both compressed and
 decoded blocks to 64 KiB, and finishes with the canonical empty EOF member.
 `virtualOffset` gives the member offset and buffered decoded offset.
@@ -244,7 +258,8 @@ inputs through every level; compression allocates nothing after `init`, and
 
 `zig build bench` times the default rows in ReleaseFast, beside the code warp
 replaces. Run `zig-out/bench/bench --runs 3 parallel` to select rows, or add
-`--smoke` or `--corpus <dir>`. CI compiles the benchmarks and never times them.
+`--smoke` or `--corpus <dir>`. The `speculative` rows include discovery and
+marker resolution for whole streams, alongside native decoding. CI compiles the benchmarks and never times them.
 
 ## Licence
 

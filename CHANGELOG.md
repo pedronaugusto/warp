@@ -21,6 +21,8 @@ All notable changes to warp are documented here. The format follows
   8-15 bit windows, level changes and retained-history resets.
 - Deterministic parallel compression, validated portable seek indexes and
   parallel indexed decompression.
+- Unindexed parallel decoding by speculative block discovery and symbolic
+  history, with bounded caller storage and wrapper checksum validation.
 - Raw Deflate64 decoding and the BGZF writer with virtual offsets.
 - Optional zlib C stream ABI, a host build helper for compressed assets,
   and a compression CLI example.
