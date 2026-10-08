@@ -4,7 +4,6 @@ const std = @import("std");
 const Deflate = @import("stream/Deflate.zig");
 const Inflate = @import("stream/Inflate.zig");
 const Compressor = @import("Compressor.zig");
-const Decompressor = @import("Decompressor.zig");
 const checksum = @import("checksum.zig");
 const container = @import("container.zig");
 const Diagnostic = @import("Diagnostic.zig");
@@ -146,8 +145,9 @@ pub fn deflateInit2(stream: ?*Stream, value: c_int, method: c_int, window_bits: 
     const st = strategy(strategy_value) orelse return stream_error;
     if (window_bits < -15 or window_bits > 31) return stream_error;
     const kind: container.Container = if (window_bits < 0) .raw else if (window_bits > 15) .gzip else .zlib;
-    const bits = if (window_bits < 0) -window_bits else if (kind == .gzip) window_bits - 16 else window_bits;
-    if (method != 8 or bits < 8 or bits > 15 or mem_level < 1 or mem_level > 9) return stream_error;
+    var bits = if (window_bits < 0) -window_bits else if (kind == .gzip) window_bits - 16 else window_bits;
+    if (method != 8 or bits < 8 or bits > 15 or mem_level < 1 or mem_level > 9 or (bits == 8 and kind != .zlib)) return stream_error;
+    if (bits == 8) bits = 9;
     const options: Deflate.Options = .{ .level = lv, .strategy = st, .container = kind, .window_bits = @intCast(bits), .hash_bits = @intCast(mem_level + 7) };
     const n = Deflate.memory(options);
     const s = create(z, n) orelse return mem_error;
@@ -248,7 +248,11 @@ pub export fn deflateSetDictionary(stream: ?*Stream, dictionary: [*c]const u8, l
 pub export fn deflateBound(stream: ?*Stream, len: c_ulong) c_ulong {
     const z = stream orelse return @intCast(Compressor.bound(len, .{}));
     const s = state(z, .encode) orelse return @intCast(Compressor.bound(len, .{}));
-    return @intCast(Compressor.bound(len, .{ .container = s.encoder.options.container, .dictionary = s.encoder.options.dictionary, .gzip = s.encoder.options.gzip }));
+    const frame: Compressor.Frame = .{ .container = s.encoder.options.container, .dictionary = s.encoder.options.dictionary, .gzip = s.encoder.options.gzip };
+    const window: usize = @as(usize, 1) << s.encoder.options.window_bits;
+    const short_blocks = len / @min(window, 5000) - len / 5000;
+    const custom = if (s.gzip_header != null) s.header_length - gzip.headerLen(frame.gzip) else 0;
+    return @intCast(Compressor.bound(len, frame) + 5 * short_blocks + custom);
 }
 
 pub fn inflateInit(z: ?*Stream, version: [*c]const u8, size: c_int) callconv(.c) c_int {
@@ -309,10 +313,15 @@ pub export fn inflate(stream: ?*Stream, flush: c_int) c_int {
     if (flush < 0 or flush > 6 or z.next_out == null or (z.avail_in != 0 and z.next_in == null)) return stream_error;
     const before_in = z.total_in;
     const before_out = z.total_out;
+    s.decoder.stop = if (flush == 6) .trees else if (flush == 5) .block else .none;
     if (!s.header_ready) {
         const status = decodeHeader(z, s);
         if (status != ok) return status;
         if (!s.header_ready) return if (before_in == z.total_in) buf_error else ok;
+        if (s.decoder.stop != .none and s.decoder.state.phase == .body and s.decoder.state.engine.phase == .header) {
+            z.data_type = 128;
+            return ok;
+        }
     }
     while (true) {
         const step = s.decoder.decode(if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in], z.next_out[0..z.avail_out]) catch |err| {
@@ -322,6 +331,11 @@ pub export fn inflate(stream: ?*Stream, flush: c_int) c_int {
         advance(z, step.in_len, step.out_len);
         z.adler = s.decoder.state.check;
         updateHeader(s);
+        z.data_type = @intCast(s.decoder.bitsleft);
+        if (s.decoder.state.engine.final) z.data_type += 64;
+        if (step.status == .block_end) {
+            z.data_type += if (s.decoder.state.engine.phase == .header) @as(c_int, 128) else if (flush == 6) @as(c_int, 256) else 0;
+        }
         switch (step.status) {
             .done, .member_end => return stream_end,
             .block_end => if (flush == 5 or flush == 6) return ok,
@@ -612,7 +626,7 @@ pub export fn zError(code: c_int) [*:0]const u8 {
 
 pub export fn zlibCompileFlags() c_ulong {
     return (if (@sizeOf(c_uint) == 4) @as(c_ulong, 1) else 2) | (if (@sizeOf(c_ulong) == 4) @as(c_ulong, 1) else 2) << 2 |
-        (if (@sizeOf(usize) == 4) @as(c_ulong, 1) else 2) << 4 | @as(c_ulong, 2) << 6 | @as(c_ulong, 1) << 16;
+        (if (@sizeOf(usize) == 4) @as(c_ulong, 1) else 2) << 4 | (if (@sizeOf(c_long) == 4) @as(c_ulong, 1) else 2) << 6 | @as(c_ulong, 1) << 16;
 }
 
 pub export fn compressBound(len: c_ulong) c_ulong {
@@ -621,12 +635,21 @@ pub export fn compressBound(len: c_ulong) c_ulong {
 
 pub export fn compress2(out: [*c]u8, out_len: ?*c_ulong, in: [*c]const u8, in_len: c_ulong, value: c_int) c_int {
     const n = out_len orelse return stream_error;
-    const lv = level(value) orelse return stream_error;
     if (out == null or (in == null and in_len != 0)) return stream_error;
-    var c = Compressor.init(std.heap.page_allocator, .{ .level = lv, .max_input = in_len }) catch return mem_error;
-    defer c.deinit();
-    n.* = c.compress(if (in_len == 0) &.{} else in[0..in_len], out[0..n.*], .{}) catch return buf_error;
-    return ok;
+    var z: Stream = .{ .next_in = in, .next_out = out };
+    const initialized = deflateInit(&z, value, zlibVersion(), @sizeOf(Stream));
+    if (initialized != ok) return initialized;
+    defer _ = deflateEnd(&z);
+    const capacity = n.*;
+    n.* = 0;
+    while (true) {
+        if (z.avail_in == 0) z.avail_in = @intCast(@min(in_len - z.total_in, std.math.maxInt(c_uint)));
+        if (z.avail_out == 0) z.avail_out = @intCast(@min(capacity - z.total_out, std.math.maxInt(c_uint)));
+        const rc = deflate(&z, if (in_len - z.total_in > z.avail_in) 0 else 4);
+        n.* = z.total_out;
+        if (rc == stream_end) return ok;
+        if (rc != ok) return rc;
+    }
 }
 
 pub export fn compress(out: [*c]u8, out_len: ?*c_ulong, in: [*c]const u8, in_len: c_ulong) c_int {
@@ -637,11 +660,25 @@ pub export fn uncompress2(out: [*c]u8, out_len: ?*c_ulong, in: [*c]const u8, in_
     const n = out_len orelse return stream_error;
     const count = in_len orelse return stream_error;
     if (out == null or (in == null and count.* != 0)) return stream_error;
-    var d: Decompressor = .init;
-    const result = d.inflate(if (count.* == 0) &.{} else in[0..count.*], out[0..n.*], .{}) catch |err| return if (err == error.OutputTooSmall) buf_error else data_error;
-    n.* = result.out_len;
-    count.* = result.in_len;
-    return ok;
+    const capacity = n.*;
+    const input_length = count.*;
+    var scratch: [1]u8 = undefined;
+    var z: Stream = .{ .next_in = in, .next_out = if (capacity == 0) &scratch else out };
+    const initialized = inflateInit(&z, zlibVersion(), @sizeOf(Stream));
+    if (initialized != ok) return initialized;
+    defer _ = inflateEnd(&z);
+    const output_length = if (capacity == 0) 1 else capacity;
+    while (true) {
+        if (z.avail_in == 0) z.avail_in = @intCast(@min(input_length - z.total_in, std.math.maxInt(c_uint)));
+        if (z.avail_out == 0) z.avail_out = @intCast(@min(output_length - z.total_out, std.math.maxInt(c_uint)));
+        const rc = inflate(&z, 0);
+        n.* = if (capacity == 0) 0 else z.total_out;
+        count.* = z.total_in;
+        if (rc == stream_end) return if (capacity == 0 and z.total_out != 0) buf_error else ok;
+        if (rc == need_dict) return data_error;
+        if (rc == buf_error) return if (z.total_out == output_length) buf_error else data_error;
+        if (rc != ok) return rc;
+    }
 }
 
 pub export fn uncompress(out: [*c]u8, out_len: ?*c_ulong, in: [*c]const u8, in_len: c_ulong) c_int {

@@ -147,6 +147,8 @@ pub const Stream = struct {
     window: u32 = max_distance,
     /// Stop without error when the output is full.
     partial: bool = false,
+    /// The stream ABI's tree flush stops after the next block header.
+    stop_header: bool = false,
     diagnostic: ?*Diagnostic = null,
     deflate64: bool = false,
 
@@ -289,10 +291,14 @@ pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) E
     s.deflate64 = @TypeOf(t.*).wide;
     // Each part goes on to the next by a direct jump.
     phase: switch (state.phase) {
-        .header => switch (try blockHeader(s, source, state)) {
-            .stored => continue :phase .stored,
-            .precode => continue :phase .precode,
-            else => continue :phase .codes,
+        .header => {
+            const next = try blockHeader(s, source, state);
+            if (s.stop_header and next != .precode) return .block_end;
+            switch (next) {
+                .stored => continue :phase .stored,
+                .precode => continue :phase .precode,
+                else => continue :phase .codes,
+            }
         },
         .stored => {
             if (!try stored(s, source, state)) return .output_full;
@@ -304,6 +310,7 @@ pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) E
         },
         .lengths => {
             try lengths(t, s, source, state);
+            if (s.stop_header) return .block_end;
             continue :phase .codes;
         },
         .codes => {

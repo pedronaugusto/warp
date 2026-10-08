@@ -35,6 +35,7 @@ pub const Options = struct {
     keep_history: bool = false,
     /// Where the first gzip member's header fields go.
     fields: ?*gzip.Fields = null,
+    stop_wrapper: bool = false,
 };
 
 /// How a run ended.
@@ -109,13 +110,19 @@ pub fn run(t: *inflate.Tables, st: *State, s: *inflate.Stream, source: anytype, 
             .zlib => continue :phase .zlib_header,
             .gzip => continue :phase .gzip_header,
         },
-        .zlib_header => if (try zlibHeader(st, s, source, options)) continue :phase .dictionary_id else continue :phase .body,
+        .zlib_header => {
+            if (try zlibHeader(st, s, source, options)) continue :phase .dictionary_id;
+            if (options.stop_wrapper) return .block_end;
+            continue :phase .body;
+        },
         .dictionary_id => {
             try dictionaryId(st, s, source, options);
+            if (options.stop_wrapper) return .block_end;
             continue :phase .body;
         },
         .gzip_header => {
             try gzipHeader(st, s, source, options);
+            if (options.stop_wrapper) return .block_end;
             continue :phase .body;
         },
         .body => {

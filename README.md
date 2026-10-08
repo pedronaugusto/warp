@@ -242,9 +242,9 @@ bitwise reference at every length to 4 KiB and every alignment, and combining to
 inputs through every level; compression allocates nothing after `init`, and
 `init` survives every allocation failure.
 
-`zig build bench -- [--smoke] [--corpus <dir>]` times decoding, the checksums and
-small-stream setup in ReleaseFast, beside the code warp replaces. CI compiles the
-benchmarks and never times them.
+`zig build bench` times the default rows in ReleaseFast, beside the code warp
+replaces. Run `zig-out/bench/bench --runs 3 parallel` to select rows, or add
+`--smoke` or `--corpus <dir>`. CI compiles the benchmarks and never times them.
 
 ## Licence
 

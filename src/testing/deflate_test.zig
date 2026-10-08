@@ -434,7 +434,10 @@ fn streamAnything(_: void, case: *shakedown.Case) !void {
 }
 
 test "fuzz: any input, options, flushes and cuts round-trip, the same however cut" {
-    try shakedown.check(testing.allocator, {}, streamAnything, .{ .cases = 300 });
+    try shakedown.check(testing.allocator, {}, streamAnything, .{
+        .cases = 300,
+        .regressions = &.{"0:0:0:203a:a:0:1:5:0:0:0:1c"},
+    });
 }
 
 test "near-optimal streams keep block bytes across small window slides" {

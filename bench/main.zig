@@ -4,7 +4,7 @@
 //! row times warp beside the code it replaces in the family
 //! (bench/baseline/), interleaved, best and median of the runs.
 //!
-//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket]...
+//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket|parallel]...
 //!
 //! `--smoke` runs every row once on tiny inputs; `zig build test` does that.
 
@@ -81,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, name, "parallel")) {
             const list = try arena.alloc(parallel.Workload, workloads.len);
             for (list, workloads) |*p, wl| p.* = .{ .name = wl.name, .inputs = wl.inputs };
-            try parallel.run(arena, io, w, list, options.runs);
+            try parallel.run(init.gpa, io, w, list, options.runs);
         } else return error.UnknownBenchmark;
         try w.flush();
     }

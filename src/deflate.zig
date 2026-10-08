@@ -346,13 +346,13 @@ pub const Engine = struct {
 
     /// The level and strategy from the next block on.
     pub fn setLevel(e: *Engine, level_in: u4, strategy: Strategy) void {
-        std.debug.assert(level_in < 10 or e.sizes.nodes != 0);
+        std.debug.assert(finder(level_in, strategy) != .trees or e.sizes.nodes != 0);
         const level = level_in;
         e.level = levels[@min(level, 12)];
         e.strategy = strategy;
         e.finder = finder(level, strategy);
         e.b.kinds = if (e.level.parser == .stored) .stored_only else if (strategy == .fixed) .no_dynamic else if (e.level.parser == .optimal) .optimal else .any;
-        if (e.level.parser == .optimal) {
+        if (e.finder == .trees) {
             e.opt.min_take = if (strategy == .filtered) 6 else match.min_match;
             e.opt.fixed_only = strategy == .fixed;
         }

@@ -43,6 +43,8 @@ keep_history: bool = false,
 failed: ?DecodeError = null,
 out_total: u64 = 0,
 at_boundary: bool = false,
+/// Private: the C stream ABI's block and tree flush boundaries.
+stop: enum { none, block, trees } = .none,
 
 pub const Options = struct {
     accept: container.Accept = .zlib,
@@ -103,7 +105,7 @@ pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 pub fn decode(z: *Inflate, in: []const u8, out: []u8) DecodeError!Step {
     const stepped = try z.step(in, out, 0, 0, z.ringHistory());
     z.out_total += stepped.op;
-    z.at_boundary = stepped.status == .block_end;
+    z.at_boundary = stepped.status == .block_end and z.state.engine.phase == .header;
     if (stepped.replaced) {
         // A dictionary, or a new member's empty history, replaced the window.
         z.head = 0;
@@ -244,6 +246,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .history = history,
         .window = @as(u32, 1) << z.options.window_bits,
         .partial = true,
+        .stop_header = z.stop == .trees,
         .diagnostic = &diagnostic,
     };
     source.commit(&s);
@@ -254,6 +257,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .window_bits = z.options.window_bits,
         .keep_history = z.keep_history,
         .fields = z.options.gzip_fields,
+        .stop_wrapper = z.stop != .none,
     };
     const run = unwrap.run(&z.tables, &z.state, &s, &source, machine) catch |err| switch (err) {
         error.Truncated => {

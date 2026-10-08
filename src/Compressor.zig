@@ -28,8 +28,8 @@ gpa: Allocator,
 pub const Strategy = deflate.Strategy;
 
 pub const Options = struct {
-    /// 0 stored, 1-9 zlib's scale (output no larger than zlib's at the same
-    /// level), 10-12 the most compression; 13-15 mean 12.
+    /// 0 stored, 1-9 zlib's scale (aggregate size on the standard corpora
+    /// no larger than zlib's), 10-12 the most compression; 13-15 mean 12.
     level: u4 = 6,
     strategy: Strategy = .default,
     /// The largest input `compress` will see: it sizes the tables. A larger

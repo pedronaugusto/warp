@@ -37,6 +37,9 @@ hash4_bits: u5 = 0,
 base: isize = 0,
 /// Private: the farthest a match reaches back.
 window: u32 = match.window,
+/// A tree was ordered by a prefix that ended here. If the input grows,
+/// comparisons must verify the bytes rather than reuse that prefix length.
+prefix_end: ?isize = null,
 
 /// The memory for tables of `hash3_bits` and `hash4_bits` over a window of
 /// `window` bytes.
@@ -53,17 +56,20 @@ pub fn reset(bt: *BinaryTrees, first: isize, hash3_bits: u5, hash4_bits: u5) voi
     @memset(bt.hash3[0 .. @as(usize, 1) << hash3_bits], .{ match.none, match.none });
     @memset(bt.hash4[0 .. @as(usize, 1) << hash4_bits], match.none);
     bt.base = if (first < 0) -match.window else 0;
+    bt.prefix_end = null;
 }
 
 /// Moved back `n` positions: the buffer the positions index slid by `n`.
 pub fn slide(bt: *BinaryTrees, n: usize) void {
     bt.base -= @intCast(n);
+    if (bt.prefix_end) |*end| end.* -= @intCast(n);
 }
 
 /// Forget every position: a later match reaches none before this.
 pub fn forget(bt: *BinaryTrees) void {
     @memset(bt.hash3[0 .. @as(usize, 1) << bt.hash3_bits], .{ match.none, match.none });
     @memset(bt.hash4[0 .. @as(usize, 1) << bt.hash4_bits], match.none);
+    bt.prefix_end = null;
 }
 
 /// Keep positions storable: once `p` is a window past the base, move it.
@@ -101,6 +107,9 @@ pub inline fn skip(bt: *BinaryTrees, comptime dictionary: bool, comptime full_wi
 inline fn search(bt: *BinaryTrees, comptime dictionary: bool, comptime full_window: bool, comptime record: bool, h: match.History, p: isize, max_len: u32, nice_in: u32, depth_in: u32, out: [*]Match) usize {
     bt.advance(p);
     const nice_len = @min(nice_in, max_len);
+    const input_end: isize = @intCast(h.in.len);
+    if (max_len == nice_len and p + match.offset(max_len) == input_end and bt.prefix_end == null) bt.prefix_end = input_end;
+    const trust_prefix = if (bt.prefix_end) |end| input_end <= end else true;
     const base = bt.base;
     const child = bt.child.ptr;
     const cur: i16 = @intCast(p - base);
@@ -171,13 +180,13 @@ inline fn search(bt: *BinaryTrees, comptime dictionary: bool, comptime full_wind
             smaller = node_at + 1;
             node = child[smaller];
             smaller_len = len;
-            len = @min(len, larger_len);
+            len = if (trust_prefix) @min(len, larger_len) else 0;
         } else {
             child[larger] = node;
             larger = node_at;
             node = child[larger];
             larger_len = len;
-            len = @min(len, smaller_len);
+            len = if (trust_prefix) @min(len, smaller_len) else 0;
         }
         depth -= 1;
         if (node <= cutoff or depth == 0) {

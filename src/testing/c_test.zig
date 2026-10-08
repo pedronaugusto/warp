@@ -228,3 +228,65 @@ test "C ABI copies keep independent encoder and decoder state" {
     try testing.expectEqualStrings(in, back[0..d.total_out]);
     try testing.expectEqualSlices(u8, back[0..d.total_out], cb[0..dc.total_out]);
 }
+
+test "C ABI convenience calls report progress on short buffers" {
+    const input = "repeated repeated repeated repeated repeated repeated";
+    var encoded: [256]u8 = undefined;
+    var length: c_ulong = encoded.len;
+    try testing.expectEqual(@as(c_int, 0), abi.compress2(&encoded, &length, input, input.len, 6));
+    var decoded: [7]u8 = undefined;
+    var capacity: c_ulong = decoded.len;
+    var consumed: c_ulong = length;
+    try testing.expectEqual(@as(c_int, -5), abi.uncompress2(&decoded, &capacity, &encoded, &consumed));
+    try testing.expectEqual(@as(c_ulong, decoded.len), capacity);
+    try testing.expect(consumed < length);
+    try testing.expectEqualStrings(input[0..decoded.len], &decoded);
+    capacity = 1;
+    try testing.expectEqual(@as(c_int, -5), abi.compress2(&encoded, &capacity, input, input.len, 6));
+    try testing.expectEqual(@as(c_ulong, 1), capacity);
+}
+
+test "C ABI promotes zlib's eight-bit encode window and rejects it for other wrappers" {
+    var z: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, -2), abi.deflateInit2(&z, 6, 8, -8, 8, 0, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    try testing.expectEqual(@as(c_int, -2), abi.deflateInit2(&z, 6, 8, 24, 8, 0, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    try testing.expectEqual(@as(c_int, 0), abi.deflateInit2(&z, 6, 8, 8, 8, 0, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.deflateEnd(&z);
+    var encoded: [128]u8 = undefined;
+    z.next_out = &encoded;
+    z.avail_out = encoded.len;
+    try testing.expectEqual(@as(c_int, 1), abi.deflate(&z, 4));
+    try testing.expectEqual(@as(u8, 1), encoded[0] >> 4);
+}
+
+test "C ABI tree flush stops after wrapper and block headers" {
+    var encoded: [128]u8 = undefined;
+    var length: c_ulong = encoded.len;
+    try testing.expectEqual(@as(c_int, 0), abi.compress2(&encoded, &length, "abc", 3, 0));
+    var d: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.inflateInit(&d, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.inflateEnd(&d);
+    var out: [16]u8 = undefined;
+    d.next_in = &encoded;
+    d.avail_in = @intCast(length);
+    d.next_out = &out;
+    d.avail_out = out.len;
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 6));
+    try testing.expectEqual(@as(c_ulong, 0), d.total_out);
+    try testing.expect(d.data_type & 128 != 0);
+    try testing.expectEqual(@as(c_int, 0), abi.inflate(&d, 6));
+    try testing.expectEqual(@as(c_ulong, 0), d.total_out);
+    try testing.expect(d.data_type & 256 != 0);
+    try testing.expectEqual(@as(c_int, 1), abi.inflate(&d, 4));
+    try testing.expectEqualStrings("abc", out[0..d.total_out]);
+}
+
+test "C ABI compression bounds include custom gzip headers" {
+    var z: abi.Stream = .{};
+    try testing.expectEqual(@as(c_int, 0), abi.deflateInit2(&z, 6, 8, 31, 8, 0, abi.zlibVersion(), @sizeOf(abi.Stream)));
+    defer _ = abi.deflateEnd(&z);
+    var name: [300:0]u8 = @splat('a');
+    var header: abi.Header = .{ .name = &name };
+    try testing.expectEqual(@as(c_int, 0), abi.deflateSetHeader(&z, &header));
+    try testing.expect(abi.deflateBound(&z, 0) >= 10 + name.len + 1 + 8 + 2);
+}

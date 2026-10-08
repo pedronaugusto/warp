@@ -31,5 +31,9 @@ All notable changes to warp are documented here. The format follows
   kernel modules from assembling; an AArch64 cross-build checks this.
 - Near-optimal streaming blocks retain their source bytes across small-window
   slides, and changing level preserves the requested optimization passes.
+- Short near-optimal flushes verify prefixes again when more input follows;
+  Huffman-only and RLE streams at high levels need no optimal-parser storage.
+- C compression bounds include custom gzip headers and small windows, and
+  convenience calls report the bytes consumed on short output buffers.
 
 [Unreleased]: https://github.com/pedronaugusto/warp/commits/main
