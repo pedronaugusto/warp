@@ -370,8 +370,13 @@ fn applyChange(d: *Deflate) void {
 fn slide(d: *Deflate) bool {
     const window = @as(usize, 1) << d.options.window_bits;
     const b = &d.engine.b;
-    const cached = d.engine.level.parser == .optimal and d.engine.strategy != .huffman_only and d.engine.strategy != .rle;
-    if ((b.kinds == .stored_only or cached) and b.start < window) {
+    const needs_bytes = switch (b.kinds) {
+        .stored_only => true,
+        .optimal => d.engine.strategy != .huffman_only and d.engine.strategy != .rle,
+        .no_dynamic => d.engine.level.parser == .optimal and d.engine.strategy != .huffman_only and d.engine.strategy != .rle,
+        .any => false,
+    };
+    if (needs_bytes and b.start < window) {
         var w = d.writer();
         d.engine.endBlock(&w, .{ .in = d.window[0..d.filled] });
         d.keepWriter(&w);

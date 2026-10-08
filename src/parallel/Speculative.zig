@@ -58,6 +58,7 @@ const Worker = struct {
     candidate: ?Candidate = null,
     stats: Statistics = .{},
     fixed_first: bool = false,
+    canceled: bool = false,
 };
 
 pub fn memory(concurrency: u16, options: Options) usize {
@@ -92,6 +93,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     if (options.partial or input.len <= p.options.search_len or input.len > std.math.maxInt(usize) / 8) {
         var native: Native = .init;
         const result = try native.inflate(input, output, options);
+        try io.checkCancel();
         if (p.options.statistics) |stats| stats.serial_bytes = result.out_len;
         return result;
     }
@@ -103,7 +105,10 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     // discovery. This is the required prefix, not an index pass.
     const first_done = try advance(&tables, &state, &stream, machine);
     if (p.options.statistics) |stats| stats.serial_bytes += stream.op;
-    if (first_done) return finish(&stream);
+    if (first_done) {
+        try io.checkCancel();
+        return finish(&stream);
+    }
     var next: usize = p.options.search_len;
     for (p.workers) |*w| {
         w.fixed_first = state.engine.fixed;
@@ -119,6 +124,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
             const w = &p.workers[slot];
             if (bit >= w.from) {
                 try w.group.await(io);
+                if (w.canceled) return error.Canceled;
                 if (w.candidate) |candidate| {
                     var first: usize = 0;
                     while (first < candidate.count and w.blocks[first].start < bit) : (first += 1) {}
@@ -216,6 +222,7 @@ fn resolveBytes(tokens: []const u16, out: []u8, history: *const [engine.max_dist
 
 fn submit(p: *Speculative, io: Io, w: *Worker, input: []const u8, next: *usize) void {
     w.candidate = null;
+    w.canceled = false;
     w.stats = .{};
     if (next.* >= input.len) {
         w.input = &.{};
@@ -242,7 +249,12 @@ fn collect(p: *Speculative, w: *const Worker) void {
 }
 
 fn search(w: *Worker, io: Io, options: Options) void {
-    searchInner(w, io, options) catch return;
+    searchInner(w, io, options) catch {
+        // An async job may run inline and consume its caller's request.
+        // Keep that result until the coordinator joins this job.
+        w.canceled = true;
+        io.recancel();
+    };
 }
 
 fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {

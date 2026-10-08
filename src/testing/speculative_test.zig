@@ -267,11 +267,8 @@ test "speculative fuzz: valid streams and mutated streams agree with the referen
     try shakedown.check(testing.allocator, {}, validAndMutated, .{ .cases = 100 });
 }
 
-test "speculative cancellation joins workers and preserves decoder reuse" {
+test "speculative cancellation survives inline and concurrent workers and preserves reuse" {
     const a = testing.allocator;
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
     const input = try gen.alloc(a, .text, 5, 1 << 20);
     defer a.free(input);
     const stream = try compressed(input, .gzip, .default);
@@ -280,17 +277,28 @@ test "speculative cancellation joins workers and preserves decoder reuse" {
     defer a.free(back);
     var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 4, .speculative = .{ .chunk_len = 65536, .search_len = 1024 } });
     defer decoder.deinit();
-    var ready: std.Io.Event = .unset;
-    const Task = struct {
-        fn run(task_io: std.Io, p: *parallel.Decompressor, in: []const u8, out: []u8, started: *std.Io.Event) !Native.Result {
-            started.set(task_io);
-            return p.inflate(task_io, in, out, .{ .accept = .gzip });
-        }
-    };
-    var future = try io.concurrent(Task.run, .{ io, &decoder, stream, back, &ready });
-    try ready.wait(io);
-    try testing.expectError(error.Canceled, future.cancel(io));
-    const result = try decoder.inflate(io, stream, back, .{ .accept = .gzip });
-    try testing.expectEqual(input.len, result.out_len);
-    try testing.expectEqualSlices(u8, input, back);
+    for ([_]std.Io.Limit{ .nothing, .unlimited }) |limit| {
+        var threaded: std.Io.Threaded = .init(a, .{ .async_limit = limit });
+        defer threaded.deinit();
+        const io = threaded.io();
+        var ready: std.Io.Event = .unset;
+        const Task = struct {
+            fn run(task_io: std.Io, p: *parallel.Decompressor, in: []const u8, out: []u8, started: *std.Io.Event) !Native.Result {
+                var parked: std.Io.Event = .unset;
+                started.set(task_io);
+                // Cancellation is pending before inflate, independently of
+                // CPU count and whether the caller wakes before decoding ends.
+                parked.wait(task_io) catch {
+                    task_io.recancel();
+                };
+                return p.inflate(task_io, in, out, .{ .accept = .gzip });
+            }
+        };
+        var future = try io.concurrent(Task.run, .{ io, &decoder, stream, back, &ready });
+        try ready.wait(io);
+        try testing.expectError(error.Canceled, future.cancel(io));
+        const result = try decoder.inflate(io, stream, back, .{ .accept = .gzip });
+        try testing.expectEqual(input.len, result.out_len);
+        try testing.expectEqualSlices(u8, input, back);
+    }
 }
