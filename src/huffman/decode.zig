@@ -64,12 +64,14 @@ pub const Alphabet = enum {
     litlen,
     /// Distances 0-29; 30 and 31 are invalid in data.
     dist,
+    litlen64,
+    dist64,
 
     pub fn size(a: Alphabet) usize {
         return switch (a) {
             .precode => 19,
-            .litlen => 288,
-            .dist => 32,
+            .litlen, .litlen64 => 288,
+            .dist, .dist64 => 32,
         };
     }
 
@@ -77,8 +79,9 @@ pub const Alphabet = enum {
     pub fn maxBits(a: Alphabet) u5 {
         return switch (a) {
             .precode => 7,
-            .litlen => 11,
+            .litlen, .litlen64 => 11,
             .dist => 8,
+            .dist64 => 6,
         };
     }
 
@@ -87,8 +90,9 @@ pub const Alphabet = enum {
     pub fn enough(a: Alphabet) usize {
         return switch (a) {
             .precode => 128,
-            .litlen => 2342,
+            .litlen, .litlen64 => 2342,
             .dist => 402,
+            .dist64 => 594,
         };
     }
 };
@@ -107,16 +111,18 @@ pub fn invalid(len: u32) u32 {
 fn symbolEntry(comptime alphabet: Alphabet, sym: usize, len: u32) u32 {
     switch (alphabet) {
         .precode => return (@as(u32, @intCast(sym)) << 16) | (len << 8) | len,
-        .litlen => {
+        .litlen, .litlen64 => {
             if (sym < 256) return literal_flag | (@as(u32, @intCast(sym)) << 16) | (len << 8) | len;
             if (sym == 256) return exceptional | end_flag | (len << 8) | len;
             if (sym < 286) {
+                if (alphabet == .litlen64 and sym == 285) return (3 << 16) | (len << 8) | (len + 16);
                 const i = sym - 257;
                 return (@as(u32, length_base[i]) << 16) | (len << 8) | (len + length_extra[i]);
             }
             return invalid(len);
         },
-        .dist => {
+        .dist, .dist64 => {
+            if (alphabet == .dist64 and sym >= 30) return (@as(u32, if (sym == 30) 32769 else 49153) << 16) | (len << 8) | (len + 14);
             if (sym < 30) return (@as(u32, dist_base[sym]) << 16) | (len << 8) | (len + dist_extra[sym]);
             return invalid(len);
         },
@@ -270,11 +276,11 @@ fn buildComplete(comptime alphabet: Alphabet, table: []u32, lens: []const u8, co
 /// A table for the fixed codes, built at compile time.
 pub fn Fixed(comptime alphabet: Alphabet) type {
     return struct {
-        pub const bits: u5 = if (alphabet == .litlen) 9 else 5;
+        pub const bits: u5 = if (alphabet == .litlen or alphabet == .litlen64) 9 else 5;
         pub const table: [1 << bits]u32 = blk: {
             @setEvalBranchQuota(100_000);
             var lens: [alphabet.size()]u8 = undefined;
-            if (alphabet == .litlen) {
+            if (alphabet == .litlen or alphabet == .litlen64) {
                 @memset(lens[0..144], 8);
                 @memset(lens[144..256], 9);
                 @memset(lens[256..280], 7);

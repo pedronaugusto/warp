@@ -3,6 +3,7 @@
 //! fixed-code or dynamic-code block for them, by exact bit cost.
 
 const std = @import("std");
+const gen = @import("gen");
 const bits = @import("../bits.zig");
 const huffman = @import("../huffman.zig");
 
@@ -84,7 +85,7 @@ pub const Counts = struct {
 };
 
 /// Which block types a writer may choose.
-pub const Kinds = enum { any, no_dynamic, stored_only };
+pub const Kinds = enum { any, optimal, no_dynamic, stored_only };
 
 /// One code: each symbol's codeword (bit-reversed) and length.
 const Code = struct {
@@ -124,7 +125,7 @@ const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13
 
 /// The dynamic code's lengths for `counts`, its header and its cost in bits;
 /// `codewords` makes the codewords.
-fn dynamicCode(counts: *const Counts, code: *Code, header: *Header) u64 {
+fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_header: bool) u64 {
     var lit_counts = counts.litlen;
     var dist_counts: [32]u32 = @splat(0);
     @memcpy(dist_counts[0..dist_symbols], &counts.dist);
@@ -191,18 +192,100 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header) u64 {
     while (hclen > 4 and header.pre_lens[precode_order[hclen - 1]] == 0) hclen -= 1;
     header.hclen = @intCast(hclen);
 
-    var cost: u64 = 5 + 5 + 4 + 3 * hclen;
-    for (header.items[0..n]) |item| {
-        const sym = item & 0xff;
-        cost += header.pre_lens[sym] + @as(u64, switch (sym) {
+    if (optimize_header and header.n_items > 16) optimizeHeader(header, lens[0..total]);
+    return 14 + headerCost(header) + dataCost(counts, code);
+}
+
+/// Price the header's run symbols under its current code, then rebuild
+/// that code. Keep only an exact improvement, including HCLEN's cost.
+fn optimizeHeader(header: *Header, lens: []const u8) void {
+    var pass: usize = 0;
+    while (pass < 3) : (pass += 1) {
+        var cost: [321]u32 = undefined;
+        var item: [320]u16 = undefined;
+        var take: [320]u8 = undefined;
+        cost[lens.len] = 0;
+        var i = lens.len;
+        while (i > 0) {
+            i -= 1;
+            const l = lens[i];
+            cost[i] = preCost(header, l) + cost[i + 1];
+            item[i] = l;
+            take[i] = 1;
+            var run: usize = 1;
+            while (i + run < lens.len and lens[i + run] == l and run < 138) run += 1;
+            if (i != 0 and lens[i - 1] == l) considerRun(header, &cost, &item, &take, i, run, 16, 3, 6, 2);
+            if (l == 0) {
+                considerRun(header, &cost, &item, &take, i, run, 17, 3, 10, 3);
+                considerRun(header, &cost, &item, &take, i, run, 18, 11, 138, 7);
+            }
+        }
+        var candidate = header.*;
+        var counts: [19]u32 = @splat(0);
+        candidate.n_items = 0;
+        i = 0;
+        while (i < lens.len) {
+            candidate.items[candidate.n_items] = item[i];
+            candidate.n_items += 1;
+            counts[item[i] & 255] += 1;
+            i += take[i];
+        }
+        encode.buildLengths(&counts, 7, &candidate.pre_lens);
+        var hclen: usize = 19;
+        while (hclen > 4 and candidate.pre_lens[precode_order[hclen - 1]] == 0) hclen -= 1;
+        candidate.hclen = @intCast(hclen);
+        if (headerCost(&candidate) >= headerCost(header)) return;
+        header.* = candidate;
+    }
+}
+
+fn preCost(header: *const Header, symbol: usize) u32 {
+    const n = header.pre_lens[symbol];
+    return if (n == 0) 8 else n;
+}
+
+fn considerRun(header: *const Header, cost: *[321]u32, items: *[320]u16, takes: *[320]u8, at: usize, run: usize, symbol: u16, min: usize, max: usize, extra: u32) void {
+    if (run < min) return;
+    for (min..@min(run, max) + 1) |n| {
+        const price = preCost(header, symbol) + extra + cost[at + n];
+        if (price < cost[at]) {
+            cost[at] = price;
+            items[at] = symbol | @as(u16, @intCast(n - min)) << 8;
+            takes[at] = @intCast(n);
+        }
+    }
+}
+
+fn headerCost(header: *const Header) u32 {
+    var cost: u32 = 3 * @as(u32, header.hclen);
+    for (header.items[0..header.n_items]) |item| {
+        const symbol = item & 255;
+        cost += header.pre_lens[symbol] + @as(u32, switch (symbol) {
             16 => 2,
             17 => 3,
             18 => 7,
             else => 0,
         });
     }
-    return cost + dataCost(counts, code);
+    return cost;
 }
+
+/// The code lengths `write` builds for a dynamic block of `counts_in`
+/// (which do not include the end of the block), and the block's cost in
+/// bits after its three header bits.
+pub const Lengths = struct { litlen: [litlen_symbols]u8, dist: [32]u8, cost: u64 };
+
+pub fn dynamicLengths(counts_in: *const Counts) Lengths {
+    var counts = counts_in.*;
+    counts.litlen[end_of_block] += 1;
+    var code: Code = undefined;
+    var header: Header = undefined;
+    const cost = dynamicCode(&counts, &code, &header, true);
+    return .{ .litlen = code.litlen_lens, .dist = code.dist_lens, .cost = cost };
+}
+
+/// The fixed code's lengths.
+pub const fixed_lengths: Lengths = .{ .litlen = fixed.litlen_lens, .dist = fixed.dist_lens, .cost = 0 };
 
 /// The codewords of a dynamic code whose lengths `dynamicCode` chose: made
 /// only for the block that is written with it.
@@ -275,28 +358,47 @@ fn storedCost(len: usize, position: u64) u64 {
     }
 }
 
-/// Write one block of `data`: the matches in `seqs`, each after its
-/// literals, then `tail` literals; the cheapest kind `kinds` allows for
-/// `counts`, which do not include the end of the block.
-pub fn write(w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, counts_in: *const Counts, final: bool, kinds: Kinds) void {
+/// A block's bytes for the writer.
+pub const Data = struct {
+    /// The literals' bytes: the block's own bytes, which the matches skip
+    /// over (`interleaved`), or its literals alone, kept as they were
+    /// parsed.
+    bytes: []const u8,
+    /// The block's bytes as they are, for a stored block; null when they
+    /// are no longer at hand (a streaming window moved past them).
+    raw: ?[]const u8,
+};
+
+/// Write one block: the matches in `seqs`, each after its literals, then
+/// `tail` literals; the cheapest kind `kinds` allows for `counts`, which
+/// do not include the end of the block.
+pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []const Sequence, tail: u32, counts_in: *const Counts, final: bool, kinds: Kinds) void {
     var counts = counts_in.*;
     counts.litlen[end_of_block] += 1;
-    if (kinds == .stored_only) return writeStored(w, data, final);
+    if (kinds == .stored_only) return writeStored(w, data.raw.?, final);
     var code: Code = undefined;
     var header: Header = undefined;
     const fixed_cost = 3 + dataCost(&counts, &fixed);
-    const dynamic_cost = if (kinds == .any) 3 + dynamicCode(&counts, &code, &header) else std.math.maxInt(u64);
-    const stored_cost = storedCost(data.len, w.bitPosition());
-    if (stored_cost < @min(fixed_cost, dynamic_cost)) return writeStored(w, data, final);
+    const dynamic_cost = if (kinds == .any or kinds == .optimal) 3 + dynamicCode(&counts, &code, &header, kinds == .optimal) else std.math.maxInt(u64);
+    if (data.raw) |raw| {
+        if (storedCost(raw.len, w.bitPosition()) < @min(fixed_cost, dynamic_cost)) return writeStored(w, raw, final);
+    }
     if (fixed_cost <= dynamic_cost) {
         w.add(@as(u64, @intFromBool(final)) | 2, 3);
-        writeData(w, data, seqs, tail, &fixed);
+        writeData(interleaved, w, data.bytes, seqs, tail, &fixed);
     } else {
         w.add(@as(u64, @intFromBool(final)) | 4, 3);
         codewords(&code, &header);
         writeHeader(w, &header);
-        writeData(w, data, seqs, tail, &code);
+        writeData(interleaved, w, data.bytes, seqs, tail, &code);
     }
+}
+
+/// The most bits `write` writes for a block of `literals` literals and
+/// `matches` matches: fixed codes at their longest, which every choice
+/// costs no more than.
+pub fn bound(literals: usize, matches: usize) usize {
+    return 3 + 9 * literals + (8 + 5 + 5 + 13) * matches + 7;
 }
 
 fn writeHeader(w: *bits.Writer, header: *const Header) void {
@@ -321,9 +423,9 @@ fn writeHeader(w: *bits.Writer, header: *const Header) void {
     }
 }
 
-fn writeData(out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
+fn writeData(comptime interleaved: bool, out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
     // A small block costs less written symbol by symbol than its tables.
-    if (data.len < 2048 and seqs.len < 128) return writeFew(out, data, seqs, tail, code);
+    if (data.len < 2048 and seqs.len < 128) return writeFew(interleaved, out, data, seqs, tail, code);
     // Each literal's codeword and length in one entry, each match length's
     // codeword with its extra bits after it, each distance symbol's
     // codeword and length: one load and one add per field.
@@ -372,7 +474,7 @@ fn writeData(out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: 
         const dlen: u6 = @intCast(d >> 16);
         w.add(@as(u64, s.distance - decode.dist_base[ds]) << dlen | (d & 0xffff), dlen + @as(u6, @intCast(decode.dist_extra[ds])));
         w.flush();
-        at += s.length;
+        if (interleaved) at += s.length;
     }
     for (data[at..][0..tail]) |b| {
         const e = literal[b];
@@ -384,7 +486,7 @@ fn writeData(out: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: 
 }
 
 /// `writeData` for a few symbols: each looked up where it is written.
-fn writeFew(w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
+fn writeFew(comptime interleaved: bool, w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32, code: *const Code) void {
     var at: usize = 0;
     for (seqs) |s| {
         for (data[at..][0..s.literals]) |b| {
@@ -401,7 +503,7 @@ fn writeFew(w: *bits.Writer, data: []const u8, seqs: []const Sequence, tail: u32
         w.flush();
         w.add(s.distance - decode.dist_base[ds], @intCast(decode.dist_extra[ds]));
         w.flush();
-        at += s.length;
+        if (interleaved) at += s.length;
     }
     for (data[at..][0..tail]) |b| {
         w.add(code.litlen_codes[b], @intCast(code.litlen_lens[b]));
@@ -442,4 +544,23 @@ test "length and distance symbols are RFC 1951's" {
     try std.testing.expectEqual(@as(u32, 29), distSymbol(32768));
     try std.testing.expectEqual(@as(u32, 29), distSymbol(24577));
     try std.testing.expectEqual(@as(u32, 28), distSymbol(24576));
+}
+
+test "refined dynamic header cost matches its serialized bits" {
+    for (0..64) |seed| {
+        const input = try gen.alloc(std.testing.allocator, .text, seed, 1024);
+        defer std.testing.allocator.free(input);
+        var counts: Counts = .{};
+        for (input) |byte| counts.literal(byte);
+        counts.litlen[end_of_block] += 1;
+        var code: Code = undefined;
+        var header: Header = undefined;
+        const expected = dynamicCode(&counts, &code, &header, true);
+        codewords(&code, &header);
+        var buffer: [2048]u8 = undefined;
+        var writer: bits.Writer = .init(&buffer, 0);
+        writeHeader(&writer, &header);
+        writeData(false, &writer, input, &.{}, @intCast(input.len), &code);
+        try std.testing.expectEqual(expected, writer.bitPosition());
+    }
 }

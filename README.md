@@ -2,7 +2,8 @@
 
 warp compresses and decompresses DEFLATE in Zig, raw or in its zlib and gzip
 wrappers, and computes their checksums: CRC-32, CRC-32C and Adler-32. A call
-works on whole buffers in memory the caller gives, allocates nothing, and runs
+works on whole buffers or streaming pieces in caller memory, allocates nothing
+after initialization, and runs
 the fastest kernel the CPU has.
 
 ## Install
@@ -10,8 +11,8 @@ the fastest kernel the CPU has.
 Requires Zig 0.17.0. Fetch with `zig fetch --save
 git+https://github.com/pedronaugusto/warp`, then obtain the `warp` module through
 `b.dependency` and add it to your executable's imports. warp has no dependencies.
-Its only contact with the operating system is reading which instructions the CPU
-has; it builds for every target, wasm32-freestanding included.
+The codecs build for every target, wasm32-freestanding included. CPU detection
+reads the instructions available; parallel calls take `std.Io` for their workers.
 
 ## Usage
 
@@ -117,6 +118,10 @@ and take a literal when the match there is better by length and distance. Each
 level follows its chains as little as keeps its output no larger than zlib's at
 the same level on every kind of input in the test corpus.
 
+Levels 10-12 use binary trees and iterate a minimum-cost path over cached
+matches, updating symbol costs from each chosen path. Additional passes trade
+time for size without another match search.
+
 Level 1 ends a block every 64 KiB or 8,192 matches; the other levels end one
 where the symbol statistics change, tested every 512 symbols. Each block is
 written as whichever of stored, fixed-code or dynamic-code costs the fewest bits,
@@ -146,7 +151,7 @@ the second length.
 | `Options.accept` | `raw`, `zlib`, `gzip`, `zlib_or_raw` (HTTP's "deflate"), `gzip_or_zlib` |
 | `Options.partial` | Stops when `out` is full instead of failing; `Result.finished` says which |
 | `Options.dictionary` | History before the output: what a raw stream refers into, or the bytes a zlib stream names |
-| `Compressor.init(gpa, options)`, `initBuffer(buffer, options)` | A compressor for a level (0 stored, 1-9, 10-12 as 9 for now) and strategy, in allocated or given memory |
+| `Compressor.init(gpa, options)`, `initBuffer(buffer, options)` | A compressor for a level (0 stored, 1-9, 10-12 near-optimal) and strategy, in allocated or given memory |
 | `Compressor.memory(options)` | The bytes `initBuffer` needs |
 | `compressor.compress(in, out, frame)` | One complete stream of `in`; `frame` picks the container, dictionary and gzip header |
 | `Compressor.bound(len, frame)` | The longest stream `compress` writes for `len` bytes: an `out` this long never fails |
@@ -161,13 +166,65 @@ Errors are named sets: `InvalidStream`, `ChecksumMismatch`, `DictionaryMismatch`
 `Truncated` and `OutputTooSmall` for decoding, `OutputTooSmall` for encoding, and
 `ReadFailed` from a reader.
 
-## Scope
+## Streaming and parallel calls
 
-- Whole buffers only for now: no streaming encoder or decoder over chunks, no
-  flush modes, no window sizes below 32 KiB.
-- Levels 10 to 12 compress as level 9 until their parser exists.
-- No parallel compression, no zstd and no Deflate64 yet.
-- A gzip header's fields are read by `gzip.parseHeader`; the decoder skips them.
+`Inflate.decode` and `Deflate.write`, `flush`, and `finish` resume at any input
+or output byte. `Inflate.Reader` and `Deflate.Writer` adapt them to `std.Io`.
+Window sizes are 8-15 bits; resets may keep history for context takeover.
+`Deflate.Options.max_level = 12` reserves the storage needed to change from a
+lower level to a near-optimal one. `Compressor.Options.passes` and
+`Deflate.Options.passes` set the cost-model pass budget at levels 10-12.
+
+`parallel.Compressor.compress(io, input, writer)` and `compressReader` write one
+standard stream. `parallel.Options` chooses the container, level, 128 KiB chunk
+size, worker count, and whether chunks refer to the preceding 32 KiB. The bytes
+are identical for every worker count. `memory` and `initBuffer` support caller
+storage for the parallel codecs and BGZF writer.
+
+`gzip.Index.build(gpa, input, accept, spacing)` validates a compressed stream
+and saves block boundaries, checksums, and history. `write` and `read` persist
+it in a versioned little-endian format; `find` locates a restart point.
+`Inflate.checkpoint` and `@"resume"` expose those points directly.
+`Inflate.Reader.seek(point)` restores the decoder after the caller repositions
+its compressed reader to `point.in_offset`. `parallel.Decompressor.decompress`
+uses an index to decode disjoint output regions concurrently. Building the
+index is a separate sequential pass.
+
+For streams without an index, reserve marker buffers with
+`parallel.Decompressor.init(gpa, .{ .concurrency = 8, .speculative = .{} })`, then
+call `inflate(io, input, output, .{ .accept = .gzip })`. This searches bit offsets
+and decodes blocks concurrently before their history is known. The coordinator
+accepts only boundaries reached from the real header, resolves unknown-window
+references, and validates the original wrapper checksums. Raw DEFLATE, zlib,
+dictionaries and concatenated gzip members use the same call. No index pass is
+required. The default search partition is 256 KiB compressed, with 4 MiB of
+decoded marker capacity per worker (about 8 MiB of workspace).
+`speculative.chunk_len`, `search_len`, `max_blocks` and `work_limit`
+bound retained output, search partitions, descriptors and failed-candidate work.
+Large single blocks, exhausted searches and partial requests use the native
+engine. `speculative = null` keeps the compact indexed allocation; `inflate`
+then uses the native decoder. All worker storage is reserved at initialization,
+and cancellation or an error joins workers before returning.
+
+`gzip.Bgzf` writes members with the BC extra field, bounds both compressed and
+decoded blocks to 64 KiB, and finishes with the canonical empty EOF member.
+`virtualOffset` gives the member offset and buffered decoded offset.
+`deflate64.Decompressor` decodes raw zip method 9 with a 64 KiB window.
+
+## C and build integration
+
+`zig build -Dc-abi=true` also builds `libz.a`. The stream ABI supports raw,
+zlib, gzip and automatic decoding, caller allocation callbacks, dictionaries,
+flushes, level changes, resets, state copies, gzip headers, full-flush recovery,
+convenience calls, state introspection, retained-history resets and checksums. Use an existing zlib header when compiling C callers. File APIs,
+callback decoding, bit priming and fine-grained tuning are outside this surface.
+
+A consumer build can call `@import("warp").addCompressedAsset(b, dependency,
+.{ .source = b.path("asset.txt"), .name = "asset.gz" })`. The returned `LazyPath`
+is generated by a host executable and can be embedded or installed even when the
+consumer targets another architecture. `container` selects raw, zlib or gzip;
+`level` defaults to 12. `zig build cli -- [-d] [-l level] [-j workers] input output`
+runs the gzip example; `--raw` and `--zlib` select the other containers.
 
 ## Platforms
 
@@ -194,16 +251,17 @@ gets the same error for the same reason. Every prefix of a valid stream is
 `partial`. The standard library is the oracle in both directions: warp decodes
 what it writes at every level, and it decodes what warp writes at every level and
 strategy. Every level, strategy and container round-trips every kind of input,
-also with dictionaries, and no level writes more than zlib does at the same level
-on any kind of input. Every checksum kernel the CPU has is checked against a
+also with dictionaries, and each level's aggregate size stays below its captured zlib reference per kind
+of input (levels 10-12 compare with zlib level 9). Every checksum kernel the CPU has is checked against a
 bitwise reference at every length to 4 KiB and every alignment, and combining to
 2^33 bytes. Fuzzing feeds arbitrary bytes to every decoder entry and arbitrary
 inputs through every level; compression allocates nothing after `init`, and
 `init` survives every allocation failure.
 
-`zig build bench -- [--smoke] [--corpus <dir>]` times decoding, the checksums and
-small-stream setup in ReleaseFast, beside the code warp replaces. CI compiles the
-benchmarks and never times them.
+`zig build bench` times the default rows in ReleaseFast, beside the code warp
+replaces. Run `zig-out/bench/bench --runs 3 parallel` to select rows, or add
+`--smoke` or `--corpus <dir>`. The `speculative` rows include discovery and
+marker resolution for whole streams, alongside native decoding. CI compiles the benchmarks and never times them.
 
 ## Licence
 

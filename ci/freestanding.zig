@@ -60,3 +60,29 @@ export fn warpGzipHeader(in: [*]const u8, in_len: usize, out: [*]u8, out_len: us
     warp.gzip.writeHeader(&w, parsed.header) catch return -1;
     return @intCast(w.buffered().len);
 }
+
+/// Extended decoding and an owned checkpoint in caller memory.
+export fn warpExtended(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize) isize {
+    var d: warp.deflate64.Decompressor = .init;
+    const r = d.inflate(in[0..in_len], out[0..out_len], .{ .partial = true }) catch return -1;
+    var window: [32768]u8 = undefined;
+    var z: warp.Inflate = .init(&window, .{ .accept = .raw });
+    var checkpoint: warp.Inflate.Checkpoint = .{ .in_offset = 0, .out_offset = 0, .window_bits = 15, .bits = 0, .pending = 0, .wrapper = .raw, .check = 0, .size = 0, .members = 0, .history_len = 0 };
+    z.@"resume"(&checkpoint) catch return -1;
+    _ = z.decode(in[0..in_len], out[0..out_len]) catch return -1;
+    checkpoint = z.checkpoint() catch checkpoint;
+    return @intCast(r.out_len);
+}
+
+/// BGZF's caller-owned writer on a fixed sink.
+export fn warpBlockedGzip(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize) isize {
+    const options: warp.gzip.Bgzf.Options = .{ .level = 1 };
+    const n = warp.gzip.Bgzf.memory(options);
+    if (n > memory.len) return -1;
+    var b = warp.gzip.Bgzf.initBuffer(memory[0..n], options);
+    defer b.deinit();
+    var sink: std.Io.Writer = .fixed(out[0..out_len]);
+    b.write(in[0..in_len], &sink) catch return -1;
+    b.finish(&sink) catch return -1;
+    return @intCast(sink.buffered().len);
+}

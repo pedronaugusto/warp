@@ -4,7 +4,7 @@
 //! row times warp beside the code it replaces in the family
 //! (bench/baseline/), interleaved, best and median of the runs.
 //!
-//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup]...
+//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket|parallel|speculative]...
 //!
 //! `--smoke` runs every row once on tiny inputs; `zig build test` does that.
 
@@ -13,6 +13,9 @@ const Io = std.Io;
 const warp = @import("warp");
 const gen = @import("gen");
 const baseline = @import("baseline");
+const stream = @import("stream.zig");
+const parallel = @import("parallel.zig");
+const speculative = @import("speculative.zig");
 
 const Options = struct {
     smoke: bool = false,
@@ -46,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
             options.runs = try std.fmt.parseInt(usize, args[i], 10);
         } else try what.append(arena, args[i]);
     }
-    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup" });
+    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup", "stream-decode", "stream-compress", "websocket", "parallel", "speculative" });
     if (options.smoke) options.runs = 1;
 
     var out_buf: [4096]u8 = undefined;
@@ -66,9 +69,30 @@ pub fn main(init: std.process.Init) !void {
             try compress(arena, io, w, options, workloads);
         } else if (std.mem.eql(u8, name, "setup")) {
             try setup(arena, io, w, options);
+        } else if (std.mem.eql(u8, name, "stream-decode")) {
+            const run: stream.Run = .{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke };
+            const wls = try streamWorkloads(arena, workloads);
+            const streams = try arena.alloc([]const []const u8, wls.len);
+            for (wls, streams) |wl, *s| s.* = try zlibStreams(arena, .{ .name = wl.name, .inputs = wl.inputs, .total = wl.total, .max = wl.max }, .level_6);
+            try stream.decode(run, wls, streams);
+        } else if (std.mem.eql(u8, name, "stream-compress")) {
+            try stream.compress(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke }, try streamWorkloads(arena, workloads));
+        } else if (std.mem.eql(u8, name, "websocket")) {
+            try stream.websocket(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke });
+        } else if (std.mem.eql(u8, name, "parallel") or std.mem.eql(u8, name, "speculative")) {
+            const list = try arena.alloc(parallel.Workload, workloads.len);
+            for (list, workloads) |*p, wl| p.* = .{ .name = wl.name, .inputs = wl.inputs };
+            if (std.mem.eql(u8, name, "parallel")) try parallel.run(init.gpa, io, w, list, options.runs) else try speculative.run(init.gpa, io, w, list, options.runs);
         } else return error.UnknownBenchmark;
         try w.flush();
     }
+}
+
+/// The workloads as the streaming rows take them.
+fn streamWorkloads(arena: std.mem.Allocator, workloads: []const Workload) ![]stream.Workload {
+    const list = try arena.alloc(stream.Workload, workloads.len);
+    for (list, workloads) |*s, wl| s.* = .{ .name = wl.name, .inputs = wl.inputs, .total = wl.total, .max = wl.max };
+    return list;
 }
 
 fn loadWorkloads(arena: std.mem.Allocator, io: Io, options: Options) ![]Workload {
@@ -361,7 +385,7 @@ fn setupCompress(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Optio
     const window = try arena.alloc(u8, std.compress.flate.max_window_len);
     var out: [128]u8 = undefined;
     try w.print("\nsetup compress | level | input | warp ns/stream | std ns/stream\n", .{});
-    const levels = [_]struct { u4, std.compress.flate.Compress.Options }{ .{ 1, .level_1 }, .{ 6, .level_6 } };
+    const levels = [_]struct { u4, std.compress.flate.Compress.Options }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 12, .level_9 } };
     for (levels) |level| for (inputs) |in| {
         const c = try arena.create(warp.Compressor);
         c.* = try .init(arena, .{ .level = level[0] });
@@ -415,7 +439,7 @@ const CompressCtx = struct {
 fn compress(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options, workloads: []const Workload) !void {
     const window = try arena.alloc(u8, std.compress.flate.max_window_len);
     try w.print("\ncompress (zlib) | workload | level | MB in | warp MB/s | std MB/s | warp/std | warp size | std size\n", .{});
-    const levels = [_]struct { u4, std.compress.flate.Compress.Options }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 9, .level_9 } };
+    const levels = [_]struct { u4, std.compress.flate.Compress.Options }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 9, .level_9 }, .{ 10, .level_9 }, .{ 11, .level_9 }, .{ 12, .level_9 } };
     for (workloads) |wl| for (levels) |level| {
         const c = try arena.create(warp.Compressor);
         c.* = try .init(arena, .{ .level = level[0] });

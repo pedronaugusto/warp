@@ -7,9 +7,30 @@ pub fn build(b: *std.Build) !void {
     addKernels(b, module, target, optimize);
     const library = b.addLibrary(.{ .name = "warp", .root_module = module });
     b.installArtifact(library);
+    var c_library: ?*std.Build.Step.Compile = null;
+    if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
+        const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
+        addKernels(b, c_module, target, optimize);
+        const artifact = b.addLibrary(.{ .name = "z", .root_module = c_module });
+        b.installArtifact(artifact);
+        c_library = artifact;
+    }
+
     // Everything below is this repository's own: a project depending on
     // warp builds the module and nothing else, and fetches nothing for it.
     if (b.pkg_hash.len != 0) return;
+
+    const asset = compressedAsset(b, b, .{ .source = b.path("README.md"), .name = "README.gz" });
+    const asset_test_module = b.createModule(.{
+        .root_source_file = b.path("ci/asset.zig"),
+        .target = b.graph.host,
+        .optimize = .safe,
+        .imports = &.{.{ .name = "warp", .module = warpModule(b, b.graph.host, .safe) }},
+    });
+    asset_test_module.addAnonymousImport("asset", .{ .root_source_file = asset });
+    asset_test_module.addAnonymousImport("original", .{ .root_source_file = b.path("README.md") });
+    const asset_test = b.addExecutable(.{ .name = "check-assets", .root_module = asset_test_module });
+    b.step("check-assets", "Generate and verify an embedded compressed asset").dependOn(&b.addRunArtifact(asset_test).step);
 
     const filters = if (b.option([]const u8, "test-filter", "Select tests by name")) |filter| &.{filter} else &.{};
     const test_module = b.createModule(.{
@@ -30,6 +51,22 @@ pub fn build(b: *std.Build) !void {
     const check = b.step("check", "Compile the tests, library, example and benchmarks without running them");
     check.dependOn(&tests.step);
     check.dependOn(&library.step);
+    if (c_library) |artifact| check.dependOn(&artifact.step);
+
+    const cli = b.addExecutable(.{
+        .name = "warp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "warp", .module = module }},
+        }),
+    });
+    const cli_step = b.step("cli", "Build and run the compression example");
+    const cli_run = b.addRunArtifact(cli);
+    cli_run.addPassthruArgs();
+    cli_step.dependOn(&cli_run.step);
+    check.dependOn(&cli.step);
 
     const example = b.addExecutable(.{
         .name = "usage",
@@ -60,6 +97,37 @@ pub fn build(b: *std.Build) !void {
         });
         b.step(leg.name, b.fmt("Build every public call for {s}", .{@tagName(leg.query.cpu_arch.?)})).dependOn(&object.step);
     }
+    const no_crc_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.apple_m3 },
+        .cpu_features_sub = std.Target.aarch64.featureSet(&.{.crc}),
+        .os_tag = .linux,
+    });
+    const no_crc = b.addObject(.{
+        .name = "check-no-crc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("ci/freestanding.zig"),
+            .target = no_crc_target,
+            .optimize = .small,
+            .imports = &.{.{ .name = "warp", .module = warpModule(b, no_crc_target, .small) }},
+        }),
+    });
+    const no_crc_step = b.step("check-no-crc", "Build with an explicitly disabled CRC CPU feature");
+    no_crc_step.dependOn(&no_crc.step);
+    check.dependOn(no_crc_step);
+    const abi_check = b.step("check-c-abi", "Compile the C ABI natively, for 32-bit Linux and with CRC disabled");
+    const abi_targets = [_]std.Build.ResolvedTarget{
+        target,
+        b.resolveTargetQuery(.{ .cpu_arch = .x86, .os_tag = .linux }),
+        no_crc_target,
+    };
+    for (abi_targets, 0..) |abi_target, i| {
+        const abi_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = abi_target, .optimize = .small });
+        addKernels(b, abi_module, abi_target, .small);
+        const object = b.addObject(.{ .name = b.fmt("check-c-abi-{d}", .{i}), .root_module = abi_module });
+        abi_check.dependOn(&object.step);
+    }
+    check.dependOn(abi_check);
     b.getInstallStep().dependOn(&tests.step);
     b.getInstallStep().dependOn(&example.step);
 
@@ -85,6 +153,16 @@ pub fn build(b: *std.Build) !void {
         // A project that depends on warp by path, with no packages to
         // fetch: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "warp", .program = b.path("ci/consumer.zig") });
+        if (b.dependencyLazy("preflight", .{})) |dependency| {
+            const plan = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file" });
+            plan.addFileArg(dependency.path("build.zig"));
+            plan.addArg(b.fmt("-Drepo-root={s}", .{b.root.joinString(b.allocator, "") catch @panic("OOM")}));
+            plan.addArg("plan");
+            plan.addArg("--");
+            plan.addPassthruArgs();
+            plan.setCwd(b.path("."));
+            b.step("plan", "Generate the hosted CI matrices").dependOn(&plan.step);
+        } else |err| needed = err;
     }
     return needed;
 }
@@ -125,6 +203,7 @@ fn addKernels(b: *std.Build, module: *std.Build.Module, target: std.Build.Resolv
                 .aarch64 => @backingInt(std.meta.stringToEnum(std.Target.aarch64.Feature, f).?),
                 else => @backingInt(std.meta.stringToEnum(std.Target.x86.Feature, f).?),
             };
+            query.cpu_features_sub.removeFeature(index);
             query.cpu_features_add.addFeature(index);
         }
         const kernel = b.createModule(.{
@@ -150,4 +229,35 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "gen", .module = gen },
         .{ .name = "baseline", .module = baseline },
     }) catch @panic("OOM");
+}
+
+pub const AssetOptions = struct {
+    source: std.Build.LazyPath,
+    name: []const u8,
+    container: enum { raw, zlib, gzip } = .gzip,
+    level: u4 = 12,
+};
+
+/// Build a deterministic compressed asset with a host executable. The
+/// returned path can be embedded, installed or passed to another step.
+/// `dependency` is warp's dependency, regardless of its name in the caller.
+pub fn addCompressedAsset(b: *std.Build, dependency: *std.Build.Dependency, options: AssetOptions) std.Build.LazyPath {
+    return compressedAsset(b, dependency.builder, options);
+}
+
+fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.Build.LazyPath {
+    const tool = b.addExecutable(.{
+        .name = "warp-asset",
+        .root_module = b.createModule(.{
+            .root_source_file = root.path("build/asset.zig"),
+            .target = b.graph.host,
+            .optimize = .fast,
+            .imports = &.{.{ .name = "warp", .module = warpModule(root, b.graph.host, .fast) }},
+        }),
+    });
+    const run = b.addRunArtifact(tool);
+    run.addFileArg(options.source);
+    const output = run.addOutputFileArg(options.name);
+    run.addArgs(&.{ @tagName(options.container), b.fmt("{d}", .{options.level}) });
+    return output;
 }

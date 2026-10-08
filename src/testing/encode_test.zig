@@ -1,6 +1,7 @@
 //! The compressor: every level, strategy and container round-trips through
 //! warp's decoder and std's, the same input always gives the same bytes,
-//! and the output is no larger than zlib 1.3.1's at the same level.
+//! and the output is no larger than zlib 1.3.1's at levels 1-9 and
+//! zlib level 9 at 10-12.
 
 const std = @import("std");
 const testing = std.testing;
@@ -72,7 +73,7 @@ test "inputs past the window and past a block round-trip, and long runs" {
     const zeros = try gpa.alloc(u8, 400_000);
     defer gpa.free(zeros);
     @memset(zeros, 0);
-    for ([_]u4{ 1, 2, 4, 6, 9 }) |level| {
+    for ([_]u4{ 1, 2, 4, 6, 9, 10, 11, 12 }) |level| {
         var c = try Compressor.init(gpa, .{ .level = level });
         defer c.deinit();
         _ = try roundTrip(gpa, &c, d, big, .{});
@@ -89,7 +90,7 @@ test "a dictionary: a zlib stream names it and refers into it, a raw one refers 
     defer gpa.free(dictionary);
     const message = try gen.alloc(gpa, .json, 6, 3000);
     defer gpa.free(message);
-    for ([_]u4{ 1, 6, 9 }) |level| {
+    for ([_]u4{ 1, 6, 9, 10, 11, 12 }) |level| {
         var c = try Compressor.init(gpa, .{ .level = level });
         defer c.deinit();
         const plain = try roundTrip(gpa, &c, d, message, .{});
@@ -157,8 +158,7 @@ test "memory is what init takes, and a compression allocates nothing" {
 }
 
 /// Level `level`'s output, summed per kind of input over the size corpus,
-/// is no larger than zlib 1.3.1's at that level (its sizes are recorded
-/// in the corpus).
+/// is no larger than the captured size reference at that level.
 fn expectContract(level: u4) !void {
     const gpa = testing.allocator;
     const c_ = try corpus.Corpus.parse(corpus.sizes);
@@ -178,15 +178,16 @@ fn expectContract(level: u4) !void {
             out = try gpa.alloc(u8, Compressor.bound(in.len, .{}));
         }
         var sizes = std.mem.tokenizeScalar(u8, r.fields[1], ' ');
-        for (1..level) |_| _ = sizes.next();
+        for (1..@min(level, 9)) |_| _ = sizes.next();
         const zlib_size = try std.fmt.parseInt(u64, sizes.next().?, 10);
         const total = &totals[@backingInt(spec.kind)];
-        total[0] += try c.compress(in, out, .{});
+        const written = try c.compress(in, out, .{});
+        total[0] += written;
         total[1] += zlib_size;
     }
     var failed = false;
     for (kinds, totals) |kind, t| if (t[0] > t[1]) {
-        std.debug.print("level {d} {t}: warp {d}, zlib {d} ({d:.2}%)\n", .{ level, kind, t[0], t[1], 100.0 * (@as(f64, @floatFromInt(t[0])) / @as(f64, @floatFromInt(t[1])) - 1) });
+        std.debug.print("level {d} {t}: warp {d}, {s} {d} ({d:.2}%)\n", .{ level, kind, t[0], "zlib", t[1], 100.0 * (@as(f64, @floatFromInt(t[0])) / @as(f64, @floatFromInt(t[1])) - 1) });
         failed = true;
     };
     try testing.expect(!failed);
@@ -226,4 +227,49 @@ test "level contract: level 8 is no larger than zlib 1.3.1's, per kind of input"
 
 test "level contract: level 9 is no larger than zlib 1.3.1's, per kind of input" {
     try expectContract(9);
+}
+
+test "level contract: level 10 is no larger than zlib level 9, per kind of input" {
+    try expectContract(10);
+}
+
+test "level contract: level 11 is no larger than zlib level 9, per kind of input" {
+    try expectContract(11);
+}
+
+test "level contract: level 12 is no larger than zlib level 9, per kind of input" {
+    try expectContract(12);
+}
+
+test "extra optimal passes preserve the best single-block size and round-trip" {
+    const gpa = testing.allocator;
+    var normal = try Compressor.init(gpa, .{ .level = 12, .max_input = 20000 });
+    defer normal.deinit();
+    var extra = try Compressor.init(gpa, .{ .level = 12, .max_input = 20000, .passes = 40 });
+    defer extra.deinit();
+    var out: [24000]u8 = undefined;
+    var back: [20000]u8 = undefined;
+    var d: Decompressor = .init;
+    for ([_]gen.Kind{ .text, .png, .json, .noise }) |kind| {
+        const in = try gen.alloc(gpa, kind, 33, 20000);
+        defer gpa.free(in);
+        const n = try normal.compress(in, &out, .{});
+        const m = try extra.compress(in, &out, .{});
+        try testing.expect(m <= n);
+        const r = try d.inflate(out[0..m], &back, .{});
+        try testing.expectEqualSlices(u8, in, back[0..r.out_len]);
+    }
+}
+
+test "short optimal blocks also consider a fixed-code parse" {
+    const input = [_]u8{ 0x74, 0x72, 0x65, 0x65, 0x20, 0x31, 0x31, 0x36, 0x00, 0x34, 0x30, 0x30, 0x30, 0x30, 0x20, 0x30, 0x36, 0x00, 0xca, 0x90, 0x72, 0x12, 0x49, 0x7f, 0x31, 0x80, 0xa6, 0x1b, 0xb1, 0x4b, 0x3f, 0xcd, 0x08, 0xaf, 0x36, 0xc2, 0x03, 0xce, 0x34, 0x30, 0x30, 0x30, 0x30, 0x20, 0x30, 0x37, 0x00, 0x9c, 0x21, 0x39, 0xeb, 0x56, 0x47, 0x75, 0x5b, 0x5d, 0x4a, 0x5b, 0xca, 0x7b, 0x4d, 0x13, 0xbe, 0x35, 0xbd, 0xb6, 0x1a, 0x34, 0x30, 0x30, 0x30, 0x30, 0x20, 0x30, 0x38, 0x00, 0xa3, 0xce, 0xf5, 0xe5, 0x79, 0x89, 0x22, 0x53, 0xd9, 0x2d, 0xe1, 0x0e, 0x33, 0x28, 0x98, 0xe2, 0x6b, 0x7c, 0x92, 0x0e, 0x34, 0x30, 0x30, 0x30, 0x30, 0x20, 0x30, 0x39, 0x00, 0xaf, 0x17, 0xa8, 0x11, 0x33, 0xc7, 0x0c, 0x32, 0x29, 0x21, 0x9a, 0x7b, 0x7d, 0xcf, 0x5b, 0x8d, 0x4f, 0xd6, 0x7f, 0xd2 };
+    var c = try Compressor.init(testing.allocator, .{ .level = 10 });
+    defer c.deinit();
+    var out: [256]u8 = undefined;
+    const written = try c.compress(&input, &out, .{});
+    try testing.expectEqual(@as(usize, 120), written);
+    var d: Decompressor = .init;
+    var back: [input.len]u8 = undefined;
+    _ = try d.inflate(out[0..written], &back, .{});
+    try testing.expectEqualSlices(u8, &input, &back);
 }

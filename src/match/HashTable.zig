@@ -19,17 +19,31 @@ bits: u5 = 0,
 short_bits: u5 = 0,
 /// Private: positions are stored relative to this.
 base: isize = 0,
+/// Private: the farthest a match reaches back.
+window: u32 = match.window,
 
 pub fn memory(bits: u5, short_bits: u5) usize {
     return (@as(usize, 1) << bits) * bucket * 2 + (@as(usize, 1) << short_bits) * 2;
 }
 
 pub fn reset(ht: *HashTable, first: isize, bits: u5, short_bits: u5) void {
+    std.debug.assert(first >= -match.window);
     ht.bits = bits;
     ht.short_bits = short_bits;
     @memset(ht.table[0 .. @as(usize, 1) << bits], .{ match.none, match.none });
     @memset(ht.short[0 .. @as(usize, 1) << short_bits], match.none);
     ht.base = if (first < 0) -match.window else 0;
+}
+
+/// Moved back `n` positions: the buffer the positions index slid by `n`.
+pub fn slide(ht: *HashTable, n: usize) void {
+    ht.base -= @intCast(n);
+}
+
+/// Forget every position: a later match reaches none before this.
+pub fn forget(ht: *HashTable) void {
+    @memset(ht.table[0 .. @as(usize, 1) << ht.bits], .{ match.none, match.none });
+    @memset(ht.short[0 .. @as(usize, 1) << ht.short_bits], match.none);
 }
 
 inline fn advance(ht: *HashTable, p: isize) void {
@@ -46,11 +60,12 @@ inline fn advance(ht: *HashTable, p: isize) void {
 /// either is four bytes or more, else a three-byte match within
 /// `short_reach`; at most `max_len` (`max_len >= 5`). Inserts `p`.
 /// Returns the length (0 for none) and sets `distance`.
-pub inline fn longestMatch(ht: *HashTable, comptime dictionary: bool, h: match.History, p: isize, max_len: u32, distance: *u32) u32 {
+pub inline fn longestMatch(ht: *HashTable, comptime dictionary: bool, comptime full_window: bool, h: match.History, p: isize, max_len: u32, distance: *u32) u32 {
     ht.advance(p);
     const base = ht.base;
     const cur: i16 = @intCast(p - base);
-    const cutoff: i32 = @as(i32, cur) - match.window;
+    const window: i32 = if (full_window) match.window else @intCast(ht.window);
+    const cutoff: i32 = @as(i32, cur) - window;
     const word = h.load32Of(false, p);
     const e = &ht.table[match.hash(word, ht.bits)];
     const cands = e.*;
@@ -133,7 +148,7 @@ test "both positions of a bucket are candidates, the older one too" {
     const h: match.History = .{ .in = in };
     ht.skip(h, 0, 20);
     var distance: u32 = 0;
-    const len = ht.longestMatch(false, h, 20, @intCast(in.len - 20), &distance);
+    const len = ht.longestMatch(false, true, h, 20, @intCast(in.len - 20), &distance);
     try std.testing.expectEqual(@as(u32, 9), len);
     try std.testing.expectEqual(@as(u32, 20), distance);
 }

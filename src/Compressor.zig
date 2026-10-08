@@ -28,14 +28,16 @@ gpa: Allocator,
 pub const Strategy = deflate.Strategy;
 
 pub const Options = struct {
-    /// 0 stored, 1-9 zlib's scale (output no larger than zlib's at the same
-    /// level), 10-12 the most compression; 13-15 mean 12.
+    /// 0 stored, 1-9 zlib's scale (aggregate size on the standard corpora
+    /// no larger than zlib's), 10-12 the most compression; 13-15 mean 12.
     level: u4 = 6,
     strategy: Strategy = .default,
     /// The largest input `compress` will see: it sizes the tables. A larger
     /// input still compresses, with tables sized for this one. null sizes
     /// them for any input.
     max_input: ?usize = null,
+    /// Cost-model passes at levels 10-12; null uses the level default.
+    passes: ?u32 = null,
 };
 
 /// The bytes `initBuffer` needs for `options`.
@@ -100,7 +102,7 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8, frame: Frame) Compres
             w.at = header_len;
         },
     }
-    c.engine.compress(in, frame.dictionary, &w, level, c.options.strategy);
+    c.engine.compressPasses(in, frame.dictionary, &w, level, c.options.strategy, c.options.passes);
     w.alignToByte();
     switch (frame.container) {
         .raw => {},

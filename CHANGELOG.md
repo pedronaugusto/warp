@@ -10,10 +10,40 @@ All notable changes to warp are documented here. The format follows
 - `Decompressor`: whole-buffer decoding of raw DEFLATE, zlib and gzip (every
   member, or one), from memory or a `std.Io.Reader`, with dictionaries, partial
   output, and the reason and bit offset of every refusal.
-- `Compressor`: whole-buffer compression at levels 0 to 9 (10 to 12 as 9), with
+- `Compressor`: whole-buffer compression at levels 0 to 12, with
   zlib's strategies, dictionaries and gzip headers, in allocated or given memory.
 - CRC-32, CRC-32C and Adler-32, running and combined, on folding, CRC32, UDOT
   and AVX2 kernels chosen at run time.
 - `gzip.parseHeader` and `gzip.writeHeader` for every header field.
 
+- Near-optimal parsing at levels 10-12, with a configurable pass budget.
+- Streaming `Inflate` and `Deflate`, Reader/Writer adapters, every flush mode,
+  8-15 bit windows, level changes and retained-history resets.
+- Deterministic parallel compression, validated portable seek indexes and
+  parallel indexed decompression.
+- Unindexed parallel decoding by speculative block discovery and symbolic
+  history, with bounded caller storage and wrapper checksum validation.
+- Raw Deflate64 decoding and the BGZF writer with virtual offsets.
+- Optional zlib C stream ABI, a host build helper for compressed assets,
+  and a compression CLI example.
+- C retained-history resets, sync points, validation control, decode marks,
+  table-use introspection and reusable CRC combine operators.
+
+### Fixed
+
+- Explicitly disabling CRC in the target CPU no longer prevents checksum
+  kernel modules from assembling; an AArch64 cross-build checks this.
+- Near-optimal streaming blocks retain their source bytes across small-window
+  slides, and changing level preserves the requested optimization passes.
+- Short near-optimal flushes verify prefixes again when more input follows;
+  Huffman-only and RLE streams at high levels need no optimal-parser storage.
+- C compression bounds include custom gzip headers and small windows, and
+  convenience calls report the bytes consumed on short output buffers.
+- The parallel compressor refills completed slots while later chunks run.
+- C decoding reports progress before an error and supports full-flush recovery.
+- Refined dynamic headers use their final item count when choosing a block's code.
+
 [Unreleased]: https://github.com/pedronaugusto/warp/commits/main
+- Level 10 considers a fixed-code parse for short blocks.
+- C block flushes stop before the final wrapper trailer; C ABI exports are
+  compiled for 32-bit targets and CPUs with CRC disabled.

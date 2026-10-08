@@ -54,6 +54,38 @@ pub const Splitter = struct {
         return false;
     }
 
+    /// The near-optimal parser's check (the reference's): as `differs`, with a
+    /// stricter cutoff while the block is short, and a term that grows with
+    /// the block's length.
+    pub fn differsAt(s: *Splitter, block_length: usize) bool {
+        if (s.n_seen != 0) {
+            var delta: u64 = 0;
+            for (s.new, s.seen) |n, seen| {
+                const a = @as(u64, n) * s.n_seen;
+                const b = @as(u64, seen) * s.n_new;
+                delta += if (a > b) a - b else b - a;
+            }
+            const items: u64 = s.n_seen + s.n_new;
+            var cutoff = @as(u64, s.n_new) * 200 / 512 * s.n_seen;
+            // A short block costs its code's header: end one only when the
+            // change is clear.
+            if (block_length < 10000 and items < 8192) cutoff += cutoff * (8192 - items) / 8192;
+            if (delta + (block_length / 4096) * s.n_seen >= cutoff) return true;
+        }
+        s.merge();
+        return false;
+    }
+
+    /// The new observations join the block's.
+    pub fn merge(s: *Splitter) void {
+        for (&s.seen, &s.new) |*seen, *n| {
+            seen.* += n.*;
+            n.* = 0;
+        }
+        s.n_seen += s.n_new;
+        s.n_new = 0;
+    }
+
     /// A new block starts with nothing observed: the observations that
     /// ended the last were of its own symbols.
     pub fn startBlock(s: *Splitter) void {

@@ -13,8 +13,10 @@ pub const hash = history.hash;
 pub const rebase = history.rebase;
 pub const HashChains = @import("match/HashChains.zig");
 pub const HashTable = @import("match/HashTable.zig");
+pub const BinaryTrees = @import("match/BinaryTrees.zig");
 
 test {
     _ = history;
     _ = HashTable;
+    _ = BinaryTrees;
 }
