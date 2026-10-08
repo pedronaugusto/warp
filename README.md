@@ -82,6 +82,8 @@ std.debug.assert(warp.adler32(1, data) == warp.Adler32.hash(data));
 
 ## Design
 
+[Architecture, ownership and invariants](docs/design.md).
+
 **Decoding.** A `Decompressor` is the decoding tables of the current block,
 11,488 bytes, and nothing else: it holds no stream, so one per thread serves every
 call and every container. The output buffer is the history. Each table entry is
