@@ -62,6 +62,7 @@ pub const decompressBound = frame_.decompressBound;
 pub const writeSkippable = frame_.writeSkippable;
 
 test {
+    _ = @import("zstd/Encoder.zig");
     _ = @import("zstd/bits.zig");
     _ = @import("zstd/codes.zig");
     _ = @import("zstd/fse.zig");

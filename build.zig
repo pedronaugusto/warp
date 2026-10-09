@@ -1,5 +1,12 @@
 const std = @import("std");
 
+const HostedOptions = struct {
+    phase: []const u8,
+    control: bool,
+    commit: []const u8,
+    single_previous: bool,
+};
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -144,14 +151,22 @@ pub fn build(b: *std.Build) !void {
     // The test doubles are shakedown's, a lazy dependency only the tests
     // import. Its error is returned last, so one configure pass asks for it
     // and for preflight together.
+    // Declare measurement settings before any lazy fetch. The first configure
+    // pass must accept the same options as the pass after dependencies arrive.
+    const hosted: HostedOptions = .{
+        .phase = b.option([]const u8, "hosted-phase", "Measurement source phase") orelse "candidate",
+        .control = b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false,
+        .commit = b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree",
+        .single_previous = b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false,
+    };
     var needed: error{LazyDependencyNeeded}!void = {};
     // Manual indicative measurements; ordinary CI compiles without fetching
     // a historical package. The workflow explicitly enables its pinned main.
     if (b.option(bool, "hosted-previous-main", "Compare indicative rows with pinned previous main") orelse false) {
         if (b.dependencyLazy("previous_main", .{ .target = target, .optimize = .fast })) |previous| {
-            addHostedBench(b, target, previous.module("warp"), true, check);
+            addHostedBench(b, target, previous.module("warp"), true, hosted, check);
         } else |err| needed = err;
-    } else addHostedBench(b, target, warpModule(b, target, .fast), false, check);
+    } else addHostedBench(b, target, warpModule(b, target, .fast), false, hosted, check);
 
     if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize })) |shakedown| {
         test_module.addImport("shakedown", shakedown.module("shakedown"));
@@ -312,7 +327,7 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
     return output;
 }
 
-fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, check: *std.Build.Step) void {
+fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, settings: HostedOptions, check: *std.Build.Step) void {
     const runner = b.addExecutable(.{
         .name = "interleave",
         .root_module = b.createModule(.{ .root_source_file = b.path("bench/interleave.zig"), .target = b.graph.host, .optimize = .fast }),
@@ -321,9 +336,9 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
     const current = warpModule(b, target, .fast);
     const options = b.addOptions();
     options.addOption(bool, "previous_main", enabled);
-    options.addOption([]const u8, "phase", b.option([]const u8, "hosted-phase", "Measurement source phase") orelse "candidate");
-    options.addOption(bool, "control", b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false);
-    options.addOption([]const u8, "commit", b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree");
+    options.addOption([]const u8, "phase", settings.phase);
+    options.addOption(bool, "control", settings.control);
+    options.addOption([]const u8, "commit", settings.commit);
     const m = b.createModule(.{
         .root_source_file = b.path("bench/hosted.zig"),
         .target = target,
@@ -343,7 +358,7 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
         .target = target,
         .optimize = .fast,
         .imports = &.{
-            .{ .name = "warp", .module = if (b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false) previous else current },
+            .{ .name = "warp", .module = if (settings.single_previous) previous else current },
             .{ .name = "gen", .module = m.import_table.get("gen").? },
             .{ .name = "shakedown", .module = m.import_table.get("shakedown").? },
         },

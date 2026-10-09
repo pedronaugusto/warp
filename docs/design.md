@@ -76,6 +76,12 @@ bounded complete gzip members with virtual offsets. Additional optimal parsing
 passes reuse discovered matches. Compressed build assets use a host executable
 and return a build `LazyPath`.
 
+Tiny optimal whole-buffer Zstandard inputs without a dictionary first receive
+a bounded exact repeat check. When no three-byte sequence repeats, no match is
+possible: the same entropy and block writer consume a literal-only sequence
+store without preparing search tables or prices. Hash collisions only cause
+exact comparisons; the proof includes overlapping repeats and the final triple.
+
 Zstandard long matching samples a bounded retained window. Parallel compression
 writes ordered overlapping jobs in one frame; rsyncable mode chooses stable job
 cuts. Seekable output writes independent frames and a validated seek table.

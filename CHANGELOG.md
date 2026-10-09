@@ -7,6 +7,10 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Prove tiny optimal Zstandard inputs without repeated three-byte sequences
+  before preparing match and price tables. The existing entropy and block
+  writer still decide their encoded form; dictionaries keep normal search.
+
 - Keep whole-input level-1 matchfinder descriptors local across probes; table
   stores do not reload their hash sizes or pointers. Match selection is unchanged.
 - Update the lazy CI and test dependencies to verified green published commits.

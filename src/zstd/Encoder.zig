@@ -332,8 +332,15 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
     if (c.long) |*state| state.reset();
     var start = c.next_index;
     c.next_index += @intCast(in.len + 1);
-    if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
-    if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
+    // With no dictionary, every match must repeat at least three bytes
+    // inside this frame. Prove their absence on tiny optimal inputs before
+    // touching the price model or match tables; entropy and emission stay shared.
+    const tiny_literals = c.options.dictionary == null and
+        @backingInt(p.strategy) >= @backingInt(Strategy.btopt) and matchless(in);
+    if (!tiny_literals) {
+        if (params_.usesRows(p.strategy) or p.strategy == .btlazy2) c.prepareLazy(p, start);
+        if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
+    }
     var o = try c.header(out, p, in.len, f);
     const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
@@ -350,7 +357,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         const last = pos + len == in.len;
         // The first ultra2 pass seeds prices. Advancing the virtual base
         // invalidates its positions without clearing the large tables.
-        if (first and p.strategy == .btultra2 and len > 8) {
+        if (!tiny_literals and first and p.strategy == .btultra2 and len > 8) {
             c.store.reset();
             var seed_reps = reps;
             _ = c.searchPrefix(p, .{ .in = in, .start = start, .low = start }, &seed_reps, pos, pos + len);
@@ -365,7 +372,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         block_w.low = w.lowFor(pos + len, p.window_log);
         var next_reps = reps;
         c.store.reset();
-        if (len >= 7) {
+        if (!tiny_literals and len >= 7) {
             const rest = c.search(p, block_w, &next_reps, pos, pos + len);
             c.store.storeLast(in[pos + len - rest .. pos + len]);
         } else c.store.storeLast(in[pos..][0..len]);
@@ -383,6 +390,38 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         o += 4;
     }
     return o;
+}
+
+/// A bounded proof, not a heuristic: a filter avoids most exact comparisons.
+/// Hash collisions only add work; overlapping repeats are compared too.
+fn matchless(in: []const u8) bool {
+    if (in.len > 64) return false;
+    if (in.len < 4) return true;
+    var seen: u64 = 0;
+    for (0..in.len - 2) |i| {
+        const word = std.mem.readInt(u24, in[i..][0..3], .little);
+        const slot: u6 = @truncate((@as(u32, word) *% 0x9e37_79b1) >> 26); // safe: six high hash bits
+        const bit = @as(u64, 1) << slot;
+        if (seen & bit != 0) {
+            for (0..i) |j| if (std.mem.readInt(u24, in[j..][0..3], .little) == word) return false;
+        }
+        seen |= bit;
+    }
+    return true;
+}
+
+test "tiny match proof includes overlaps and the final three bytes" {
+    try std.testing.expect(matchless(""));
+    try std.testing.expect(matchless("abc"));
+    try std.testing.expect(matchless("blob 28\x00tiny file for the setup case\n"));
+    try std.testing.expect(!matchless("aaaa"));
+    try std.testing.expect(!matchless("abcabc"));
+    try std.testing.expect(!matchless("abababa"));
+    // All 3-byte windows are different; the filter must not reject collisions.
+    var unique: [65]u8 = undefined;
+    for (&unique, 0..) |*byte, i| byte.* = @intCast(i); // safe: i <= 64
+    try std.testing.expect(matchless(unique[0..64]));
+    try std.testing.expect(!matchless(&unique));
 }
 
 /// A borrowed history slice permits frames larger than the index space.
