@@ -114,7 +114,7 @@ pub fn Cursor(comptime keep_literals: bool) type {
 
         /// Positions before this may be searched.
         pub inline fn stop(c: *const Self) usize {
-            return if (c.final) c.in.len else c.in.len -| (lookahead - 1);
+            return if (!keep_literals or c.final) c.in.len else c.in.len -| (lookahead - 1);
         }
 
         pub inline fn literal(c: *Self, byte: u8) void {
@@ -164,31 +164,32 @@ pub fn Cursor(comptime keep_literals: bool) type {
 
         /// The fastest parser's blocks: at most 64 KiB of input, or as many
         /// matches as the buffer holds, whichever comes first. Whether the
-        /// block ended at `p`.
+        /// streaming parser must yield at `p`. Whole inputs keep their cursor
+        /// in the loop across block boundaries.
         pub inline fn maybeEndFast(c: *Self, p: usize) bool {
             const b = c.b;
             if (b.n >= b.seqs.len or @as(isize, @intCast(p)) - b.start >= 65535 or c.literalsFull()) {
                 c.endBlock(p);
-                return true;
+                return keep_literals;
             }
             return false;
         }
 
         /// End the block at `p` if it is full, long, or changing; whether
-        /// it ended. Called after every match, and between matches every
-        /// so many literals.
+        /// the streaming parser must yield. Called after every match, and
+        /// between matches every so many literals.
         pub inline fn maybeEnd(c: *Self, p: usize) bool {
             const b = c.b;
             if (b.n >= b.seqs.len or c.literalsFull()) {
                 c.endBlock(p);
-                return true;
+                return keep_literals;
             }
             if (c.pending < split.check_every) return false;
             c.pending = 0;
             const len: usize = @intCast(@as(isize, @intCast(p)) - b.start);
             if (len >= Builder.min_len and c.remaining(p) >= Builder.min_len and b.split.differs()) {
                 c.endBlock(p);
-                return true;
+                return keep_literals;
             }
             return false;
         }
@@ -202,12 +203,12 @@ pub fn Cursor(comptime keep_literals: bool) type {
         /// The bytes after `p`, as far as is known: unknown, so many,
         /// until the input ends.
         inline fn remaining(c: *const Self, p: usize) usize {
-            return if (c.final) c.in.len - p else std.math.maxInt(usize);
+            return if (!keep_literals or c.final) c.in.len - p else std.math.maxInt(usize);
         }
 
         fn endBlock(c: *Self, p: usize) void {
             c.write(p, false);
-            c.b.ended = true;
+            c.b.ended = keep_literals;
         }
 
         /// Write the block ending at `p`, and start the next there.
@@ -357,7 +358,7 @@ pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, h
         // A match is held at `p`: the next position may have a better one.
         if (cur_len < params.nice) {
             // Its bytes are not all here yet: hold the match until they are.
-            if (p + 1 >= stop and !c.final) return;
+            if (@TypeOf(c.*).keeps_literals and p + 1 >= stop and !c.final) return;
             if (p + 1 < n and maxLen(n, p + 1) >= 4) {
                 var next_dist: u32 = 0;
                 const next_len = hc.longestMatch(dictionary, full_window, h, @intCast(p + 1), cur_len - 1, maxLen(n, p + 1), params.nice, look, &next_dist);
@@ -434,7 +435,7 @@ pub fn stored(c: anytype) void {
         // The last block is the final one, however long.
         if (p - start == c.b.stored_max and p < c.in.len) {
             c.endBlock(p);
-            return;
+            if (@TypeOf(c.*).keeps_literals) return;
         }
     }
 }

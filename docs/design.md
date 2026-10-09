@@ -24,6 +24,12 @@ streaming decoder owns progress and borrows its caller window. Encoders own
 match tables, sequences, entropy and virtual positions in initialization memory.
 DEFLATE optimal-parser state occupies that memory only when the configured levels
 can use it; lower levels retain no unused optimal costs or observations.
+Whole-input parsers retain their cursor across block boundaries; streaming
+parsers yield there to drain output. Both use the same match selection and
+block writer. Full-window chain searches compile the window bound as a constant.
+The decoder selects full-window or bounded-window match checks before entering
+the fast loop; ordinary DEFLATE distances are already bounded to 32 KiB by
+the alphabet. Smaller streaming windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 

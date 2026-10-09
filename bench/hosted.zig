@@ -1,5 +1,5 @@
 //! Indicative hosted measurements. Storage is reserved before timing;
-//! every timed output is validated afterward. Seven adjacent samples rotate
+//! every timed output is validated afterward. Twenty-one samples rotate
 //! order, retaining absolute times and paired ratios with their full spread.
 const std = @import("std");
 const warp = @import("warp");
@@ -49,6 +49,13 @@ pub fn main(init: std.process.Init) !void {
                 6 => .level_6,
                 else => .level_9,
             } };
+            if (options.previous_main) {
+                const n = try c.compress(input, out, .{});
+                const frame_copy = try gpa.dupe(u8, out[0..n]);
+                defer gpa.free(frame_copy);
+                const old_n = try old_c.compress(input, out, .{});
+                if (!std.mem.eql(u8, frame_copy, out[0..old_n])) return error.ChangedEncoding;
+            }
             try measure(gpa, io, w, @tagName(kind), try std.fmt.allocPrint(gpa, "deflate-encode-L{d}", .{level}), ctx, if (options.previous_main) 3 else 2);
         }
         var encoded: Io.Writer = .fixed(out);

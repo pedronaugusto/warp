@@ -484,7 +484,13 @@ fn codeReason(err: huffman.BuildError) Diagnostic.Reason {
 inline fn codes(s: *Stream, source: anytype, state: *State, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
     while (true) {
         if (fastReady(s)) {
-            if (try fast(std.math.maxInt(usize), s, Bytes{ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits)) return true;
+            // Ordinary DEFLATE cannot encode a distance beyond 32 KiB.
+            // Select the bound once per fast-loop entry, not per match.
+            const ended = if (s.window >= max_distance)
+                try fast(std.math.maxInt(usize), s, Bytes(true){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits)
+            else
+                try fast(std.math.maxInt(usize), s, Bytes(false){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits);
+            if (ended) return true;
             source.commit(s);
         }
         // One symbol at a time until the fast loop can run again.
@@ -619,38 +625,42 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
 }
 
 /// Ordinary output: the stream owns the history and output position.
-const Bytes = struct {
-    stream: *Stream,
-    out: []u8,
-    start: usize,
-    window: usize,
+fn Bytes(comptime full_window: bool) type {
+    return struct {
+        stream: *Stream,
+        out: []u8,
+        start: usize,
+        window: usize,
 
-    inline fn position(b: Bytes) usize {
-        return b.stream.op;
-    }
+        const Self = @This();
 
-    inline fn capacity(b: Bytes) usize {
-        return b.out.len;
-    }
+        inline fn position(b: Self) usize {
+            return b.stream.op;
+        }
 
-    inline fn buffer(b: Bytes) []u8 {
-        return b.out;
-    }
+        inline fn capacity(b: Self) usize {
+            return b.out.len;
+        }
 
-    inline fn match(b: Bytes, op: usize, distance: usize, length: usize, ip: usize, bits: u32) Error!void {
-        const s = b.stream;
-        if (distance > @min(op - b.start, b.window)) {
-            @branchHint(.cold);
-            if (distance > b.window) return s.failAt(.window_exceeded, ip, bits);
-            if (distance > op - b.start + s.history.len()) return s.failAt(.distance_too_far, ip, bits);
-            copyFromHistory(s, op, distance, length);
-        } else copyMatch(u8, b.out, op, distance, length);
-    }
+        inline fn buffer(b: Self) []u8 {
+            return b.out;
+        }
 
-    inline fn finish(b: Bytes, op: usize) void {
-        b.stream.op = op;
-    }
-};
+        inline fn match(b: Self, op: usize, distance: usize, length: usize, ip: usize, bits: u32) Error!void {
+            const s = b.stream;
+            if (distance > op - b.start or (!full_window and distance > b.window)) {
+                @branchHint(.cold);
+                if (!full_window and distance > b.window) return s.failAt(.window_exceeded, ip, bits);
+                if (distance > op - b.start + s.history.len()) return s.failAt(.distance_too_far, ip, bits);
+                copyFromHistory(s, op, distance, length);
+            } else copyMatch(u8, b.out, op, distance, length);
+        }
+
+        inline fn finish(b: Self, op: usize) void {
+            b.stream.op = op;
+        }
+    };
+}
 
 /// The fast loop's input state, in registers.
 const Fast = struct {

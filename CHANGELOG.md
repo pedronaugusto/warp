@@ -5,6 +5,12 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Keep whole-input DEFLATE parsing in its cursor across block boundaries and
+  specialize full-window search and decoding bounds. Streaming retains its
+  resumable boundaries and smaller-window validation.
+
 ### Added
 
 - A deterministic per-level size gate over fixed, hashed standard input snapshots.

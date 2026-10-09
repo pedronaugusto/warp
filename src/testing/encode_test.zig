@@ -72,7 +72,7 @@ test "inputs past the window and past a block round-trip, and long runs" {
     const zeros = try gpa.alloc(u8, 400_000);
     defer gpa.free(zeros);
     @memset(zeros, 0);
-    for ([_]u4{ 1, 2, 4, 6, 9, 10, 11, 12 }) |level| {
+    for ([_]u4{ 0, 1, 2, 4, 6, 9, 10, 11, 12 }) |level| {
         var c = try Compressor.init(gpa, .{ .level = level });
         defer c.deinit();
         _ = try roundTrip(gpa, &c, d, big, .{});

@@ -91,7 +91,8 @@ pub inline fn longestMatch(hc: *HashChains, comptime dictionary: bool, comptime 
     var best_len = best_len_in;
     var best_dist: u32 = 0;
     const cur: i16 = @intCast(p - base);
-    const cutoff: i32 = @as(i32, cur) - @as(i32, @intCast(hc.prev.len));
+    const window: i32 = if (full_window) match.window else @intCast(hc.prev.len);
+    const cutoff: i32 = @as(i32, cur) - window;
     const word = h.load32Of(false, p);
     const h3 = match.hash(word & 0xff_ffff, hc.hash3_bits);
     const h4 = match.hash(word, hc.hash4_bits);
