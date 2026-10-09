@@ -422,25 +422,35 @@ pub const Engine = struct {
     /// written).
     pub fn parse(e: *Engine, comptime keep_literals: bool, h: match.History, w: *bits.Writer, end: End) Progress {
         if (e.primed < e.first) e.prime(h, end != .more);
-        var c: parse_.Cursor(keep_literals) = .init(&e.b, w, h.in, end != .more);
+        // Whole inputs keep hot counts and split state in a local builder;
+        // a stream keeps the same state in its resumable engine.
+        var whole: parse_.Builder = if (!keep_literals) e.b else undefined;
+        const b = if (keep_literals) &e.b else &whole;
+        defer if (!keep_literals) {
+            e.b = whole;
+        };
+        var c: parse_.Cursor(keep_literals) = .init(b, w, h.in, end != .more);
         defer c.save();
-        e.b.ended = false;
+        b.ended = false;
         // Without a dictionary every position is in the input, and its
         // loads need no check; over the full window the chains' mask is a
         // constant.
         const full = e.sizes.window == match.window;
+        // The whole-input builder is local to this call: keep dispatch in
+        // the same function so its hot stores cannot alias finder tables.
+        const modifier: std.builtin.CallModifier = if (keep_literals) .auto else .always_inline;
         if (h.dict.len != 0) {
-            e.run(true, true, &c, h);
-        } else if (full) e.run(false, true, &c, h) else e.run(false, false, &c, h);
-        if (e.b.ended) return .block;
+            @call(modifier, run, .{ e, true, true, &c, h });
+        } else if (full) @call(modifier, run, .{ e, false, true, &c, h }) else @call(modifier, run, .{ e, false, false, &c, h });
+        if (b.ended) return .block;
         if (e.level.parser == .optimal and e.strategy != .huffman_only and e.strategy != .rle) {
             if (end != .more) optimal.finish(&c, e.opt, h, end == .final, e.level.optimal);
             return .done;
         }
         switch (end) {
             .more => {},
-            .flush => if (@as(isize, @intCast(e.b.p)) > e.b.start) c.write(e.b.p, false),
-            .final => c.write(e.b.p, true),
+            .flush => if (@as(isize, @intCast(b.p)) > b.start) c.write(b.p, false),
+            .final => c.write(b.p, true),
         }
         return .done;
     }

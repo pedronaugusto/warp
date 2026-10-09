@@ -258,7 +258,7 @@ inline fn worthIt(len: u32, distance: u32, min_len: u32) bool {
 /// Level 1.
 pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype, ht: *match.HashTable, h: match.History) void {
     const n = h.in.len;
-    const stop = c.stop();
+    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else n;
     var p = c.b.p;
     defer c.b.p = p;
     while (p < stop) {
@@ -283,7 +283,7 @@ pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype
 /// Levels 2-3 (and any level's parse under `filtered`, with `min_len` 6).
 pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
     const n = h.in.len;
-    const stop = c.stop();
+    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else n;
     var p = c.b.p;
     defer c.b.p = p;
     while (p < stop) {
@@ -327,19 +327,20 @@ inline fn score(len: u32, distance: u32) i32 {
 /// literal. A match of `nice` bytes is taken at once.
 pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
     const n = h.in.len;
-    const stop = c.stop();
+    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else n;
     const look = @max(1, params.depth / 2);
     var p = c.b.p;
-    var cur_len = c.b.held_len;
-    var cur_dist = c.b.held_dist;
+    var cur_len: u32 = if (@TypeOf(c.*).keeps_literals) c.b.held_len else 0;
+    var cur_dist: u32 = if (@TypeOf(c.*).keeps_literals) c.b.held_dist else 0;
     defer {
         c.b.p = p;
-        c.b.held_len = cur_len;
-        c.b.held_dist = cur_dist;
+        if (@TypeOf(c.*).keeps_literals) {
+            c.b.held_len = cur_len;
+            c.b.held_dist = cur_dist;
+        }
     }
-    while (true) {
+    while (p < stop or cur_len != 0) {
         if (cur_len == 0) {
-            if (p >= stop) return;
             if (maxLen(n, p) < 4) {
                 c.literal(h.in[p]);
                 p += 1;
@@ -355,40 +356,36 @@ pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, h
                 continue;
             }
         }
-        // A match is held at `p`: the next position may have a better one.
-        if (cur_len < params.nice) {
-            // Its bytes are not all here yet: hold the match until they are.
+        // Keep a lazy match's lookahead together. Streaming alone may hold
+        // it until the next input arrives; whole inputs always finish it.
+        while (cur_len < params.nice and p + 1 < n and maxLen(n, p + 1) >= 4) {
             if (@TypeOf(c.*).keeps_literals and p + 1 >= stop and !c.final) return;
-            if (p + 1 < n and maxLen(n, p + 1) >= 4) {
-                var next_dist: u32 = 0;
-                const next_len = hc.longestMatch(dictionary, full_window, h, @intCast(p + 1), cur_len - 1, maxLen(n, p + 1), params.nice, look, &next_dist);
-                if (next_len >= cur_len and score(next_len, next_dist) - score(cur_len, cur_dist) > 2) {
-                    c.literal(h.in[p]);
-                    p += 1;
-                    cur_len = next_len;
-                    cur_dist = next_dist;
-                    continue;
-                }
-                // `p + 1` is in the tables now; the rest of the match next.
+            var next_dist: u32 = 0;
+            const next_len = hc.longestMatch(dictionary, full_window, h, @intCast(p + 1), cur_len - 1, maxLen(n, p + 1), params.nice, look, &next_dist);
+            if (next_len < cur_len or score(next_len, next_dist) - score(cur_len, cur_dist) <= 2) {
                 c.addMatch(cur_len, cur_dist);
                 skipInside(full_window, hc, h, p + 1, cur_len - 1);
                 p += cur_len;
                 cur_len = 0;
-                if (c.maybeEnd(p)) return;
-                continue;
+                break;
             }
+            c.literal(h.in[p]);
+            p += 1;
+            cur_len = next_len;
+            cur_dist = next_dist;
+        } else {
+            c.addMatch(cur_len, cur_dist);
+            skipInside(full_window, hc, h, p, cur_len);
+            p += cur_len;
+            cur_len = 0;
         }
-        c.addMatch(cur_len, cur_dist);
-        skipInside(full_window, hc, h, p, cur_len);
-        p += cur_len;
-        cur_len = 0;
         if (c.maybeEnd(p)) return;
     }
 }
 
 /// Literals only.
 pub fn huffmanOnly(c: anytype, h: match.History) void {
-    const stop = c.stop();
+    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else h.in.len;
     var p = c.b.p;
     defer c.b.p = p;
     while (p < stop) {
@@ -402,7 +399,7 @@ pub fn huffmanOnly(c: anytype, h: match.History) void {
 /// (the stream's first byte).
 pub fn rle(c: anytype, h: match.History, first: usize) void {
     const in = h.in;
-    const stop = c.stop();
+    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else in.len;
     var p = c.b.p;
     defer c.b.p = p;
     while (p < stop) {

@@ -408,27 +408,35 @@ const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13
 /// A dynamic block's code-length code: three bits per length, then its
 /// table.
 fn precode(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
-    if (state.read == 0) t.pre = @splat(0);
-    while (state.read < state.hclen) {
+    var read = state.read;
+    defer state.read = read;
+    if (read == 0) t.pre = @splat(0);
+    while (read < state.hclen) {
         const len: u8 = @intCast(try s.take(source, 3));
-        t.pre[precode_order[state.read]] = len;
-        state.read += 1;
+        t.pre[precode_order[read]] = len;
+        read += 1;
         source.commit(s);
     }
     state.pre_bits = huffman.build(.precode, &t.precode, &t.pre, &huffman.countLengths(&t.pre)) catch |err| return s.fail(codeReason(err));
-    state.read = 0;
+    read = 0;
     state.phase = .lengths;
 }
 
 /// A dynamic block's litlen and distance code lengths through the
 /// code-length code, one length or repeat at a time, then their tables.
 fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
-    const total = state.hlit + state.hdist;
+    const hlit = state.hlit;
+    const total = hlit + state.hdist;
+    const pre_bits = state.pre_bits;
     const lens = &t.lens;
-    while (state.read < total) {
-        const i = state.read;
+    // Keep progress in a register, then save it even on a truncated unit.
+    // Source commits snapshot bits and output, independently of this index.
+    var read = state.read;
+    defer state.read = read;
+    while (read < total) {
+        const i = read;
         s.need(source, 7 + 7);
-        const e = t.precode[s.peek(state.pre_bits)];
+        const e = t.precode[s.peek(pre_bits)];
         const len = huffman.consumed(e);
         // An empty precode decodes every bit as symbol 0, one bit long, as
         // zlib's does: the lengths come out all zero and the block has no
@@ -438,7 +446,7 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
             s.consume(len);
             try s.checkWhole();
             lens[i] = @intCast(sym);
-            state.read = i + 1;
+            read = i + 1;
             source.commit(s);
             continue;
         }
@@ -461,11 +469,10 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
         } else 0;
         if (i + repeat > total) return s.fail(.bad_code_lengths);
         @memset(lens[i..][0..repeat], fill);
-        state.read = i + repeat;
+        read = i + repeat;
         source.commit(s);
     }
     if (lens[256] == 0) return s.fail(.no_end_code);
-    const hlit = state.hlit;
     state.lbits = huffman.build(if (@TypeOf(t.*).wide) .litlen64 else .litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
     state.dbits = huffman.build(if (@TypeOf(t.*).wide) .dist64 else .dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
     state.fixed = false;
@@ -486,10 +493,11 @@ inline fn codes(s: *Stream, source: anytype, state: *State, litlen: []const u32,
         if (fastReady(s)) {
             // Ordinary DEFLATE cannot encode a distance beyond 32 KiB.
             // Select the bound once per fast-loop entry, not per match.
+            // Keep the register-heavy loop out of the resumable phase caller.
             const ended = if (s.window >= max_distance)
-                try fast(std.math.maxInt(usize), s, Bytes(true){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits)
+                try @call(.never_inline, fast, .{ std.math.maxInt(usize), s, Bytes(true){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits })
             else
-                try fast(std.math.maxInt(usize), s, Bytes(false){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits);
+                try @call(.never_inline, fast, .{ std.math.maxInt(usize), s, Bytes(false){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits });
             if (ended) return true;
             source.commit(s);
         }

@@ -8,8 +8,10 @@ All notable changes to warp are documented here. The format follows
 ### Changed
 
 - Keep whole-input DEFLATE parsing in its cursor across block boundaries and
-  specialize full-window search and decoding bounds. Streaming retains its
-  resumable boundaries and smaller-window validation.
+  specialize full-window search and decoding bounds. Keep whole-input counts
+  and one input bound local to dispatch, and group lazy lookahead. Streaming
+  retains its resumable boundaries and smaller-window validation. Decode
+  header progress stays local within a call and is saved on every return.
 
 ### Added
 

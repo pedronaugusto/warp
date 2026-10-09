@@ -24,12 +24,17 @@ streaming decoder owns progress and borrows its caller window. Encoders own
 match tables, sequences, entropy and virtual positions in initialization memory.
 DEFLATE optimal-parser state occupies that memory only when the configured levels
 can use it; lower levels retain no unused optimal costs or observations.
-Whole-input parsers retain their cursor across block boundaries; streaming
-parsers yield there to drain output. Both use the same match selection and
-block writer. Full-window chain searches compile the window bound as a constant.
+Whole-input parsers retain their cursor across block boundaries, keep counts
+and split observations in a local builder, and use one input bound. Dispatch
+stays beside that builder so its stores do not alias matchfinder tables. Lazy
+lookahead stays in one loop; streaming alone retains a held match between calls
+and yields at block boundaries to drain output. Both use the same match
+selection and block writer. Full-window chain searches compile the window bound as a constant.
 The decoder selects full-window or bounded-window match checks before entering
 the fast loop; ordinary DEFLATE distances are already bounded to 32 KiB by
-the alphabet. Smaller streaming windows retain explicit distance checks.
+the alphabet. The register-heavy loop stays out of its resumable phase caller. Header
+length decoding keeps its index local and saves progress on every return,
+including a truncated unit. Source commits independently preserve input bits. Smaller streaming windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 
