@@ -316,6 +316,7 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
     const current = warpModule(b, target, .fast);
     const options = b.addOptions();
     options.addOption(bool, "previous_main", enabled);
+    options.addOption([]const u8, "phase", b.option([]const u8, "hosted-phase", "Measurement source phase") orelse "candidate");
     options.addOption(bool, "control", b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false);
     options.addOption([]const u8, "commit", b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree");
     const m = b.createModule(.{
@@ -332,6 +333,20 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
     if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .fast })) |shakedown| {
         m.addImport("shakedown", shakedown.module("shakedown"));
     } else |_| return;
+    const single = b.createModule(.{
+        .root_source_file = b.path("bench/hosted_single.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{
+            .{ .name = "warp", .module = if (b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false) previous else current },
+            .{ .name = "gen", .module = m.import_table.get("gen").? },
+            .{ .name = "shakedown", .module = m.import_table.get("shakedown").? },
+        },
+    });
+    single.addOptions("options", options);
+    const worker = b.addExecutable(.{ .name = "hosted-single", .root_module = single });
+    check.dependOn(&worker.step);
+    b.step("hosted-single-build", "Compile the one-codec hosted driver").dependOn(&b.addInstallArtifact(worker, .{}).step);
     const artifact = b.addExecutable(.{ .name = "hosted-bench", .root_module = m });
     check.dependOn(&artifact.step);
     const step = b.step("hosted-bench", "Run indicative paired own/std/previous-main measurements");

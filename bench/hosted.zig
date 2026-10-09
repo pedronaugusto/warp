@@ -1,5 +1,5 @@
 //! Indicative hosted measurements. Storage is reserved before timing;
-//! every timed output is validated afterward. Twenty-one samples rotate
+//! each batch's final output is validated afterward. Twenty-one samples rotate
 //! order, retaining absolute times and paired ratios with their full spread.
 const std = @import("std");
 const warp = @import("warp");
@@ -9,7 +9,7 @@ const options = @import("options");
 const Io = std.Io;
 const bench = @import("shakedown").bench;
 const samples = 21;
-const traversals = 4;
+const traversals = 2;
 const codec = if (options.control) previous else warp;
 
 pub fn main(init: std.process.Init) !void {
@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &buffer);
     const w = &stdout.interface;
-    try w.print("INDICATIVE current {s} Zig {s} target {s}-{s}; previous-main e607c194f837fa0a7a8c08914495d4cc0202eb91 enabled={}; 21 rotated adjacent samples, four traversals each; control={}; allocations outside timing; std resets per stream, Warp contexts reused; stages current/previous-main/std (zstd current/std)\n", .{ options.commit, @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag), options.previous_main, options.control });
+    try w.print("INDICATIVE current {s} Zig {s} target {s}-{s}; previous-main e607c194f837fa0a7a8c08914495d4cc0202eb91 enabled={}; 21 rotated adjacent samples, two traversals each; control={}; phase={s}; allocations outside timing; std resets per stream, Warp contexts reused; stages current/previous-main/std (zstd current/std)\n", .{ options.commit, @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag), options.previous_main, options.control, options.phase });
     const out = try gpa.alloc(u8, 5 << 20);
     const back = try gpa.alloc(u8, 4 << 20);
     const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
                 0 => "crc32",
                 1 => "crc32c",
                 else => "adler32",
-            }, ctx, if (options.previous_main) 3 else 2);
+            }, ctx, if (options.previous_main and !options.control) 3 else 2);
         }
         for ([_]u4{ 1, 6, 9 }) |level| {
             var c = try codec.Compressor.init(gpa, .{ .level = level });
@@ -56,14 +56,15 @@ pub fn main(init: std.process.Init) !void {
                 const old_n = try old_c.compress(input, out, .{});
                 if (!std.mem.eql(u8, frame_copy, out[0..old_n])) return error.ChangedEncoding;
             }
-            try measure(gpa, io, w, @tagName(kind), try std.fmt.allocPrint(gpa, "deflate-encode-L{d}", .{level}), ctx, if (options.previous_main) 3 else 2);
+            try measure(gpa, io, w, @tagName(kind), try std.fmt.allocPrint(gpa, "deflate-encode-L{d}", .{level}), ctx, if (options.previous_main and !options.control) 3 else 2);
         }
         var encoded: Io.Writer = .fixed(out);
         var sc = try std.compress.flate.Compress.init(&encoded, window, .zlib, .level_6);
         try sc.writer.writeAll(input);
         try sc.finish();
         const frame = try gpa.dupe(u8, encoded.buffered());
-        try measure(gpa, io, w, @tagName(kind), "deflate-decode-std-L6-exact", Decode{ .input = input, .frame = frame, .back = back, .window = window, .d = d, .old = old_d }, if (options.previous_main) 3 else 2);
+        try measure(gpa, io, w, @tagName(kind), "deflate-decode-std-L6-exact", Decode{ .input = input, .frame = frame, .back = back, .window = window, .d = d, .old = old_d }, if (options.previous_main and !options.control) 3 else 2);
+        if (options.control) continue;
         var zc = try warp.zstd.Compressor.init(gpa, .{ .level = 3, .max_input = input.len });
         defer zc.deinit();
         const zn = try zc.compress(input, out, .{ .checksum = false });
@@ -128,9 +129,9 @@ const Checksum = struct {
         std.mem.doNotOptimizeAway(c.input.ptr);
         return switch (stage) {
             0 => switch (c.algorithm) {
-                0 => warp.crc32(0, c.input),
-                1 => warp.crc32c(0, c.input),
-                else => warp.adler32(1, c.input),
+                0 => codec.crc32(0, c.input),
+                1 => codec.crc32c(0, c.input),
+                else => codec.adler32(1, c.input),
             },
             1 => if (options.previous_main) switch (c.algorithm) {
                 0 => previous.crc32(0, c.input),

@@ -85,8 +85,13 @@ Manual x86 measurements use `zig build hosted-bench -Dhosted-previous-main=true`
 and the `Indicative x86 measurements` workflow on Linux and Windows (dispatch
 `ci.yml` with `indicative=true` on a candidate branch). Its lazy
 benchmark dependency pins the previous main; consumers fetch no benchmark code.
+The workflow builds one-codec executables from the previous main, integrated
+pre-repair source and candidate, using the same driver and compiler settings.
+It alternates their processes across 21 adjacent samples of two traversals,
+with two invocations of the previous-main executable as a control. This
+separates codec throughput from caller position in a combined executable.
 Generated inputs, ReleaseFast baseline targets and reused storage are identical
-across adjacent, alternating samples. Every timed output is checked outside the
+across adjacent, alternating samples. Each batch’s final output is checked outside the
 timer. Raw times, absolute throughput and paired ratio spread are reported as
 indicative: runner contention and ordering effects remain possible. DEFLATE uses
 zlib frames at matching levels; Zstandard uses checksum-off frames for both

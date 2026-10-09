@@ -11,7 +11,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -31,10 +31,35 @@ jobs:
       - name: Paired interleaved rows (indicative)
         shell: bash
         run: |
-          set -o pipefail
-          zig build hosted-bench -Dhosted-control=true -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-previous-main=true -Dhosted-commit="$(git rev-parse HEAD)" 2>&1 | tee indicative.txt
-          zig build hosted-bench -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-previous-main=true -Dhosted-commit="$(git rev-parse HEAD)" 2>&1 | tee -a indicative.txt
+          set -euo pipefail
+          extension=""
+          if [ "$RUNNER_OS" = "Windows" ]; then extension=".exe"; fi
+          zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-previous-main=true -Dhosted-single-previous=true -Dhosted-commit=e607c194f837fa0a7a8c08914495d4cc0202eb91
+          cp "zig-out/bin/hosted-single$extension" "previous$extension"
+          git fetch --depth=1 origin 491e62b865e27e296509fbc7bba1f392f224f565
+          trap 'git restore --source=HEAD -- src' EXIT
+          git restore --source=491e62b865e27e296509fbc7bba1f392f224f565 -- src
+          zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-commit=491e62b865e27e296509fbc7bba1f392f224f565
+          cp "zig-out/bin/hosted-single$extension" "before$extension"
+          git restore --source=HEAD -- src
+          zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-commit="$(git rev-parse HEAD)"
+          cp "zig-out/bin/hosted-single$extension" "candidate$extension"
+          for kind in text noise; do
+            for operation in crc32 crc32c adler32 deflate-encode-L1 deflate-encode-L6 deflate-encode-L9 deflate-decode-std-L6-exact; do
+              for sample in {0..20}; do
+                order="0 1 2 3 4"
+                if (( sample % 2 )); then order="4 3 2 1 0"; fi
+                for stage in $order; do
+                  executable="candidate"
+                  if (( stage < 2 )); then executable="previous"; fi
+                  if (( stage == 2 )); then executable="before"; fi
+                  "./$executable$extension" "$kind" "$operation" "$sample" "$stage" | tee -a indicative.txt
+                done
+              done
+            done
+          done
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: indicative-${{ matrix.os }}
           path: indicative.txt
