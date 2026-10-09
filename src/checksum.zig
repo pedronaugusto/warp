@@ -11,7 +11,7 @@ pub const adler32 = adler32_.adler32;
 pub const adler32Combine = adler32_.adler32Combine;
 pub const Kernel = @import("checksum/kernel.zig").Kernel;
 
-const crc_ = @import("checksum/crc.zig");
+const crc_ = @import("crc");
 const crc32_ = @import("checksum/crc32.zig");
 const crc32c_ = @import("checksum/crc32c.zig");
 const adler32_ = @import("checksum/adler32.zig");
@@ -25,6 +25,7 @@ pub fn kernels() Kernels {
 }
 
 test {
+    _ = @import("cpu.zig");
     _ = crc_;
     _ = crc32_;
     _ = crc32c_;

@@ -9,7 +9,7 @@ const gen = @import("gen");
 const Decompressor = @import("../Decompressor.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const container = @import("../container.zig");
-const checksum = @import("../checksum.zig");
+const checksum = @import("checksum");
 const inflate = @import("../inflate.zig");
 
 fn accept(name: []const u8) container.Accept {

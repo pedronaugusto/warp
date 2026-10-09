@@ -25,6 +25,9 @@ All notable changes to warp are documented here. The format follows
 
 ### Added
 
+- Independently selectable `checksums`, `deflate` and `zstd` build modules.
+  Aggregate and standalone imports share public types and checksum dispatch.
+
 - A deterministic per-level size gate over fixed, hashed standard input snapshots.
 - Shared fast Huffman decoding for symbolic history and branchless history resolution.
 

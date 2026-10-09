@@ -4,11 +4,11 @@ const std = @import("std");
 const Deflate = @import("stream/Deflate.zig");
 const Inflate = @import("stream/Inflate.zig");
 const Compressor = @import("Compressor.zig");
-const checksum = @import("checksum.zig");
+const checksum = @import("checksum");
 const container = @import("container.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const gzip = @import("gzip.zig");
-const crc = @import("checksum/crc.zig");
+const crc = @import("crc");
 const huffman = @import("huffman/decode.zig");
 
 pub const Stream = extern struct {

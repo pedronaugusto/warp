@@ -38,6 +38,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "speculative decode", .patterns = &.{"src/parallel/Speculative.zig"} },
     .{ .name = "parallel", .patterns = &.{"src/parallel.zig"} },
     .{ .name = "C ABI", .patterns = &.{"src/c.zig"} },
+    .{ .name = "DEFLATE", .patterns = &.{"src/flate.zig"} },
     .{ .name = "zstd bits", .patterns = &.{ "src/zstd/bits.zig", "src/zstd/codes.zig", "src/zstd/Diagnostic.zig" } },
     .{ .name = "zstd fse", .patterns = &.{"src/zstd/fse.zig"} },
     .{ .name = "zstd huffman", .patterns = &.{"src/zstd/huffman.zig"} },
@@ -63,6 +64,11 @@ pub const layers: []const gantry.rules.Layer = &.{
 pub const entries: []const []const u8 = &.{};
 
 pub const modules: []const gantry.NamedModule = &.{
+    .{ .name = "checksum", .path = "src/checksum.zig" },
+    .{ .name = "crc", .path = "src/checksum/crc.zig" },
+    .{ .name = "bits", .path = "src/bits.zig" },
+    .{ .name = "deflate", .path = "src/flate.zig" },
+    .{ .name = "zstd", .path = "src/zstd.zig" },
     .{ .name = "kernels_fold", .path = "src/kernels/fold.zig" },
     .{ .name = "kernels_arm_crc", .path = "src/kernels/arm_crc.zig" },
     .{ .name = "kernels_arm_pmull", .path = "src/kernels/arm_pmull.zig" },

@@ -10,7 +10,7 @@
 //! read a piece at a time and never need to be read again.
 
 const inflate = @import("inflate.zig");
-const checksum = @import("checksum.zig");
+const checksum = @import("checksum");
 const container = @import("container.zig");
 const gzip = @import("gzip.zig");
 const Diagnostic = @import("Diagnostic.zig");

@@ -13,7 +13,7 @@ const Decompressor = @import("../Decompressor.zig");
 const Compressor = @import("../Compressor.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const container = @import("../container.zig");
-const checksum = @import("../checksum.zig");
+const checksum = @import("checksum");
 const gzip = @import("../gzip.zig");
 
 fn accept(name: []const u8) container.Accept {

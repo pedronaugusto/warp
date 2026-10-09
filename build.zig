@@ -5,19 +5,24 @@ const HostedOptions = struct {
     control: bool,
     commit: []const u8,
     single_previous: bool,
+    single_integrated: bool,
 };
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const module = b.addModule("warp", .{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
-    addKernels(b, module, target, optimize);
+    const package = packageModules(b, target, optimize);
+    const module = package.warp;
+    b.modules.put(b.allocator, "warp", module) catch @panic("OOM");
+    b.modules.put(b.allocator, "checksums", package.checksum) catch @panic("OOM");
+    b.modules.put(b.allocator, "deflate", package.deflate) catch @panic("OOM");
+    b.modules.put(b.allocator, "zstd", package.zstd) catch @panic("OOM");
     const library = b.addLibrary(.{ .name = "warp", .root_module = module });
     b.installArtifact(library);
     var c_library: ?*std.Build.Step.Compile = null;
     if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
         const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
-        addKernels(b, c_module, target, optimize);
+        addShared(b, c_module, target, optimize);
         const artifact = b.addLibrary(.{ .name = "z", .root_module = c_module });
         b.installArtifact(artifact);
         c_library = artifact;
@@ -39,13 +44,25 @@ pub fn build(b: *std.Build) !void {
     const asset_test = b.addExecutable(.{ .name = "check-assets", .root_module = asset_test_module });
     b.step("check-assets", "Generate and verify an embedded compressed asset").dependOn(&b.addRunArtifact(asset_test).step);
 
+    const module_check = b.addExecutable(.{
+        .name = "check-modules",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("ci/modules.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "warp", .module = package.warp },       .{ .name = "checksums", .module = package.checksum },
+                .{ .name = "deflate", .module = package.deflate }, .{ .name = "zstd", .module = package.zstd },
+            },
+        }),
+    });
     const filters = if (b.option([]const u8, "test-filter", "Select tests by name")) |filter| &.{filter} else &.{};
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
-    addKernels(b, test_module, target, optimize);
+    addShared(b, test_module, target, optimize);
     // The differential corpus, captured once from other implementations
     // (pedronaugusto/trials, warp/), and the inputs it names.
     for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
@@ -55,8 +72,16 @@ pub fn build(b: *std.Build) !void {
     const tests = b.addTest(.{ .name = "warp-tests", .filters = filters, .root_module = test_module });
     const test_step = b.step("test", "Run the tests and example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+    // Separate module suites are real test roots for the build-derived lint facts.
+    for ([_]*std.Build.Module{ package.checksum, package.deflate.import_table.get("bits").?, package.checksum.import_table.get("crc").? }) |root| {
+        const suite = b.addTest(.{ .root_module = root, .filters = filters });
+        test_step.dependOn(&b.addRunArtifact(suite).step);
+    }
+    test_step.dependOn(&b.addRunArtifact(module_check).step);
+    b.step("check-modules", "Validate separately imported codecs and shared checksum state").dependOn(&b.addRunArtifact(module_check).step);
     const check = b.step("check", "Compile the tests, library, example and benchmarks without running them");
     check.dependOn(&tests.step);
+    check.dependOn(&module_check.step);
     check.dependOn(&library.step);
     if (c_library) |artifact| check.dependOn(&artifact.step);
 
@@ -140,7 +165,7 @@ pub fn build(b: *std.Build) !void {
     };
     for (abi_targets, 0..) |abi_target, i| {
         const abi_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = abi_target, .optimize = .small });
-        addKernels(b, abi_module, abi_target, .small);
+        addShared(b, abi_module, abi_target, .small);
         const object = b.addObject(.{ .name = b.fmt("check-c-abi-{d}", .{i}), .root_module = abi_module });
         abi_check.dependOn(&object.step);
     }
@@ -158,12 +183,13 @@ pub fn build(b: *std.Build) !void {
         .control = b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false,
         .commit = b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree",
         .single_previous = b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false,
+        .single_integrated = b.option(bool, "hosted-single-integrated", "Compile one-codec hosted driver against integrated main") orelse false,
     };
     var needed: error{LazyDependencyNeeded}!void = {};
     // Manual indicative measurements; ordinary CI compiles without fetching
     // a historical package. The workflow explicitly enables its pinned main.
     if (b.option(bool, "hosted-previous-main", "Compare indicative rows with pinned previous main") orelse false) {
-        if (b.dependencyLazy("previous_main", .{ .target = target, .optimize = .fast })) |previous| {
+        if (b.dependencyLazy(if (hosted.single_integrated) "integrated_main" else "previous_main", .{ .target = target, .optimize = .fast })) |previous| {
             addHostedBench(b, target, previous.module("warp"), true, hosted, check);
         } else |err| needed = err;
     } else addHostedBench(b, target, warpModule(b, target, .fast), false, hosted, check);
@@ -204,7 +230,9 @@ pub fn build(b: *std.Build) !void {
                 .optimize = optimize,
             },
         });
-        const bench_step = &b.top_level_steps.get("bench").?.step;
+        // addCi can still be discovering its transitive lazy tools. Return
+        // that configure pass before using steps it has not installed yet.
+        const bench_step = if (b.top_level_steps.get("bench")) |entry| &entry.step else return error.LazyDependencyNeeded;
         const programs = [_]struct { name: []const u8, source: []const u8 }{
             .{ .name = "bench", .source = "bench/main.zig" },
             .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
@@ -232,11 +260,45 @@ pub fn build(b: *std.Build) !void {
     return needed;
 }
 
-/// warp for `target` in `optimize`, with its checksum kernels.
+/// Public concerns share one instance of the low layers in a compilation.
+const PackageModules = struct { warp: *std.Build.Module, checksum: *std.Build.Module, deflate: *std.Build.Module, zstd: *std.Build.Module };
+
+fn packageModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) PackageModules {
+    const shared = sharedModules(b, target, optimize);
+    const flate = b.createModule(.{ .root_source_file = b.path("src/flate.zig"), .target = target, .optimize = optimize });
+    flate.addImport("checksum", shared.checksum);
+    flate.addImport("bits", shared.bits);
+    flate.addImport("crc", shared.crc);
+    const zstd = b.createModule(.{ .root_source_file = b.path("src/zstd.zig"), .target = target, .optimize = optimize });
+    zstd.addImport("bits", shared.bits);
+    const root = b.createModule(.{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
+    root.addImport("checksum", shared.checksum);
+    root.addImport("deflate", flate);
+    root.addImport("zstd", zstd);
+    return .{ .warp = root, .checksum = shared.checksum, .deflate = flate, .zstd = zstd };
+}
+
 fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
-    const module = b.createModule(.{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
-    addKernels(b, module, target, optimize);
-    return module;
+    return packageModules(b, target, optimize).warp;
+}
+
+const SharedModules = struct { checksum: *std.Build.Module, bits: *std.Build.Module, crc: *std.Build.Module };
+
+fn sharedModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) SharedModules {
+    const checksum = b.createModule(.{ .root_source_file = b.path("src/checksum.zig"), .target = target, .optimize = optimize });
+    const bits = b.createModule(.{ .root_source_file = b.path("src/bits.zig"), .target = target, .optimize = optimize });
+    const crc = b.createModule(.{ .root_source_file = b.path("src/checksum/crc.zig"), .target = target, .optimize = optimize });
+    checksum.addImport("crc", crc);
+    addKernelModules(b, checksum, target, optimize);
+    return .{ .checksum = checksum, .bits = bits, .crc = crc };
+}
+
+/// Tests and the C entry own their codec sources but share the same low layers.
+fn addShared(b: *std.Build, root: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    const shared = sharedModules(b, target, optimize);
+    root.addImport("checksum", shared.checksum);
+    root.addImport("bits", shared.bits);
+    root.addImport("crc", shared.crc);
 }
 
 /// The checksum kernels that need instructions beyond the target's
@@ -244,7 +306,7 @@ fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lan
 /// enabled; warp calls one only where the CPU has them (src/cpu.zig).
 /// Zig sets CPU features per module, so these are the only modules that
 /// may use them: nothing else in warp can be compiled into them.
-fn addKernels(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+fn addKernelModules(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize });
     const Kernel = struct { name: []const u8, source: []const u8, features: []const []const u8 };
     const kernels: []const Kernel = switch (target.result.cpu.arch) {
@@ -358,7 +420,7 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
         .target = target,
         .optimize = .fast,
         .imports = &.{
-            .{ .name = "warp", .module = if (settings.single_previous) previous else current },
+            .{ .name = "warp", .module = if (settings.single_previous or settings.single_integrated) previous else current },
             .{ .name = "gen", .module = m.import_table.get("gen").? },
             .{ .name = "shakedown", .module = m.import_table.get("shakedown").? },
         },

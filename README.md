@@ -14,6 +14,10 @@ corpus sizes are checked in CI; measurements are reported separately.
 Requires Zig 0.17.0. Fetch with `zig fetch --save
 git+https://github.com/pedronaugusto/warp`, then obtain the `warp` module through
 `b.dependency` and add it to your executable's imports. warp has no dependencies.
+For separate use, take the `checksums`, `deflate` or `zstd` module from the same
+dependency. The `deflate` module includes raw DEFLATE, RFC 1950, gzip and their
+streaming and parallel APIs. `warp` aggregates those same modules; mixing the
+imports preserves type identity and one checksum dispatch.
 The codecs build for every target, wasm32-freestanding included. CPU detection
 reads the instructions available; parallel calls take `std.Io` for their workers.
 

@@ -15,11 +15,11 @@ const Deflate = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const bits = @import("../bits.zig");
+const bits = @import("bits");
 const deflate = @import("../deflate.zig");
 const block = @import("../deflate/block.zig");
 const container = @import("../container.zig");
-const checksum = @import("../checksum.zig");
+const checksum = @import("checksum");
 const gzip = @import("../gzip.zig");
 const match = @import("../match.zig");
 

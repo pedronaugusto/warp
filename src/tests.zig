@@ -1,14 +1,13 @@
 //! Every test in warp, from one root.
 
 test {
-    _ = @import("cpu.zig");
-    _ = @import("checksum.zig");
+    _ = @import("checksum");
     _ = @import("container.zig");
     _ = @import("gzip.zig");
     _ = @import("inflate.zig");
     _ = @import("stream.zig");
     _ = @import("huffman.zig");
-    _ = @import("bits.zig");
+    _ = @import("bits");
     _ = @import("match.zig");
     _ = @import("deflate/block.zig");
     _ = @import("testing/decode_test.zig");

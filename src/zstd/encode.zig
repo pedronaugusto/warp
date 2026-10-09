@@ -7,7 +7,7 @@
 //! one when it saves too little.
 
 const std = @import("std");
-const Writer = @import("../bits.zig").Writer;
+const Writer = @import("bits").Writer;
 const fse = @import("fse.zig");
 const huffman = @import("huffman.zig");
 const codes = @import("codes.zig");

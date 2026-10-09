@@ -8,7 +8,7 @@
 //! bytes however it arrives.
 
 const std = @import("std");
-const bits = @import("bits.zig");
+const bits = @import("bits");
 const match = @import("match.zig");
 const block = @import("deflate/block.zig");
 const parse_ = @import("deflate/parse.zig");

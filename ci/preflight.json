@@ -3,7 +3,10 @@
     "src"
   ],
   "test_roots": [
-    "src/tests.zig"
+    "src/tests.zig",
+    "src/bits.zig",
+    "src/checksum.zig",
+    "src/checksum/crc.zig"
   ],
   "test_support": [
     "src/testing/**"
@@ -103,6 +106,11 @@
       "zig",
       "build",
       "check-c-abi"
+    ],
+    [
+      "zig",
+      "build",
+      "check-modules"
     ]
   ],
   "unreachable_exceptions": "ci/unreachable-exceptions.json",

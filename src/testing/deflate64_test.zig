@@ -3,7 +3,7 @@ const std = @import("std");
 const testing = std.testing;
 const deflate64 = @import("../deflate64.zig");
 const Decompressor = @import("../Decompressor.zig");
-const bits = @import("../bits.zig");
+const bits = @import("bits");
 
 fn fixedSymbol(w: *bits.Writer, symbol: usize) void {
     const length: u6 = if (symbol < 144) 8 else if (symbol < 256) 9 else if (symbol < 280) 7 else 8;

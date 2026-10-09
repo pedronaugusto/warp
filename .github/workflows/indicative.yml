@@ -36,12 +36,8 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then extension=".exe"; fi
           zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-previous-main=true -Dhosted-single-previous=true -Dhosted-commit=e607c194f837fa0a7a8c08914495d4cc0202eb91
           cp "zig-out/bin/hosted-single$extension" "previous$extension"
-          git fetch --depth=1 origin 491e62b865e27e296509fbc7bba1f392f224f565
-          trap 'git restore --source=HEAD -- src' EXIT
-          git restore --source=491e62b865e27e296509fbc7bba1f392f224f565 -- src
-          zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-commit=491e62b865e27e296509fbc7bba1f392f224f565
+          zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-previous-main=true -Dhosted-single-integrated=true -Dhosted-commit=491e62b865e27e296509fbc7bba1f392f224f565
           cp "zig-out/bin/hosted-single$extension" "before$extension"
-          git restore --source=HEAD -- src
           zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-commit="$(git rev-parse HEAD)"
           cp "zig-out/bin/hosted-single$extension" "candidate$extension"
           zig run bench/interleave.zig -- "./previous$extension" "./before$extension" "./candidate$extension" | tee indicative.txt

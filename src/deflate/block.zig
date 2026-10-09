@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const gen = @import("gen");
-const bits = @import("../bits.zig");
+const bits = @import("bits");
 const huffman = @import("../huffman.zig");
 
 const decode = huffman.decode;

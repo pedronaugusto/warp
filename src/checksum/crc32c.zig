@@ -13,7 +13,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const cpu = @import("../cpu.zig");
 const Kernel = @import("kernel.zig").Kernel;
-const crc_ = @import("crc.zig");
+const crc_ = @import("crc");
 
 const arm_crc = @import("kernels_arm_crc");
 const arm_pmull = @import("kernels_arm_pmull");

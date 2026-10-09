@@ -7,6 +7,10 @@ only on the standard library. Callers provide memory and, for parallel calls,
 ## Ownership and layers
 
 `ci/layers.zig` declares the production graph from lowest layer to public root.
+The build exports `checksums`, `deflate` and `zstd` independently, and `warp`
+aggregates the same module instances. DEFLATE and Zstandard share one bit writer;
+DEFLATE and the aggregate share one checksum module and CPU dispatch. Private
+CRC polynomial operations serve that module and the optional C ABI.
 Bits, checksum kernels and CPU detection support entropy and match search.
 DEFLATE encoding and decoding are independent engines. Container owners wrap
 those engines; whole-buffer and streaming values share them. Adapters handle
@@ -101,9 +105,11 @@ Benchmarks compile in CI; timing evidence is measured separately.
 Manual x86 measurements use `zig build hosted-bench -Dhosted-previous-main=true`
 and the `Indicative x86 measurements` workflow on Linux and Windows (dispatch
 `ci.yml` with `indicative=true` on a candidate branch). Its lazy
-benchmark dependency pins the previous main; consumers fetch no benchmark code.
-The workflow builds one-codec executables from the previous main, integrated
-pre-repair source and candidate, using the same driver and compiler settings.
+benchmark dependencies pin e607c19 and integrated main 491e62b; consumers fetch
+no benchmark code.
+The workflow builds one-codec executables against those immutable package
+dependencies and the candidate, using the same driver and compiler settings.
+It preserves the candidate source tree during every baseline build.
 It alternates their processes across 21 adjacent samples of two traversals,
 with two invocations of the previous-main executable as a control. This
 separates codec throughput from caller position in a combined executable.

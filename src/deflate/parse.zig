@@ -16,7 +16,7 @@
 //! arrives.
 
 const std = @import("std");
-const bits = @import("../bits.zig");
+const bits = @import("bits");
 const match = @import("../match.zig");
 const block = @import("block.zig");
 const split = @import("split.zig");
