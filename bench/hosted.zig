@@ -94,7 +94,7 @@ fn measure(gpa: std.mem.Allocator, io: Io, w: *Io.Writer, workload: []const u8, 
             var timed: Timed = .{ .inner = ctx, .stage = stage };
             var json_buffer: [4096]u8 = undefined;
             var json: Io.Writer = .fixed(&json_buffer);
-            try bench.run(gpa, io, &json, &timed, &.{.{ .name = name, .unit = "traversal", .run = Timed.run }}, .{ .commit = options.commit }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
+            try bench.run(@typeInfo(@typeInfo(@TypeOf(Timed.run)).@"fn".return_type.?).error_union.error_set, gpa, io, &json, &timed, &.{.{ .name = name, .unit = "traversal", .run = Timed.run }}, .{ .commit = options.commit }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
             var parsed = try bench.parse(gpa, json.buffered());
             defer parsed.deinit();
             raw[stage][iteration] = @intFromFloat(parsed.rows.items[0].value.samples[0] / traversals);

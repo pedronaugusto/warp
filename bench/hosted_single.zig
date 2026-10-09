@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     var ctx: Context = .{ .input = input, .out = out, .back = back, .window = window, .frame = frame, .c = &compressor, .d = decoder, .op = op, .level = flate_level, .use_std = stage == 4 };
     var json_buffer: [4096]u8 = undefined;
     var json: Io.Writer = .fixed(&json_buffer);
-    try bench.run(gpa, init.io, &json, &ctx, &.{.{ .name = name, .unit = "traversal", .run = Context.run }}, .{ .commit = options.commit }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
+    try bench.run(@typeInfo(@typeInfo(@TypeOf(Context.run)).@"fn".return_type.?).error_union.error_set, gpa, init.io, &json, &ctx, &.{.{ .name = name, .unit = "traversal", .run = Context.run }}, .{ .commit = options.commit }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
     try ctx.validate();
     var parsed = try bench.parse(gpa, json.buffered());
     defer parsed.deinit();

@@ -44,20 +44,7 @@ jobs:
           git restore --source=HEAD -- src
           zig build hosted-single-build -Dtarget=x86_64-native -Dcpu=baseline -Dhosted-commit="$(git rev-parse HEAD)"
           cp "zig-out/bin/hosted-single$extension" "candidate$extension"
-          for kind in text noise; do
-            for operation in crc32 crc32c adler32 deflate-encode-L1 deflate-encode-L6 deflate-encode-L9 deflate-decode-std-L6-exact; do
-              for sample in {0..20}; do
-                order="0 1 2 3 4"
-                if (( sample % 2 )); then order="4 3 2 1 0"; fi
-                for stage in $order; do
-                  executable="candidate"
-                  if (( stage < 2 )); then executable="previous"; fi
-                  if (( stage == 2 )); then executable="before"; fi
-                  "./$executable$extension" "$kind" "$operation" "$sample" "$stage" | tee -a indicative.txt
-                done
-              done
-            done
-          done
+          zig run bench/interleave.zig -- "./previous$extension" "./before$extension" "./candidate$extension" | tee indicative.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

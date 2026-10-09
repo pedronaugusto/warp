@@ -31,6 +31,8 @@ lookahead stays in one loop; streaming alone retains a held match between calls
 and yields at block boundaries to drain output. Both use the same match
 selection and block writer. The optimal parser stays out of ordinary dispatch
 so its larger scratch lifetime does not extend into lower-level hot loops.
+Whole-input level-1 search also keeps its table descriptors and relative base
+local beside the builder, and copies back the base when parsing returns.
 Full-window chain searches compile the window bound as a constant.
 The decoder selects full-window or bounded-window match checks before entering
 the fast loop; ordinary DEFLATE distances are already bounded to 32 KiB by

@@ -313,6 +313,11 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
 }
 
 fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, check: *std.Build.Step) void {
+    const runner = b.addExecutable(.{
+        .name = "interleave",
+        .root_module = b.createModule(.{ .root_source_file = b.path("bench/interleave.zig"), .target = b.graph.host, .optimize = .fast }),
+    });
+    check.dependOn(&runner.step);
     const current = warpModule(b, target, .fast);
     const options = b.addOptions();
     options.addOption(bool, "previous_main", enabled);

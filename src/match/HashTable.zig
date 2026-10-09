@@ -67,11 +67,15 @@ pub inline fn longestMatch(ht: *HashTable, comptime dictionary: bool, comptime f
     const window: i32 = if (full_window) match.window else @intCast(ht.window);
     const cutoff: i32 = @as(i32, cur) - window;
     const word = h.load32Of(false, p);
-    const e = &ht.table[match.hash(word, ht.bits)];
+    const table = ht.table;
+    const bits = ht.bits;
+    const short = ht.short;
+    const short_bits = ht.short_bits;
+    const e = &table[match.hash(word, bits)];
     const cands = e.*;
     e.* = .{ cur, cands[0] };
     // The next position's bucket, fetched while this one is compared.
-    @prefetch(&ht.table[match.hash(h.load32Of(false, p + 1), ht.bits)], .{ .rw = .write });
+    @prefetch(&table[match.hash(h.load32Of(false, p + 1), bits)], .{ .rw = .write });
     var best: u32 = 0;
     var best_dist: u32 = 0;
     inline for (0..bucket) |i| {
@@ -89,7 +93,7 @@ pub inline fn longestMatch(ht: *HashTable, comptime dictionary: bool, comptime f
     if (best == 0) {
         // Positions without a longer match only: where a match starts,
         // the four-byte table holds it.
-        const s = &ht.short[match.hash(word & 0xff_ffff, ht.short_bits)];
+        const s = &short[match.hash(word & 0xff_ffff, short_bits)];
         const cand3 = s.*;
         s.* = cur;
         if (cand3 > cutoff and cur - cand3 <= short_reach) {

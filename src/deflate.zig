@@ -477,7 +477,15 @@ pub const Engine = struct {
         }
         switch (lv.parser) {
             .stored => unreachable,
-            .fastest => parse_.fastest(dictionary, full_window, c, &e.ht, h),
+            .fastest => {
+                // A whole-input finder owns only its table descriptors and base.
+                // Keep those beside the local builder so table writes cannot
+                // alias the engine and reload its descriptors on each probe.
+                var local: match.HashTable = if (!@TypeOf(c.*).keeps_literals) e.ht else undefined;
+                const ht = if (@TypeOf(c.*).keeps_literals) &e.ht else &local;
+                parse_.fastest(dictionary, full_window, c, ht, h);
+                if (!@TypeOf(c.*).keeps_literals) e.ht = local;
+            },
             .greedy => parse_.greedy(dictionary, full_window, c, &e.hc, h, params, min_len),
             .lazy => parse_.lazy(dictionary, full_window, c, &e.hc, h, params, min_len),
             .optimal => @call(.never_inline, optimal.parse, .{ dictionary, full_window, c, e.opt, &e.bt, h, lv.optimal }),

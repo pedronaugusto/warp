@@ -7,6 +7,10 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Keep whole-input level-1 matchfinder descriptors local across probes; table
+  stores do not reload their hash sizes or pointers. Match selection is unchanged.
+- Update the lazy CI and test dependencies to verified green published commits.
+
 - Keep whole-input DEFLATE parsing in its cursor across block boundaries and
   specialize full-window search and decoding bounds. Keep whole-input counts
   and one input bound local to dispatch, and group lazy lookahead. Streaming
