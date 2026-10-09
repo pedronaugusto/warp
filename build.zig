@@ -316,6 +316,7 @@ fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *st
     const current = warpModule(b, target, .fast);
     const options = b.addOptions();
     options.addOption(bool, "previous_main", enabled);
+    options.addOption(bool, "control", b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false);
     options.addOption([]const u8, "commit", b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree");
     const m = b.createModule(.{
         .root_source_file = b.path("bench/hosted.zig"),

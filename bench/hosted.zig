@@ -8,7 +8,9 @@ const gen = @import("gen");
 const options = @import("options");
 const Io = std.Io;
 const bench = @import("shakedown").bench;
-const samples = 7;
+const samples = 21;
+const traversals = 4;
+const codec = if (options.control) previous else warp;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
@@ -16,12 +18,12 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &buffer);
     const w = &stdout.interface;
-    try w.print("INDICATIVE current {s} Zig {s} target {s}-{s}; previous-main e607c194f837fa0a7a8c08914495d4cc0202eb91 enabled={}; 7 rotated adjacent samples; allocations outside timing; std resets per stream, Warp contexts reused; stages current/previous-main/std (zstd current/std)\n", .{ options.commit, @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag), options.previous_main });
+    try w.print("INDICATIVE current {s} Zig {s} target {s}-{s}; previous-main e607c194f837fa0a7a8c08914495d4cc0202eb91 enabled={}; 21 rotated adjacent samples, four traversals each; control={}; allocations outside timing; std resets per stream, Warp contexts reused; stages current/previous-main/std (zstd current/std)\n", .{ options.commit, @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag), options.previous_main, options.control });
     const out = try gpa.alloc(u8, 5 << 20);
     const back = try gpa.alloc(u8, 4 << 20);
     const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
     const zwindow = try gpa.alloc(u8, (8 << 20) + std.compress.zstd.block_size_max);
-    const d = try gpa.create(warp.Decompressor);
+    const d = try gpa.create(codec.Decompressor);
     d.* = .init;
     const old_d = try gpa.create(previous.Decompressor);
     old_d.* = .init;
@@ -38,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
             }, ctx, if (options.previous_main) 3 else 2);
         }
         for ([_]u4{ 1, 6, 9 }) |level| {
-            var c = try warp.Compressor.init(gpa, .{ .level = level });
+            var c = try codec.Compressor.init(gpa, .{ .level = level });
             defer c.deinit();
             var old_c = try previous.Compressor.init(gpa, .{ .level = level });
             defer old_c.deinit();
@@ -78,7 +80,7 @@ fn measure(gpa: std.mem.Allocator, io: Io, w: *Io.Writer, workload: []const u8, 
                 n: usize = 0,
                 fn run(c: *@This(), units: u64) !void {
                     if (units != 1) return error.InvalidBatch;
-                    c.n = try c.inner.run(c.stage);
+                    for (0..traversals) |_| c.n = try c.inner.run(c.stage);
                 }
             };
             var timed: Timed = .{ .inner = ctx, .stage = stage };
@@ -87,7 +89,7 @@ fn measure(gpa: std.mem.Allocator, io: Io, w: *Io.Writer, workload: []const u8, 
             try bench.run(gpa, io, &json, &timed, &.{.{ .name = name, .unit = "traversal", .run = Timed.run }}, .{ .commit = options.commit }, .{ .samples = 1, .warmup = 1, .minimum = .fromNanoseconds(0), .resolution_multiple = 1, .max_batch = 1 });
             var parsed = try bench.parse(gpa, json.buffered());
             defer parsed.deinit();
-            raw[stage][iteration] = @intFromFloat(parsed.rows.items[0].value.samples[0]);
+            raw[stage][iteration] = @intFromFloat(parsed.rows.items[0].value.samples[0] / traversals);
             const n = timed.n;
             try ctx.validate(stage, n);
             try w.print("raw {s} {s} sample {d} stage {d} ns {d} result {d}\n", .{ workload, name, iteration, stage, raw[stage][iteration], n });
@@ -96,12 +98,12 @@ fn measure(gpa: std.mem.Allocator, io: Io, w: *Io.Writer, workload: []const u8, 
     for (0..count) |stage| {
         var ordered = raw[stage];
         std.mem.sort(u64, &ordered, {}, std.sort.asc(u64));
-        try w.print("row {s} {s} stage {d} bytes {d} MB/s best/median {d:.3}/{d:.3} ns min/median/max {d}/{d}/{d}\n", .{ workload, name, stage, ctx.input.len, speed(ctx.input.len, ordered[0]), speed(ctx.input.len, ordered[3]), ordered[0], ordered[3], ordered[6] });
+        try w.print("row {s} {s} stage {d} bytes {d} MB/s best/median {d:.3}/{d:.3} ns min/median/max {d}/{d}/{d}\n", .{ workload, name, stage, ctx.input.len, speed(ctx.input.len, ordered[0]), speed(ctx.input.len, ordered[samples / 2]), ordered[0], ordered[samples / 2], ordered[samples - 1] });
         if (stage > 0) {
             var ratios: [samples]f64 = undefined;
             for (0..samples) |i| ratios[i] = @as(f64, @floatFromInt(raw[stage][i])) / @as(f64, @floatFromInt(raw[0][i]));
             std.mem.sort(f64, &ratios, {}, std.sort.asc(f64));
-            try w.print("paired {s} {s} current/stage{d} ratio min/median/max {d:.4}/{d:.4}/{d:.4}\n", .{ workload, name, stage, ratios[0], ratios[3], ratios[6] });
+            try w.print("paired {s} {s} current/stage{d} ratio min/median/max {d:.4}/{d:.4}/{d:.4}\n", .{ workload, name, stage, ratios[0], ratios[samples / 2], ratios[samples - 1] });
         }
     }
     try w.flush();
@@ -147,9 +149,9 @@ const Encode = struct {
     out: []u8,
     back: []u8,
     window: []u8,
-    c: *warp.Compressor,
+    c: *codec.Compressor,
     old: *previous.Compressor,
-    d: *warp.Decompressor,
+    d: *codec.Decompressor,
     level: std.compress.flate.Compress.Options,
     fn run(c: Encode, stage: usize) !usize {
         if (stage == 0) return c.c.compress(c.input, c.out, .{});
@@ -171,7 +173,7 @@ const Decode = struct {
     frame: []const u8,
     back: []u8,
     window: []u8,
-    d: *warp.Decompressor,
+    d: *codec.Decompressor,
     old: *previous.Decompressor,
     fn run(c: Decode, stage: usize) !usize {
         if (stage == 0) return (try c.d.inflate(c.frame, c.back, .{})).out_len;
