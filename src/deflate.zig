@@ -480,7 +480,7 @@ pub const Engine = struct {
             .fastest => parse_.fastest(dictionary, full_window, c, &e.ht, h),
             .greedy => parse_.greedy(dictionary, full_window, c, &e.hc, h, params, min_len),
             .lazy => parse_.lazy(dictionary, full_window, c, &e.hc, h, params, min_len),
-            .optimal => optimal.parse(dictionary, full_window, c, e.opt, &e.bt, h, lv.optimal),
+            .optimal => @call(.never_inline, optimal.parse, .{ dictionary, full_window, c, e.opt, &e.bt, h, lv.optimal }),
         }
     }
 

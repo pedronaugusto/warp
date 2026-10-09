@@ -29,12 +29,16 @@ and split observations in a local builder, and use one input bound. Dispatch
 stays beside that builder so its stores do not alias matchfinder tables. Lazy
 lookahead stays in one loop; streaming alone retains a held match between calls
 and yields at block boundaries to drain output. Both use the same match
-selection and block writer. Full-window chain searches compile the window bound as a constant.
+selection and block writer. The optimal parser stays out of ordinary dispatch
+so its larger scratch lifetime does not extend into lower-level hot loops.
+Full-window chain searches compile the window bound as a constant.
 The decoder selects full-window or bounded-window match checks before entering
 the fast loop; ordinary DEFLATE distances are already bounded to 32 KiB by
 the alphabet. The register-heavy loop stays out of its resumable phase caller. Header
 length decoding keeps its index local and saves progress on every return,
-including a truncated unit. Source commits independently preserve input bits. Smaller streaming windows retain explicit distance checks.
+including a truncated unit. Source commits independently preserve input bits.
+The output adapter borrows the fast loop’s existing stream argument rather than
+carrying a second pointer to the same state through its call boundary. Smaller streaming windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 

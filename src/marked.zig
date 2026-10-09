@@ -79,7 +79,7 @@ pub const Decoder = struct {
     const Tokens = struct {
         decoder: *Decoder,
 
-        pub inline fn position(t: Tokens) usize {
+        pub inline fn position(t: Tokens, _: *const engine.Stream) usize {
             return t.decoder.written;
         }
 
@@ -91,7 +91,7 @@ pub const Decoder = struct {
             return t.decoder.tokens;
         }
 
-        pub inline fn match(t: Tokens, op: usize, distance: usize, length: usize, _: usize, _: u32) engine.Error!void {
+        pub inline fn match(t: Tokens, _: *engine.Stream, op: usize, distance: usize, length: usize, _: usize, _: u32) engine.Error!void {
             if (distance > engine.max_distance) return error.InvalidStream;
             const d = t.decoder;
             d.max_distance = @max(d.max_distance, @as(u32, @intCast(distance))); // safe: validated DEFLATE window
@@ -99,7 +99,7 @@ pub const Decoder = struct {
             d.copy(true, distance, length);
         }
 
-        pub inline fn finish(t: Tokens, op: usize) void {
+        pub inline fn finish(t: Tokens, _: *engine.Stream, op: usize) void {
             t.decoder.written = op;
         }
     };

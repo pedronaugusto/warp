@@ -12,6 +12,8 @@ All notable changes to warp are documented here. The format follows
   and one input bound local to dispatch, and group lazy lookahead. Streaming
   retains its resumable boundaries and smaller-window validation. Decode
   header progress stays local within a call and is saved on every return.
+  Optimal-parser scratch stays outside lower-level dispatch; byte and marker
+  outputs share the fast loop’s existing stream argument.
 
 ### Added
 

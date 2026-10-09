@@ -495,9 +495,9 @@ inline fn codes(s: *Stream, source: anytype, state: *State, litlen: []const u32,
             // Select the bound once per fast-loop entry, not per match.
             // Keep the register-heavy loop out of the resumable phase caller.
             const ended = if (s.window >= max_distance)
-                try @call(.never_inline, fast, .{ std.math.maxInt(usize), s, Bytes(true){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits })
+                try @call(.never_inline, fast, .{ std.math.maxInt(usize), s, Bytes(true){ .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits })
             else
-                try @call(.never_inline, fast, .{ std.math.maxInt(usize), s, Bytes(false){ .stream = s, .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits });
+                try @call(.never_inline, fast, .{ std.math.maxInt(usize), s, Bytes(false){ .out = s.out, .start = s.start, .window = s.window }, litlen, lbits, dist, dbits });
             if (ended) return true;
             source.commit(s);
         }
@@ -526,7 +526,7 @@ inline fn fastReady(s: *const Stream) bool {
 pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
     std.debug.assert(s.virtual == 0);
     std.debug.assert(s.ip + fast_input <= s.in.len);
-    std.debug.assert(output.position() + margin <= output.capacity());
+    std.debug.assert(output.position(s) + margin <= output.capacity());
     var r: Fast = .{
         .in = s.in,
         .ip = s.ip,
@@ -537,11 +537,11 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
     };
     const out = output.buffer();
     const capacity = out.len;
-    var op = output.position();
+    var op = output.position(s);
     var left = rounds;
     defer {
         s.ip = r.ip;
-        output.finish(op);
+        output.finish(s, op);
         s.bitbuf = r.bitbuf;
         s.bitsleft = r.bitsleft & 63;
     }
@@ -626,7 +626,7 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
         const distance = huffman.value(entry) + huffman.extra(saved, entry);
         // The next symbol's entry and the refill go ahead of the copy.
         entry = litlen[r.low(r.lmask)];
-        try output.match(op, distance, length, r.ip, r.bitsleft & 63);
+        try output.match(s, op, distance, length, r.ip, r.bitsleft & 63);
         op += length;
         if (!r.more(op, capacity)) return false;
     }
@@ -635,15 +635,14 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
 /// Ordinary output: the stream owns the history and output position.
 fn Bytes(comptime full_window: bool) type {
     return struct {
-        stream: *Stream,
         out: []u8,
         start: usize,
         window: usize,
 
         const Self = @This();
 
-        inline fn position(b: Self) usize {
-            return b.stream.op;
+        inline fn position(_: Self, s: *const Stream) usize {
+            return s.op;
         }
 
         inline fn capacity(b: Self) usize {
@@ -654,8 +653,7 @@ fn Bytes(comptime full_window: bool) type {
             return b.out;
         }
 
-        inline fn match(b: Self, op: usize, distance: usize, length: usize, ip: usize, bits: u32) Error!void {
-            const s = b.stream;
+        inline fn match(b: Self, s: *Stream, op: usize, distance: usize, length: usize, ip: usize, bits: u32) Error!void {
             if (distance > op - b.start or (!full_window and distance > b.window)) {
                 @branchHint(.cold);
                 if (!full_window and distance > b.window) return s.failAt(.window_exceeded, ip, bits);
@@ -664,8 +662,8 @@ fn Bytes(comptime full_window: bool) type {
             } else copyMatch(u8, b.out, op, distance, length);
         }
 
-        inline fn finish(b: Self, op: usize) void {
-            b.stream.op = op;
+        inline fn finish(_: Self, s: *Stream, op: usize) void {
+            s.op = op;
         }
     };
 }
