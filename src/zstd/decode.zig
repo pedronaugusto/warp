@@ -521,9 +521,7 @@ pub const Frame = struct {
         var of_state = readState(&r, f.entropy.of.log);
         var ml_state = readState(&r, f.entropy.ml.log);
         // The repeat offsets, most recent first, kept in registers.
-        var rep0 = f.entropy.reps[0];
-        var rep1 = f.entropy.reps[1];
-        var rep2 = f.entropy.reps[2];
+        var rep = f.entropy.reps;
         const out = f.out;
         const prefix = f.start;
         const lit = lits.bytes.ptr;
@@ -535,52 +533,31 @@ pub const Frame = struct {
         // Fetch the next sequence's cells before copying this one's output.
         // The copies can cover the dependent table loads' latency; the final
         // sequence never reads an unused state or fetches another cell.
-        var next = SequenceCells.read(&f.entropy, .{ ll_state, ml_state, of_state });
+        // Each cell stays whole in one register and gives up its fields by
+        // shifts: split into fields, three cells outgrow the registers.
+        const tables: SequenceCells.Lookup = .init(&f.entropy);
+        const lits_limit = lits.limit;
+        const in_out = lits.in_out orelse 0;
+        var next = SequenceCells.read(tables, .{ ll_state, ml_state, of_state });
         while (n > 0) : (n -= 1) {
             // ---- decode ----
             const cell = next;
-            var offset: u32 = undefined;
-            if (cell.of.extra_bits > 1) {
-                offset = cell.of.base + @as(u32, @intCast(r.readFast(@intCast(cell.of.extra_bits))));
-                rep2 = rep1;
-                rep1 = rep0;
-                rep0 = offset;
-            } else {
-                const ll0 = cell.ll.base == 0;
-                if (cell.of.extra_bits == 0) {
-                    // Repeat 1, or repeat 2 after no literals.
-                    offset = if (ll0) rep1 else rep0;
-                    rep1 = if (ll0) rep0 else rep1;
-                    rep0 = offset;
-                } else {
-                    // Repeat 2 or 3, or after no literals repeat 3 or
-                    // repeat 1 less one.
-                    const index = cell.of.base + @intFromBool(ll0) + @as(u32, @intCast(r.readFast(1)));
-                    var rep: u32 = switch (index) {
-                        1 => rep1,
-                        2 => rep2,
-                        else => rep0 -% 1,
-                    };
-                    // A repeat offset of zero is broken: made impossible.
-                    if (rep == 0) rep = std.math.maxInt(u32);
-                    if (index != 1) rep2 = rep1;
-                    rep1 = rep0;
-                    rep0 = rep;
-                    offset = rep;
-                }
-            }
+            const offset = SequenceCells.offset(cell, &r, &rep);
+            const of_extra = SequenceCells.extra(cell.of);
             prefetchMatch(out, o, prefix, offset);
-            var ml: usize = cell.ml.base;
-            if (cell.ml.extra_bits > 0) ml += @intCast(r.readFast(@intCast(cell.ml.extra_bits)));
-            if (@as(u32, cell.of.extra_bits) + cell.ml.extra_bits + cell.ll.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
-            var ll: usize = cell.ll.base;
-            if (cell.ll.extra_bits > 0) ll += @intCast(r.readFast(@intCast(cell.ll.extra_bits)));
+            const ml_extra = SequenceCells.extra(cell.ml);
+            const ll_extra = SequenceCells.extra(cell.ll);
+            var ml: usize = SequenceCells.base(cell.ml);
+            if (ml_extra > 0) ml += @intCast(r.readFast(ml_extra));
+            if (@as(u32, of_extra) + ml_extra + ll_extra >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
+            var ll: usize = SequenceCells.base(cell.ll);
+            if (ll_extra > 0) ll += @intCast(r.readFast(ll_extra));
             if (n > 1) {
-                ll_state = cell.ll.next_state + @as(u32, @intCast(r.read(@intCast(cell.ll.nb_bits))));
-                ml_state = cell.ml.next_state + @as(u32, @intCast(r.read(@intCast(cell.ml.nb_bits))));
-                of_state = cell.of.next_state + @as(u32, @intCast(r.read(@intCast(cell.of.nb_bits))));
+                ll_state = SequenceCells.nextState(cell.ll) + @as(u32, @intCast(r.read(SequenceCells.stateBits(cell.ll))));
+                ml_state = SequenceCells.nextState(cell.ml) + @as(u32, @intCast(r.read(SequenceCells.stateBits(cell.ml))));
+                of_state = SequenceCells.nextState(cell.of) + @as(u32, @intCast(r.read(SequenceCells.stateBits(cell.of))));
                 _ = r.reload();
-                next = SequenceCells.read(&f.entropy, .{ ll_state, ml_state, of_state });
+                next = SequenceCells.read(tables, .{ ll_state, ml_state, of_state });
             }
 
             // ---- execute ----
@@ -597,19 +574,18 @@ pub const Frame = struct {
             const o_end = o_lit + ml;
             const l_end = l + ll;
             // Writes stop short of the next unread literal and of the end.
-            const write_limit = if (behind_literals) lits.in_out.? + l_end else lits.limit;
+            const write_limit = if (behind_literals) in_out + l_end else lits_limit;
             if (l_end <= lit_fast_end and o_end + margin <= write_limit) {
                 @branchHint(.likely);
                 const dst = out.ptr + o;
-                copy16(dst, lit + l);
-                if (ll > 16) wildCopy16(dst + 16, lit + l + 16, ll - 16);
+                wildCopy32(dst, lit + l, ll);
                 l = l_end;
                 const m = out.ptr + o_lit;
                 if (offset <= o_lit - prefix) {
                     @branchHint(.likely);
                     const src = m - offset;
                     if (offset >= 16) {
-                        wildCopy16(m, src, ml);
+                        wildCopy32(m, src, ml);
                     } else {
                         overlapCopy(m, src, offset, ml);
                     }
@@ -626,12 +602,12 @@ pub const Frame = struct {
             }
             // A literal length past the section puts the unread literal past
             // the output's end: the output's end comes first.
-            try f.executeCarefully(o, lits.bytes[l..lits.len], ll, ml, offset, @min(write_limit, lits.limit), at);
+            try f.executeCarefully(o, lits.bytes[l..lits.len], ll, ml, offset, @min(write_limit, lits_limit), at);
             l = l_end;
             o = o_end;
         }
         if (!r.finished()) return f.fail(error.InvalidStream, at, .bitstream_left);
-        f.entropy.reps = .{ rep0, rep1, rep2 };
+        f.entropy.reps = rep;
         op.* = o;
         lp.* = l;
     }
@@ -687,14 +663,84 @@ pub const Frame = struct {
     }
 };
 
-/// The three independent lookups for one sequence.
+/// The three independent lookups for one sequence, each cell whole.
 const SequenceCells = struct {
-    ll: fse.SeqCell,
-    ml: fse.SeqCell,
-    of: fse.SeqCell,
+    ll: u64,
+    ml: u64,
+    of: u64,
 
-    inline fn read(entropy: *const Entropy, states: [3]u32) SequenceCells {
-        return .{ .ll = entropy.ll.cells[states[0]], .ml = entropy.ml.cells[states[1]], .of = entropy.of.cells[states[2]] };
+    /// The three code tables of a block, held beside the loop that reads
+    /// them: through the frame, a store to the output could change them, and
+    /// the loop would load their addresses again for every sequence.
+    const Lookup = struct {
+        ll: *const [1 << codes.max_ll_log]fse.SeqCell,
+        ml: *const [1 << codes.max_ml_log]fse.SeqCell,
+        of: *const [1 << codes.max_of_log]fse.SeqCell,
+
+        fn init(entropy: *const Entropy) Lookup {
+            return .{ .ll = &entropy.ll.cells, .ml = &entropy.ml.cells, .of = &entropy.of.cells };
+        }
+    };
+
+    inline fn read(tables: Lookup, states: [3]u32) SequenceCells {
+        return .{
+            .ll = @bitCast(tables.ll[states[0]]),
+            .ml = @bitCast(tables.ml[states[1]]),
+            .of = @bitCast(tables.of[states[2]]),
+        };
+    }
+
+    /// The offset of the sequence the cells describe, reading its bits and
+    /// moving the repeat offsets: a code of more than one bit is an offset
+    /// itself, and a shorter one a repeat of one of the three.
+    inline fn offset(cells: SequenceCells, r: *bits.Reader, rep: *[3]u32) u32 {
+        const of_extra = extra(cells.of);
+        if (of_extra > 1) {
+            const value = base(cells.of) + @as(u32, @intCast(r.readFast(of_extra)));
+            rep[2] = rep[1];
+            rep[1] = rep[0];
+            rep[0] = value;
+            return value;
+        }
+        const ll0 = base(cells.ll) == 0;
+        if (of_extra == 0) {
+            // Repeat 1, or repeat 2 after no literals.
+            const value = if (ll0) rep[1] else rep[0];
+            rep[1] = if (ll0) rep[0] else rep[1];
+            rep[0] = value;
+            return value;
+        }
+        // Repeat 2 or 3, or after no literals repeat 3 or repeat 1 less one.
+        const index = base(cells.of) + @intFromBool(ll0) + @as(u32, @intCast(r.readFast(1)));
+        var value: u32 = switch (index) {
+            1 => rep[1],
+            2 => rep[2],
+            else => rep[0] -% 1,
+        };
+        // A repeat offset of zero is broken: made impossible.
+        if (value == 0) value = std.math.maxInt(u32);
+        if (index != 1) rep[2] = rep[1];
+        rep[1] = rep[0];
+        rep[0] = value;
+        return value;
+    }
+
+    inline fn nextState(cell: u64) u32 {
+        return @as(u16, @truncate(cell));
+    }
+
+    inline fn extra(cell: u64) u6 {
+        // safe: the extra bit counts of every code table are at most 31.
+        return @truncate(cell >> 16);
+    }
+
+    inline fn stateBits(cell: u64) u6 {
+        // safe: a state's bit count is at most the table's log, 9 or less.
+        return @truncate(cell >> 24);
+    }
+
+    inline fn base(cell: u64) u32 {
+        return @intCast(cell >> 32);
     }
 };
 
@@ -797,6 +843,17 @@ inline fn wildCopy16(dst: [*]u8, src: [*]const u8, len: usize) void {
         copy16(dst + i, src + i);
         copy16(dst + i + 16, src + i + 16);
     }
+}
+
+/// Copy `len` bytes, the first 32 whatever `len` is (a short copy is the
+/// common one, and a branch on its length mispredicts), 16 at a time after,
+/// writing up to 31 past the end; source and destination at least 16 apart,
+/// or the source after.
+inline fn wildCopy32(dst: [*]u8, src: [*]const u8, len: usize) void {
+    copy16(dst, src);
+    copy16(dst + 16, src + 16);
+    var i: usize = 32;
+    while (i < len) : (i += 16) copy16(dst + i, src + i);
 }
 
 /// A match closer than 16 bytes: its first 8 bytes laid down so that the

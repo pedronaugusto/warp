@@ -7,6 +7,10 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Decode Zstandard sequences from whole 8-byte table cells held in registers
+  instead of field by field, load the code tables' addresses once per block,
+  copy short literal runs and matches in two 16-byte moves whatever their length,
+  and build each FSE table in one pass over its states. Decoded bytes are unchanged.
 - Prove tiny optimal Zstandard inputs without repeated three-byte sequences
   before preparing match and price tables. The existing entropy and block
   writer still decide their encoded form; dictionaries keep normal search.

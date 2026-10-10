@@ -154,13 +154,11 @@ fn spread(norm: []const i16, log: u4, symbols: []u8) void {
     }
 }
 
-/// One decoded cell: its symbol, the bits to read for the next state, and
-/// the next state's base.
-const Decoded = struct { symbol: u8, nb_bits: u8, next_state: u16 };
-
-/// Spread the symbols, then give each cell the state that follows it, from
-/// the order in which each symbol's cells occur.
-fn decodeCells(norm: []const i16, log: u4, cells: []Decoded) void {
+/// Build the decoding cells of a table over `2^log` states: each cell, in
+/// state order, is made by `make` from its symbol, the bits to read for the
+/// next state and that state's base. The symbols are spread first; the cell
+/// loop is the only other pass.
+fn decodeCells(comptime T: type, comptime Context: type, comptime make: fn (Context, symbol: u8, nb_bits: u8, next_state: u16) T, norm: []const i16, log: u4, cells: []T, context: Context) void {
     const size: u32 = @as(u32, 1) << log;
     var symbols: [512]u8 = undefined;
     spread(norm, log, symbols[0..size]);
@@ -168,19 +166,30 @@ fn decodeCells(norm: []const i16, log: u4, cells: []Decoded) void {
     for (norm, 0..) |n, s| next[s] = if (n == -1) 1 else @intCast(n);
     for (cells[0..size], symbols[0..size]) |*c, s| {
         const n = next[s];
-        next[s] += 1;
+        next[s] = n + 1;
         const nb: u32 = log - std.math.log2_int(u32, n);
-        c.* = .{ .symbol = s, .nb_bits = @intCast(nb), .next_state = @intCast((n << @intCast(nb)) - size) };
+        c.* = make(context, s, @intCast(nb), @intCast((n << @intCast(nb)) - size));
     }
 }
 
 /// A cell of a sequence-code table: the code's base value and extra bits
 /// in place of the symbol, all of it in one 8-byte load.
-pub const SeqCell = extern struct {
+pub const SeqCell = packed struct(u64) {
     next_state: u16,
     extra_bits: u8,
     nb_bits: u8,
     base: u32,
+};
+
+/// What a sequence code adds to a state's symbol: its base value and its
+/// extra bits.
+const Code = struct {
+    base: []const u32,
+    extra: []const u8,
+
+    fn cell(code: Code, symbol: u8, nb_bits: u8, next_state: u16) SeqCell {
+        return .{ .next_state = next_state, .extra_bits = code.extra[symbol], .nb_bits = nb_bits, .base = code.base[symbol] };
+    }
 };
 
 /// A decoding table for one of the three sequence codes.
@@ -193,12 +202,8 @@ pub fn SeqTable(comptime max_log: u4) type {
         /// Build from counts; `base` and `extra` describe the code.
         pub fn build(t: *Self, norm: []const i16, log: u4, base: []const u32, extra: []const u8) void {
             std.debug.assert(log <= max_log);
-            var decoded: [1 << max_log]Decoded = undefined;
-            decodeCells(norm, log, &decoded);
             t.log = log;
-            for (t.cells[0 .. @as(usize, 1) << log], decoded[0 .. @as(usize, 1) << log]) |*c, d| {
-                c.* = .{ .next_state = d.next_state, .extra_bits = extra[d.symbol], .nb_bits = d.nb_bits, .base = base[d.symbol] };
-            }
+            decodeCells(SeqCell, Code, Code.cell, norm, log, &t.cells, .{ .base = base, .extra = extra });
         }
 
         /// A table of one state: every sequence has code `symbol`.
@@ -240,12 +245,13 @@ pub fn Table(comptime max_log: u4) type {
 
         pub fn build(t: *Self, norm: []const i16, log: u4) void {
             std.debug.assert(log <= max_log);
-            var decoded: [1 << max_log]Decoded = undefined;
-            decodeCells(norm, log, &decoded);
             t.log = log;
-            for (t.cells[0 .. @as(usize, 1) << log], decoded[0 .. @as(usize, 1) << log]) |*c, d| {
-                c.* = .{ .next_state = d.next_state, .symbol = d.symbol, .nb_bits = d.nb_bits };
-            }
+            const Plain = struct {
+                fn cell(_: void, symbol: u8, nb_bits: u8, next_state: u16) Cell {
+                    return .{ .next_state = next_state, .symbol = symbol, .nb_bits = nb_bits };
+                }
+            };
+            decodeCells(Cell, void, Plain.cell, norm, log, &t.cells, {});
         }
     };
 }
