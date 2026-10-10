@@ -9,6 +9,18 @@ const encode = @import("../sequences.zig");
 
 const Window = window.Window;
 
+/// Index every third position of `w.in[from..to]` in both tables, as a scan
+/// over them would have, for bytes that something else took.
+pub fn fill(comptime mls: u4, long_table: []u32, long_log: u5, short_table: []u32, short_log: u5, w: Window, from: usize, to: usize) void {
+    const b: window.Bytes = .of(w);
+    const end = w.index(@min(to, w.in.len - 8));
+    var ip = w.index(from);
+    while (ip < end) : (ip += 3) {
+        short_table[b.hash(mls, ip, short_log)] = @intCast(ip);
+        long_table[b.hash(8, ip, long_log)] = @intCast(ip);
+    }
+}
+
 /// Search the block `w.in[start..end]`; sequences go to `store`, `reps`
 /// are the repeat offsets before and after. Returns the trailing literals.
 pub noinline fn compress(comptime mls: u4, long_table: []u32, long_log: u5, short_table: []u32, short_log: u5, w: Window, store: *encode.SeqStore, reps: *[3]u32, start: usize, end: usize) usize {

@@ -12,6 +12,15 @@ const encode = @import("../sequences.zig");
 
 const Window = window.Window;
 
+/// Index every third position of `w.in[from..to]`, as a scan over them would
+/// have, for bytes that something else took.
+pub fn fill(comptime mls: u4, table: []u32, hash_log: u5, w: Window, from: usize, to: usize) void {
+    const b: window.Bytes = .of(w);
+    const end = w.index(@min(to, w.in.len - 8));
+    var ip = w.index(from);
+    while (ip < end) : (ip += 3) table[b.hash(mls, ip, hash_log)] = @intCast(ip);
+}
+
 /// Search the block `w.in[start..end]`; sequences go to `store`, `reps`
 /// are the repeat offsets before and after. Returns the trailing literals.
 pub noinline fn compress(comptime mls: u4, comptime cmov: bool, table: []u32, hash_log: u5, w: Window, store: *encode.SeqStore, reps: *[3]u32, start: usize, end: usize, acceleration: u32) usize {

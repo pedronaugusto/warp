@@ -1,6 +1,7 @@
 //! Sparse long-distance matches over a rolling 64-byte content hash.
 //! Sixteen candidates per bucket retain distant anchors without indexing
 //! every byte. Matches feed the regular parser's gaps and block encoder.
+const std = @import("std");
 const window = @import("window.zig");
 const Params = @import("../params.zig").Params;
 
@@ -45,7 +46,7 @@ pub const State = struct {
     pub fn generate(s: *State, w: window.Window, start: usize, end: usize) []const Match {
         s.count = 0;
         var covered = start;
-        const mask = s.heads.len - 1;
+        const shift: u6 = @intCast(@as(u7, 64) - @ctz(s.heads.len)); // safe: heads has at least four entries, a power of two.
         const warm: usize = @min(s.bytes, min_match);
         var at = start;
         const warm_end = @min(end, start + @max(min_match - warm -| 1, min_match -| (start + 1)));
@@ -55,7 +56,7 @@ pub const State = struct {
             if (s.hash & 127 != 0) continue;
             const pos = at + 1 - min_match;
             const curr = w.index(pos);
-            const bucket: usize = @intCast((s.hash >> 7) & mask);
+            const bucket = bucketOf(s.hash, shift);
             const tag: u32 = @truncate(s.hash >> 32);
             const entries = s.entries[bucket * bucket_size ..][0..bucket_size];
             var best: Match = .{ .at = @intCast(pos), .len = 0, .distance = 0 };
@@ -86,6 +87,13 @@ pub const State = struct {
     }
 };
 
+/// The bucket of a window's rolling hash: the product's top bits, which
+/// every byte of the window reaches. The hash's own low bits are the last
+/// bytes alone, and windows that end alike would crowd one bucket.
+inline fn bucketOf(hash: u64, shift: u6) usize {
+    return @intCast((hash *% 0x9e37_79b9_7f4a_7c15) >> shift);
+}
+
 const gear = blk: {
     var values: [256]u64 = undefined;
     var state: u64 = 0x7f4a7c159e3779b9;
@@ -97,3 +105,23 @@ const gear = blk: {
     }
     break :blk values;
 };
+
+test "windows that end alike do not share a bucket" {
+    var prng: std.Random.DefaultPrng = .init(9);
+    const random = prng.random();
+    var tail: [32]u8 = undefined;
+    random.bytes(&tail);
+    var seen: [256]bool = @splat(false);
+    var distinct: usize = 0;
+    for (0..2000) |_| {
+        var hash: u64 = 0;
+        var head: [32]u8 = undefined;
+        random.bytes(&head);
+        for (head ++ tail) |byte| hash = (hash << 1) +% gear[byte];
+        const bucket = bucketOf(hash, 64 - 8);
+        if (!seen[bucket]) distinct += 1;
+        seen[bucket] = true;
+    }
+    // 2,000 windows over 256 buckets: nearly all of them are used.
+    try std.testing.expect(distinct > 240);
+}

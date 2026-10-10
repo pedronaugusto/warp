@@ -753,10 +753,28 @@ pub fn search(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, start: us
             c.store.store(w.in, m.at - tail, m.at, end, off, m.len);
             reps.* = sequences.updateReps(reps.*, off, tail == 0);
             at = m.at + m.len;
+            c.indexLong(p, w, @max(m.at, at -| 1024), at);
         }
         return c.searchPrefix(p, w, reps, at, end);
     }
     return c.searchPrefix(p, w, reps, start, end);
+}
+
+/// Index the end of a long-distance match for the strategies that only
+/// index what they scan: the bytes after it may repeat the bytes in it.
+fn indexLong(c: *Encoder, p: Params, w: window.Window, from: usize, to: usize) void {
+    const table = c.hash_table[0 .. @as(usize, 1) << p.hash_log];
+    switch (p.strategy) {
+        .fast => switch (@max(4, @min(p.min_match, 7))) {
+            inline 4, 5, 6, 7 => |mls| fast.fill(mls, table, p.hash_log, w, from, to),
+            else => unreachable,
+        },
+        .dfast => switch (@max(4, @min(p.min_match, 7))) {
+            inline 4, 5, 6, 7 => |mls| dfast.fill(mls, table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, from, to),
+            else => unreachable,
+        },
+        else => {},
+    }
 }
 
 pub fn searchPrefix(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, start: usize, end: usize) usize {

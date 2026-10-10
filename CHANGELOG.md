@@ -7,6 +7,10 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Choose a long-distance anchor's bucket from the whole 64-byte window, not its
+  last bytes, and index the end of every long match in the `fast` and `dfast`
+  tables, as the reference does. On Silesia at level 3 with a 128 MiB window the
+  output is 0.18% smaller.
 - Write an empty DEFLATE block without weighing dynamic codes, and refine a
   dynamic header only when it could still win the block. The bytes are unchanged.
 - Select row candidates in 16-entry Zstandard rows with a narrowed compare
