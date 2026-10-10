@@ -3,6 +3,7 @@
 //! Header parsing, tables and symbol validation belong to the ordinary engine.
 const std = @import("std");
 const engine = @import("inflate.zig");
+const Diagnostic = @import("Diagnostic.zig");
 const huffman = @import("huffman.zig").decode;
 
 pub const Decoder = struct {
@@ -91,12 +92,20 @@ pub const Decoder = struct {
             return t.decoder.tokens;
         }
 
-        pub inline fn match(t: Tokens, _: *engine.Stream, op: usize, distance: usize, length: usize, _: usize, _: u32) engine.Error!void {
-            if (distance > engine.max_distance) return error.InvalidStream;
+        pub inline fn reaches(_: Tokens, _: usize, distance: usize) bool {
+            return distance <= engine.max_distance;
+        }
+
+        pub inline fn copy(t: Tokens, op: usize, distance: usize, length: usize) void {
             const d = t.decoder;
             d.max_distance = @max(d.max_distance, @as(u32, @intCast(distance))); // safe: validated DEFLATE window
             d.written = op;
             d.copy(true, distance, length);
+        }
+
+        /// A distance past the window is refused; nothing else is far.
+        pub inline fn far(_: Tokens, _: *engine.Stream, _: usize, _: usize, _: usize) ?Diagnostic.Reason {
+            return .window_exceeded;
         }
 
         pub inline fn finish(t: Tokens, _: *engine.Stream, op: usize) void {

@@ -7,6 +7,12 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- The inflate fast loop makes no call: where a stream is refused, or a match reaches
+  into the history, it leaves, and that is dealt with after it with the state written
+  back. On x86-64 the state it held across those calls was spilled to the stack in every
+  round; the loop's two instances now have 42 and 39 stack operands, from 47 and 62, and
+  decode 3% faster (measured translated, 3% above the previous build and level with the
+  first build of the loop). AArch64 is unchanged.
 - Level 1 finds no match of three bytes and keeps no table for them: the lookup at every
   position without a longer match cost 5 to 8% of the level's speed (more on data that
   mostly has no matches) for 0.45% of Silesia's output and 0.37% of the captured

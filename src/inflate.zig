@@ -521,8 +521,19 @@ inline fn fastReady(s: *const Stream) bool {
     return !s.deflate64 and s.virtual == 0 and s.ip + fast_input <= s.in.len and s.op + margin <= s.out.len;
 }
 
+/// Why the fast loop ended: its input or output ran short (or its rounds),
+/// the block ended, a symbol is invalid, or a match reaches into the
+/// history.
+const FastExit = enum { stop, end, bad_symbol, far };
+
 /// Decode while `fastReady`; whether the block ended. Every bit this reads
 /// is real.
+///
+/// The loop makes no call: where a stream is refused, or a match reaches
+/// into the history, it leaves with what to do, and `leaveFast` does it
+/// with the state written back. A call inside would keep the loop's state
+/// alive across it, and on x86-64 (fifteen registers) that state would be
+/// spilled to the stack in every round, not only the rare one.
 pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
     std.debug.assert(s.virtual == 0);
     std.debug.assert(s.ip + fast_input <= s.in.len);
@@ -539,17 +550,14 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
     const capacity = out.len;
     var op = output.position(s);
     var left = rounds;
-    defer {
-        s.ip = r.ip;
-        output.finish(s, op);
-        s.bitbuf = r.bitbuf;
-        s.bitsleft = r.bitsleft & 63;
-    }
+    var exit: FastExit = .stop;
+    var far_distance: usize = 0;
+    var far_length: usize = 0;
     r.refill();
     var entry = litlen[r.low(r.lmask)];
-    while (true) {
+    loop: while (true) {
         if (comptime rounds != std.math.maxInt(usize)) {
-            if (left == 0) return false;
+            if (left == 0) break :loop;
             left -= 1;
         }
         // At the top: `entry` is the next litlen entry, at least 56 bits in
@@ -575,7 +583,7 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
                     entry = litlen[r.low(r.lmask)];
                     out[op] = @as(u8, @truncate(lit3 >> 16)); // safe: the payload low byte is a literal
                     op += 1;
-                    if (!r.more(op, capacity)) return false;
+                    if (!r.more(op, capacity)) break :loop;
                     continue;
                 }
             }
@@ -583,8 +591,8 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
         if (entry & exceptional != 0) {
             @branchHint(.unlikely);
             if (entry & subtable_flag == 0) {
-                if (entry & end_flag != 0) return true;
-                return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+                exit = if (entry & end_flag != 0) .end else .bad_symbol;
+                break :loop;
             }
             // A long code: its first bits are consumed; the rest index the
             // subtable.
@@ -596,12 +604,12 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
                 out[op] = @as(u8, @truncate(entry >> 16)); // safe: the payload low byte is a literal
                 op += 1;
                 entry = litlen[r.low(r.lmask)];
-                if (!r.more(op, capacity)) return false;
+                if (!r.more(op, capacity)) break :loop;
                 continue;
             }
             if (entry & exceptional != 0) {
-                if (entry & end_flag != 0) return true;
-                return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+                exit = if (entry & end_flag != 0) .end else .bad_symbol;
+                break :loop;
             }
         }
         const length = huffman.value(entry) + huffman.extra(saved, entry);
@@ -614,11 +622,15 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
             // A code with no symbol is refused after its bits, as the
             // careful loop refuses it.
             r.consume(entry);
-            if (entry & subtable_flag == 0) return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+            if (entry & subtable_flag == 0) {
+                exit = .bad_symbol;
+                break :loop;
+            }
             entry = dist[huffman.value(entry) + r.low((@as(u64, 1) << huffman.codeword(entry)) - 1)];
             if (entry & exceptional != 0) {
                 r.consume(entry);
-                return s.failAt(.bad_symbol, r.ip, r.bitsleft & 63);
+                exit = .bad_symbol;
+                break :loop;
             }
         }
         saved = r.bitbuf;
@@ -626,9 +638,35 @@ pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const
         const distance = huffman.value(entry) + huffman.extra(saved, entry);
         // The next symbol's entry and the refill go ahead of the copy.
         entry = litlen[r.low(r.lmask)];
-        try output.match(s, op, distance, length, r.ip, r.bitsleft & 63);
+        if (!output.reaches(op, distance)) {
+            @branchHint(.cold);
+            exit = .far;
+            far_distance = distance;
+            far_length = length;
+            break :loop;
+        }
+        output.copy(op, distance, length);
         op += length;
-        if (!r.more(op, capacity)) return false;
+        if (!r.more(op, capacity)) break :loop;
+    }
+    return leaveFast(s, output, &r, op, exit, far_distance, far_length);
+}
+
+/// The fast loop's state back in the stream, and what it left to do.
+fn leaveFast(s: *Stream, output: anytype, r: *const Fast, op: usize, exit: FastExit, far_distance: usize, far_length: usize) Error!bool {
+    s.ip = r.ip;
+    output.finish(s, op);
+    s.bitbuf = r.bitbuf;
+    s.bitsleft = r.bitsleft & 63;
+    switch (exit) {
+        .stop => return false,
+        .end => return true,
+        .bad_symbol => return s.fail(.bad_symbol),
+        .far => {
+            if (output.far(s, op, far_distance, far_length)) |reason| return s.fail(reason);
+            output.finish(s, op + far_length);
+            return false;
+        },
     }
 }
 
@@ -653,13 +691,23 @@ fn Bytes(comptime full_window: bool) type {
             return b.out;
         }
 
-        inline fn match(b: Self, s: *Stream, op: usize, distance: usize, length: usize, ip: usize, bits: u32) Error!void {
-            if (distance > op - b.start or (!full_window and distance > b.window)) {
-                @branchHint(.cold);
-                if (!full_window and distance > b.window) return s.failAt(.window_exceeded, ip, bits);
-                if (distance > op - b.start + s.history.len()) return s.failAt(.distance_too_far, ip, bits);
-                copyFromHistory(s, op, distance, length);
-            } else copyMatch(u8, b.out, op, distance, length);
+        /// Whether a match of `distance` at `op` lies in the output, and within
+        /// the window: it can be copied by `copy`.
+        inline fn reaches(b: Self, op: usize, distance: usize) bool {
+            return distance <= op - b.start and (full_window or distance <= b.window);
+        }
+
+        inline fn copy(b: Self, op: usize, distance: usize, length: usize) void {
+            copyMatch(u8, b.out, op, distance, length);
+        }
+
+        /// A match `reaches` does not: copied from the history, or the reason
+        /// the stream is refused.
+        fn far(b: Self, s: *Stream, op: usize, distance: usize, length: usize) ?Diagnostic.Reason {
+            if (!full_window and distance > b.window) return .window_exceeded;
+            if (distance > op - b.start + s.history.len()) return .distance_too_far;
+            copyFromHistory(s, op, distance, length);
+            return null;
         }
 
         inline fn finish(_: Self, s: *Stream, op: usize) void {
