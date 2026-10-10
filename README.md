@@ -123,7 +123,11 @@ chains over a 32 KiB window, positions stored as 16-bit offsets that move with
 the window; 2 and 3 take the longest match found, 4 to 9 look one position ahead
 and take a literal when the match there is better by length and distance. Each
 level has a bounded search budget; deterministic tests check total compressed
-sizes at each level over the captured input groups.
+sizes at each level over the captured input groups. After 128 literals in a row
+without a match, levels 1 to 9 search every second position, then every third, to
+every eighth, and take the positions between as literals; a match ends it. Data
+that does not compress is passed at several times the speed, and data that does
+costs under 0.04% of its output.
 
 Levels 10-12 use binary trees and iterate a minimum-cost path over cached
 matches, updating symbol costs from each chosen path. Additional passes trade

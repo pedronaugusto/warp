@@ -279,9 +279,37 @@ pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype
                 continue;
             }
         }
-        c.literalUnobserved(h.in[p]);
-        p += 1;
+        var step = skipStep(c.run);
+        if (step > 1) {
+            // A long run of literals with no match: look at every few
+            // positions, and take the ones between as literals.
+            if (@TypeOf(c.*).keeps_literals and !c.final and p + step > n) return;
+            step = @min(step, n - p);
+        }
+        for (h.in[p..][0..step]) |byte| c.literalUnobserved(byte);
+        p += step;
         if (c.maybeEndFast(p)) return;
+    }
+}
+
+/// How many positions a parser takes as literals at once, when `run`
+/// literals in a row have found no match: one until the run is long, then
+/// more as it lengthens, to a limit.
+const skip_shift = 7;
+const skip_cap = 8;
+
+inline fn skipStep(run: u32) usize {
+    return @min(1 + (run >> skip_shift), skip_cap);
+}
+
+/// Take `step` literals from `p` (`step <= n - p`), the first of which has no match.
+inline fn literals(comptime keeps: bool, b: *Builder, in: []const u8, p: usize, step: usize) void {
+    for (in[p..][0..step]) |byte| {
+        b.counts.literal(byte);
+        if (keeps) {
+            b.lits[b.n_lits] = byte;
+            b.n_lits += 1;
+        }
     }
 }
 
@@ -329,15 +357,17 @@ pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype,
                 continue;
             }
         }
-        const byte = h.in[p];
-        b.counts.literal(byte);
-        if (keeps) {
-            b.lits[b.n_lits] = byte;
-            b.n_lits += 1;
+        var step = skipStep(run);
+        if (step > 1) {
+            // A long run of literals with no match: look at every few
+            // positions, and take the ones between as literals.
+            if (keeps and !c.final and p + step > n) return;
+            step = @min(step, n - p);
         }
-        run += 1;
-        pending += 1;
-        p += 1;
+        literals(keeps, b, h.in, p, step);
+        run += @intCast(step);
+        pending += @intCast(step);
+        p += step;
         if (pending >= split.check_every) {
             b.n = count;
             c.run = run;
@@ -397,7 +427,7 @@ pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, h
     while (p < stop or cur_len != 0) {
         if (cur_len == 0) {
             if (maxLen(n, p) < 4) {
-                lazyLiteral(keeps, b, h.in[p]);
+                literals(keeps, b, h.in, p, 1);
                 run += 1;
                 pending += 1;
                 p += 1;
@@ -416,10 +446,17 @@ pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, h
             cur_len = hc.longestMatch(dictionary, full_window, h, @intCast(p), min_len - 1, maxLen(n, p), params.nice, params.depth, &cur_dist);
             if (!worthIt(cur_len, cur_dist, min_len)) {
                 cur_len = 0;
-                lazyLiteral(keeps, b, h.in[p]);
-                run += 1;
-                pending += 1;
-                p += 1;
+                var step = skipStep(run);
+                if (step > 1) {
+                    // A long run of literals with no match: look at every few
+                    // positions, and take the ones between as literals.
+                    if (keeps and !c.final and p + step > n) return;
+                    step = @min(step, n - p);
+                }
+                literals(keeps, b, h.in, p, step);
+                run += @intCast(step);
+                pending += @intCast(step);
+                p += step;
                 if (pending >= split.check_every) {
                     b.n = count;
                     c.run = run;
@@ -450,7 +487,7 @@ pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, h
                 cur_len = 0;
                 break;
             }
-            lazyLiteral(keeps, b, h.in[p]);
+            literals(keeps, b, h.in, p, 1);
             run += 1;
             pending += 1;
             p += 1;
@@ -476,16 +513,6 @@ pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, h
             pending = c.pending;
             if (ended) return;
         }
-    }
-}
-
-/// A literal into the block's counts, and its byte kept when the literals
-/// are kept apart.
-inline fn lazyLiteral(comptime keeps: bool, b: *Builder, byte: u8) void {
-    b.counts.literal(byte);
-    if (keeps) {
-        b.lits[b.n_lits] = byte;
-        b.n_lits += 1;
     }
 }
 

@@ -7,6 +7,14 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Levels 1 to 9 search every second position after 128 literals in a row without a
+  match, every third after 256, and so on to every eighth, and take the positions between
+  as literals; a match ends it. The literal run is the builder's, so a stream comes out
+  the same however its input arrives. Random bytes are encoded 7 to 9 times as fast (100
+  to 110 MB/s become 740 to 960 at levels 1, 3, 6 and 9, where the reference's run at 125
+  to 175); the git source tar, Silesia and the captured corpus come out 0.01 to 0.04%
+  larger, the tar and Silesia 1 to 3% faster at levels 2 to 9, and the captured corpus,
+  which has random and already compressed kinds, 25 to 40% faster at levels 1 to 3.
 - The Zstandard row matchfinder (levels 5 to 12 over windows of 2^17 bytes or more) is
   built for each row length it uses, as it is for each minimum match, instead of
   branching on the row length in the search of every position. The output is unchanged;

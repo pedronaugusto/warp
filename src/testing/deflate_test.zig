@@ -167,6 +167,37 @@ test "the bytes out are the same however the input and the output are cut" {
     };
 }
 
+test "a long run of literals is looked at every few positions, and the bytes are the same however cut" {
+    const gpa = testing.allocator;
+    const noise = try gen.alloc(gpa, .noise, 5, 120_000);
+    defer gpa.free(noise);
+    const text = try gen.alloc(gpa, .text, 5, 60_000);
+    defer gpa.free(text);
+    // Noise, prose, the same noise again (within a 2^17 window) and prose.
+    const in = try std.mem.concat(gpa, u8, &.{ noise, text, noise[0..30_000], text[0..20_000] });
+    defer gpa.free(in);
+    for ([_]u4{ 1, 2, 3, 5, 6, 9 }) |level| for ([_]u4{ 12, 15 }) |window_bits| {
+        const options: Deflate.Options = .{ .level = level, .window_bits = window_bits, .container = .zlib };
+        const whole = try compressFed(gpa, in, options, .{});
+        defer gpa.free(whole);
+        for ([_]Feed{
+            .{ .in_max = 1000, .out_max = 0 },
+            .{ .in_max = 77_777, .out_max = 11 },
+            .{ .in_max = 513, .out_max = 4000, .seed = 3 },
+        }) |feed| {
+            const cut = try compressFed(gpa, in, options, feed);
+            defer gpa.free(cut);
+            testing.expectEqualSlices(u8, whole, cut) catch |err| {
+                std.debug.print("level {d} window {d} feed {any}\n", .{ level, window_bits, feed });
+                return err;
+            };
+        }
+        try expectDecodes(gpa, whole, in, .zlib, window_bits, &.{});
+        // The noise is stored or nearly: 120,000 + 30,000 bytes cost no more than themselves and the prose's.
+        try testing.expect(whole.len < in.len);
+    };
+}
+
 test "a window of 2^w bytes: every distance written is within it, for every window" {
     const gpa = testing.allocator;
     const in = try gen.alloc(gpa, .json, 5, 200_000);
