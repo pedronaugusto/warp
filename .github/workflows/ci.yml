@@ -6,10 +6,6 @@ on:
     - cron: '23 3 * * *'
   workflow_dispatch:
     inputs:
-      indicative:
-        description: Run manual indicative x86 own/std/previous-main measurements only
-        type: boolean
-        default: false
       tier:
         description: fast, merge (the gate a landing passes) or release (the full matrix, nightly and before a cut)
         type: choice
@@ -27,15 +23,14 @@ on:
   merge_group:
 concurrency:
   # Main status runs must not share the replaceable branch queue.
-  group: ci-${{ inputs.indicative && format('indicative-{0}', github.ref_name) || github.event_name == 'push' && github.ref == 'refs/heads/main' && format('main-status-{0}', github.run_id) || github.head_ref || github.ref_name }}
+  group: ci-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('main-status-{0}', github.run_id) || github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 permissions:
   contents: read
   actions: read
 jobs:
   gate:
-    if: ${{ !inputs.indicative }}
-    uses: pedronaugusto/preflight/.github/workflows/zig.yml@cb348117bc08b298276d51a00dbbfe83e79570a7
+    uses: pedronaugusto/preflight/.github/workflows/zig.yml@5a2d7c3f8efb70ead532a923ebb411a6324f2581
     # Only the job that lands a green merge run writes (`land` in ci/workflow.json), and only to move main.
     permissions:
       contents: write
@@ -43,7 +38,7 @@ jobs:
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || github.event_name == 'schedule' && 'release' || 'merge' }}
       working-directory: "."
-      preflight-ref: cb348117bc08b298276d51a00dbbfe83e79570a7
+      preflight-ref: 5a2d7c3f8efb70ead532a923ebb411a6324f2581
       attest: ${{ github.event_name == 'push' || inputs.status-only }}
       land: ${{ github.event_name == 'workflow_dispatch' && inputs.land }}
       fast-matrix: >-
