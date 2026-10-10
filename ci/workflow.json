@@ -1,7 +1,6 @@
 {
   "land": true,
   "attest": true,
-  "package": "warp",
   "compile_step": "check",
   "targets": [
     "x86_64-linux-gnu",
@@ -14,5 +13,14 @@
     "x86_64-freebsd",
     "powerpc64-linux-musl"
   ],
-  "compile_once": true
+  "compile_once": true,
+  "jobs": [
+    {
+      "name": "sizes",
+      "step": "check-sizes",
+      "tiers": ["fast", "merge", "release"],
+      "setup": false,
+      "timeout": 30
+    }
+  ]
 }
