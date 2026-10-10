@@ -7,6 +7,11 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- The Zstandard row matchfinder (levels 5 to 12 over windows of 2^17 bytes or more) is
+  built for each row length it uses, as it is for each minimum match, instead of
+  branching on the row length in the search of every position. The output is unchanged;
+  levels 6, 7 and 9 encode 4 to 5% faster on Silesia, from 0.93, 0.95 and 0.96 of the
+  reference's speed to 0.98, 0.99 and 0.99.
 - The inflate fast loop makes no call: where a stream is refused, or a match reaches
   into the history, it leaves, and that is dealt with after it with the state written
   back. On x86-64 the state it held across those calls was spilled to the stack in every

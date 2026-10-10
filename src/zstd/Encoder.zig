@@ -801,15 +801,18 @@ pub fn searchPrefix(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, sta
             else => unreachable,
         },
         .btlazy2 => switch (@max(4, @min(p.min_match, 6))) {
-            inline 4, 5, 6 => |mls| lazy_.compress(.tree, 2, mls, &c.lazy, w, &c.store, reps, start, end),
+            inline 4, 5, 6 => |mls| lazy_.compress(.tree, 2, mls, 0, &c.lazy, w, &c.store, reps, start, end),
             else => unreachable,
         },
         .greedy, .lazy, .lazy2 => switch (@max(4, @min(p.min_match, 6))) {
             inline 4, 5, 6 => |mls| switch (p.strategy) {
                 inline .greedy, .lazy, .lazy2 => |s| if (rows(p))
-                    lazy_.compress(.row, depthOf(s), mls, &c.lazy, w, &c.store, reps, start, end)
+                    switch (c.lazy.row_log) {
+                        inline 4, 5, 6 => |rl| lazy_.compress(.row, depthOf(s), mls, rl, &c.lazy, w, &c.store, reps, start, end),
+                        else => unreachable,
+                    }
                 else
-                    lazy_.compress(.chain, depthOf(s), mls, &c.lazy, w, &c.store, reps, start, end),
+                    lazy_.compress(.chain, depthOf(s), mls, 0, &c.lazy, w, &c.store, reps, start, end),
                 else => unreachable,
             },
             else => unreachable,

@@ -49,7 +49,7 @@ pub const State = struct {
 
 /// Search the block `w.in[start..end]`; sequences go to `store`, `reps`
 /// are the repeat offsets before and after. Returns the trailing literals.
-pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime mls: u4, st: *State, w: Window, store: *encode.SeqStore, reps: *[3]u32, start: usize, end: usize) usize {
+pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime mls: u4, comptime rl: u3, st: *State, w: Window, store: *encode.SeqStore, reps: *[3]u32, start: usize, end: usize) usize {
     const b: Bytes = .of(w);
     const i_start: usize = w.index(start);
     const i_end: usize = w.index(end);
@@ -67,7 +67,7 @@ pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime m
     const saved1 = window.disableRep(&rep1, max_rep);
     const saved2 = window.disableRep(&rep2, max_rep);
     st.skipping = false;
-    if (search == .row) fillCache(mls, st, b, st.next, limit);
+    if (search == .row) fillCache(mls, rl, st, b, st.next, limit);
     while (ip < limit) {
         var len: usize = 0;
         var off: usize = 1;
@@ -79,7 +79,7 @@ pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime m
         if (depth == 0 and len > 0) {
             // Taken at once.
         } else {
-            const found = find(search, mls, st, w, b, ip, i_end);
+            const found = find(search, mls, rl, st, w, b, ip, i_end);
             if (found.len > len) {
                 len = found.len;
                 match_at = ip;
@@ -102,7 +102,7 @@ pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime m
                         }
                     }
                     {
-                        const c = find(search, mls, st, w, b, ip, i_end);
+                        const c = find(search, mls, rl, st, w, b, ip, i_end);
                         if (c.len >= 4) {
                             const gain2: i64 = @as(i64, @intCast(c.len * 4)) - log2(c.off);
                             const gain1: i64 = @as(i64, @intCast(len * 4)) - log2(off) + 4;
@@ -123,7 +123,7 @@ pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime m
                                 match_at = ip;
                             }
                         }
-                        const c = find(search, mls, st, w, b, ip, i_end);
+                        const c = find(search, mls, rl, st, w, b, ip, i_end);
                         if (c.len >= 4) {
                             const gain2: i64 = @as(i64, @intCast(c.len * 4)) - log2(c.off);
                             const gain1: i64 = @as(i64, @intCast(len * 4)) - log2(off) + 7;
@@ -153,7 +153,7 @@ pub noinline fn compress(comptime search: Search, comptime depth: u2, comptime m
         ip = match_at + len;
         anchor = ip;
         if (st.skipping) {
-            if (search == .row) fillCache(mls, st, b, st.next, limit);
+            if (search == .row) fillCache(mls, rl, st, b, st.next, limit);
             st.skipping = false;
         }
         while (ip <= limit and rep2 > 0 and b.load32(ip) == b.load32(ip - rep2)) {
@@ -190,10 +190,10 @@ inline fn lowest(st: *const State, w: Window, curr: usize) usize {
 
 const Found = struct { len: usize, off: usize };
 
-inline fn find(comptime search: Search, comptime mls: u4, st: *State, w: Window, b: Bytes, ip: usize, i_end: usize) Found {
+inline fn find(comptime search: Search, comptime mls: u4, comptime rl: u3, st: *State, w: Window, b: Bytes, ip: usize, i_end: usize) Found {
     return switch (search) {
         .chain => findInChain(mls, st, w, b, ip, i_end),
-        .row => findInRow(mls, st, w, b, ip, i_end),
+        .row => findInRow(mls, rl, st, w, b, ip, i_end),
         .tree => findInTree(mls, st, w, b, ip, i_end),
     };
 }
@@ -244,27 +244,27 @@ inline fn rowHash(comptime mls: u4, st: *const State, b: Bytes, i: usize) u32 {
     return b.hash(mls, i, st.hash_log + tag_bits);
 }
 
-inline fn prefetchRow(st: *const State, row: usize) void {
+inline fn prefetchRow(comptime rl: u3, st: *const State, row: usize) void {
     @prefetch(st.hash.ptr + row, .{});
-    if (st.row_log >= 5) @prefetch(st.hash.ptr + row + 16, .{});
+    if (rl >= 5) @prefetch(st.hash.ptr + row + 16, .{});
     @prefetch(st.tags.ptr + row, .{});
-    if (st.row_log == 6) @prefetch(st.tags.ptr + row + 32, .{});
+    if (rl == 6) @prefetch(st.tags.ptr + row + 32, .{});
 }
 
 /// The hashes of the next positions, rows fetched ahead.
-fn fillCache(comptime mls: u4, st: *State, b: Bytes, from: usize, limit: usize) void {
+fn fillCache(comptime mls: u4, comptime rl: u3, st: *State, b: Bytes, from: usize, limit: usize) void {
     const n = if (from > limit) 0 else @min(cache_size, limit - from + 1);
     for (from..from + n) |i| {
         const h = rowHash(mls, st, b, i);
-        prefetchRow(st, (h >> tag_bits) << st.row_log);
+        prefetchRow(rl, st, (h >> tag_bits) << rl);
         st.cache[i & (cache_size - 1)] = h;
     }
 }
 
 /// The hash of `i` from the cache, replaced by the hash `cache_size` on.
-inline fn nextCachedHash(comptime mls: u4, st: *State, b: Bytes, i: usize) u32 {
+inline fn nextCachedHash(comptime mls: u4, comptime rl: u3, st: *State, b: Bytes, i: usize) u32 {
     const new = rowHash(mls, st, b, i + cache_size);
-    prefetchRow(st, (new >> tag_bits) << st.row_log);
+    prefetchRow(rl, st, (new >> tag_bits) << rl);
     const h = st.cache[i & (cache_size - 1)];
     st.cache[i & (cache_size - 1)] = new;
     return h;
@@ -279,26 +279,26 @@ inline fn nextEntry(tags: []u8, mask: u32) u32 {
     return n;
 }
 
-fn insertRows(comptime mls: u4, st: *State, b: Bytes, from: usize, to: usize) void {
-    const mask = (@as(u32, 1) << st.row_log) - 1;
+fn insertRows(comptime mls: u4, comptime rl: u3, st: *State, b: Bytes, from: usize, to: usize) void {
+    const mask = (@as(u32, 1) << rl) - 1;
     for (from..to) |i| {
-        const h = nextCachedHash(mls, st, b, i);
-        const row = (@as(usize, h) >> tag_bits) << st.row_log;
+        const h = nextCachedHash(mls, rl, st, b, i);
+        const row = (@as(usize, h) >> tag_bits) << rl;
         const n = nextEntry(st.tags[row..], mask);
         st.tags[row + n] = @truncate(h);
         st.hash[row + n] = @intCast(i);
     }
 }
 
-inline fn updateRows(comptime mls: u4, st: *State, b: Bytes, ip: usize) void {
+inline fn updateRows(comptime mls: u4, comptime rl: u3, st: *State, b: Bytes, ip: usize) void {
     var i = st.next;
     // After a long match only its first and last positions are inserted.
     if (ip - i > 384) {
-        insertRows(mls, st, b, i, i + 96);
+        insertRows(mls, rl, st, b, i, i + 96);
         i = ip - 32;
-        fillCache(mls, st, b, i, ip + 1);
+        fillCache(mls, rl, st, b, i, ip + 1);
     }
-    insertRows(mls, st, b, i, ip);
+    insertRows(mls, rl, st, b, i, ip);
     st.next = ip;
 }
 
@@ -334,28 +334,24 @@ inline fn matchMask(comptime entries: usize, tags: []const u8, tag: u8, head: u3
     return .{ .bits = std.math.rotr(mask_type, mask, head), .group_log = 0 };
 }
 
-fn findInRow(comptime mls: u4, st: *State, w: Window, b: Bytes, ip: usize, i_end: usize) Found {
+fn findInRow(comptime mls: u4, comptime rl: u3, st: *State, w: Window, b: Bytes, ip: usize, i_end: usize) Found {
     const low = lowest(st, w, ip);
-    const entries = @as(u32, 1) << st.row_log;
+    const entries = @as(u32, 1) << rl;
     const mask = entries - 1;
-    var attempts: usize = @as(usize, 1) << @min(st.search_log, st.row_log);
+    var attempts: usize = @as(usize, 1) << @min(st.search_log, rl);
     var h: u32 = undefined;
     if (!st.skipping) {
-        updateRows(mls, st, b, ip);
-        h = nextCachedHash(mls, st, b, ip);
+        updateRows(mls, rl, st, b, ip);
+        h = nextCachedHash(mls, rl, st, b, ip);
     } else {
         h = rowHash(mls, st, b, ip);
         st.next = ip;
     }
-    const row = (@as(usize, h) >> tag_bits) << st.row_log;
+    const row = (@as(usize, h) >> tag_bits) << rl;
     const tag: u8 = @truncate(h);
     const tags = st.tags[row..][0..entries];
     const head = tags[0] & mask;
-    var matches: Matches = switch (st.row_log) {
-        4 => matchMask(16, tags, tag, head),
-        5 => matchMask(32, tags, tag, head),
-        else => matchMask(64, tags, tag, head),
-    };
+    var matches: Matches = matchMask(@as(usize, 1) << rl, tags, tag, head);
     var buffer: [64]u32 = undefined;
     var count: usize = 0;
     while (matches.bits != 0 and attempts > 0) : (matches.bits &= matches.bits - 1) {
