@@ -80,6 +80,22 @@ bounded complete gzip members with virtual offsets. Additional optimal parsing
 passes reuse discovered matches. Compressed build assets use a host executable
 and return a build `LazyPath`.
 
+Zstandard sequence tables keep each cell as one 8-byte word. The sequence loop
+holds the three cells of a sequence whole in registers and takes their fields
+apart by shifts, reads the tables' addresses once per block, resolves repeat
+offsets in its decode step, and copies the literals and the match of a short
+sequence in two 16-byte moves whatever their length. FSE tables are built in a
+single pass over their states. Single-symbol Huffman tables are filled weight by
+weight from symbols sorted by weight, so that every weight's cells take one kind
+of store. Long-distance anchors choose their bucket from the whole window's hash,
+not its last bytes, and the ends of long matches are indexed in the `fast` and
+`dfast` tables, which index only what they scan.
+
+DEFLATE writes a block with nothing in it as the fixed code's end of block. A
+dynamic header is refined only where it could still win the block, and its run
+items are priced in one pass with a sliding window over the zeros an item may
+cover.
+
 Tiny optimal whole-buffer Zstandard inputs without a dictionary first receive
 a bounded exact repeat check. When no three-byte sequence repeats, no match is
 possible: the same entropy and block writer consume a literal-only sequence
