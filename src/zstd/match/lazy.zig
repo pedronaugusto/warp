@@ -10,6 +10,7 @@
 //! tree only when a search passes them.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const window = @import("window.zig");
 const encode = @import("../sequences.zig");
 
@@ -301,15 +302,36 @@ inline fn updateRows(comptime mls: u4, st: *State, b: Bytes, ip: usize) void {
     st.next = ip;
 }
 
+/// The entries of a row that carry `tag`: bit `k << group_log` for the
+/// entry `k` places on from the head, newest first.
+const Matches = struct {
+    bits: u64,
+    group_log: u3,
+
+    inline fn next(m: Matches, head: u32) u32 {
+        return head +% (@ctz(m.bits) >> m.group_log);
+    }
+};
+
 /// Which entries of a row carry `tag`, newest first: bit k for the entry
 /// k places on from the head.
-inline fn matchMask(comptime entries: usize, tags: []const u8, tag: u8, head: u32) u64 {
+inline fn matchMask(comptime entries: usize, tags: []const u8, tag: u8, head: u32) Matches {
+    // A 16-entry row on a vector unit that cannot gather a compare into
+    // bits cheaply gets a nibble for each entry: narrowing the compare by
+    // four bits does it in one instruction.
+    if (entries == 16 and builtin.cpu.arch == .aarch64) {
+        const row: @Vector(16, u8) = tags[0..16].*;
+        const eq: @Vector(16, u8) = @select(u8, row == @as(@Vector(16, u8), @splat(tag)), @as(@Vector(16, u8), @splat(0xff)), @as(@Vector(16, u8), @splat(0)));
+        const narrowed: @Vector(8, u8) = @truncate(@as(@Vector(8, u16), @bitCast(eq)) >> @as(@Vector(8, u16), @splat(4)));
+        const nibbles: u64 = @bitCast(narrowed);
+        return .{ .bits = std.math.rotr(u64, nibbles & 0x1111_1111_1111_1111, 4 * head), .group_log = 2 };
+    }
     const vector = @Vector(entries, u8);
     const row: vector = tags[0..entries].*;
     const eq = row == @as(vector, @splat(tag));
     const mask_type = @Int(.unsigned, entries);
     const mask: mask_type = @bitCast(eq);
-    return std.math.rotr(mask_type, mask, head);
+    return .{ .bits = std.math.rotr(mask_type, mask, head), .group_log = 0 };
 }
 
 fn findInRow(comptime mls: u4, st: *State, w: Window, b: Bytes, ip: usize, i_end: usize) Found {
@@ -329,15 +351,15 @@ fn findInRow(comptime mls: u4, st: *State, w: Window, b: Bytes, ip: usize, i_end
     const tag: u8 = @truncate(h);
     const tags = st.tags[row..][0..entries];
     const head = tags[0] & mask;
-    var matches: u64 = switch (st.row_log) {
+    var matches: Matches = switch (st.row_log) {
         4 => matchMask(16, tags, tag, head),
         5 => matchMask(32, tags, tag, head),
         else => matchMask(64, tags, tag, head),
     };
     var buffer: [64]u32 = undefined;
     var count: usize = 0;
-    while (matches != 0 and attempts > 0) : (matches &= matches - 1) {
-        const pos = (head + @ctz(matches)) & mask;
+    while (matches.bits != 0 and attempts > 0) : (matches.bits &= matches.bits - 1) {
+        const pos = matches.next(head) & mask;
         if (pos == 0) continue;
         const m = st.hash[row + pos];
         if (m < low) break;
@@ -518,4 +540,27 @@ fn findInTree(comptime mls: u4, st: *State, w: Window, b: Bytes, ip: usize, i_en
 
 inline fn highbit(v: usize) i64 {
     return std.math.log2_int(u32, @intCast(v));
+}
+
+test "the entries that carry a tag come newest first from the head, however the mask is made" {
+    var prng: std.Random.DefaultPrng = .init(3);
+    const random = prng.random();
+    inline for ([_]usize{ 16, 32, 64 }) |entries| {
+        for (0..400) |_| {
+            var tags: [64]u8 = undefined;
+            // Few distinct tags, so that rows have several matches.
+            for (tags[0..entries]) |*t| t.* = random.uintLessThan(u8, 4);
+            const tag = random.uintLessThan(u8, 4);
+            const head = random.uintLessThan(u32, entries);
+            var matches = matchMask(entries, tags[0..entries], tag, head);
+            var k: u32 = 0;
+            while (k < entries) : (k += 1) {
+                if (tags[(head + k) % entries] != tag) continue;
+                try std.testing.expect(matches.bits != 0);
+                try std.testing.expectEqual(k, @ctz(matches.bits) >> matches.group_log);
+                matches.bits &= matches.bits - 1;
+            }
+            try std.testing.expectEqual(@as(u64, 0), matches.bits);
+        }
+    }
 }

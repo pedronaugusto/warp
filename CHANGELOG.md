@@ -7,6 +7,8 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Select row candidates in 16-entry Zstandard rows with a narrowed compare
+  on AArch64; the candidates and their order are unchanged.
 - Fill Zstandard Huffman decoding tables weight by weight from symbols sorted by
   weight, and count a description's weights in four histograms.
 - Decode Zstandard sequences from whole 8-byte table cells held in registers

@@ -71,6 +71,7 @@ test {
     _ = Dictionary;
     _ = @import("zstd/params.zig");
     _ = @import("zstd/match/window.zig");
+    _ = @import("zstd/match/lazy.zig");
     _ = @import("zstd/match/opt.zig");
     _ = @import("zstd/split.zig");
 }
