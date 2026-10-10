@@ -9,6 +9,9 @@ const HostedOptions = struct {
 };
 
 pub fn build(b: *std.Build) !void {
+    // lazyImport compares every package of the dependency tree at comptime;
+    // a large tree runs past the default quota of 1000 branches.
+    @setEvalBranchQuota(100_000);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const package = packageModules(b, target, optimize);
