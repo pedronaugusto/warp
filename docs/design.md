@@ -130,7 +130,7 @@ Benchmarks compile in CI; timing evidence is measured separately.
 
 Manual x86 measurements use `zig build hosted-bench -Dhosted-previous-main=true`
 and the `Indicative x86 measurements` workflow on Linux and Windows (dispatch
-`ci.yml` with `indicative=true` on a candidate branch). Its lazy
+`indicative.yml` on a candidate branch). Its lazy
 benchmark dependencies pin e607c19 and integrated main 491e62b; consumers fetch
 no benchmark code.
 The workflow builds one-codec executables against those immutable package
