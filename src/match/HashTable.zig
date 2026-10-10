@@ -106,6 +106,23 @@ inline fn insert(ht: *HashTable, comptime dictionary: bool, h: match.History, p:
         const stop = @min(end, base + match.window);
         const table = ht.table;
         const bits = ht.bits;
+        // Four positions a step: their hashes before any store, then the
+        // stores in order.
+        while (q + 4 <= stop) : (q += 4) {
+            const h0 = match.hash(h.load32Of(dictionary, q), bits);
+            const h1 = match.hash(h.load32Of(dictionary, q + 1), bits);
+            const h2 = match.hash(h.load32Of(dictionary, q + 2), bits);
+            const h3 = match.hash(h.load32Of(dictionary, q + 3), bits);
+            const cur: i16 = @intCast(q - base);
+            const o0 = table[h0][0];
+            table[h0] = .{ cur, o0 };
+            const o1 = table[h1][0];
+            table[h1] = .{ cur + 1, o1 };
+            const o2 = table[h2][0];
+            table[h2] = .{ cur + 2, o2 };
+            const o3 = table[h3][0];
+            table[h3] = .{ cur + 3, o3 };
+        }
         while (q < stop) : (q += 1) {
             const e = &table[match.hash(h.load32Of(dictionary, q), bits)];
             // The old entry first: `e.* = .{ new, e[0] }` would write the

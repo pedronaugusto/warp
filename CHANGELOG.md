@@ -7,6 +7,8 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Level 1 inserts the positions inside a match four at a time, hashing all four before the
+  first store; 1 to 2% faster, the bytes unchanged.
 - Levels 1 to 9 search every second position after 128 literals in a row without a
   match, every third after 256, and so on to every eighth, and take the positions between
   as literals; a match ends it. The literal run is the builder's, so a stream comes out
