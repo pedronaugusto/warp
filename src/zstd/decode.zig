@@ -846,14 +846,17 @@ inline fn wildCopy16(dst: [*]u8, src: [*]const u8, len: usize) void {
 }
 
 /// Copy `len` bytes, the first 32 whatever `len` is (a short copy is the
-/// common one, and a branch on its length mispredicts), 16 at a time after,
+/// common one, and a branch on its length mispredicts), 32 at a time after,
 /// writing up to 31 past the end; source and destination at least 16 apart,
 /// or the source after.
 inline fn wildCopy32(dst: [*]u8, src: [*]const u8, len: usize) void {
     copy16(dst, src);
     copy16(dst + 16, src + 16);
     var i: usize = 32;
-    while (i < len) : (i += 16) copy16(dst + i, src + i);
+    while (i < len) : (i += 32) {
+        copy16(dst + i, src + i);
+        copy16(dst + i + 16, src + i + 16);
+    }
 }
 
 /// A match closer than 16 bytes: its first 8 bytes laid down so that the
