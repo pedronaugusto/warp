@@ -1,4 +1,7 @@
-//! One deterministic size gate: totals per level and standard corpus.
+//! One deterministic size gate: totals per level and standard corpus, each at
+//! or below its captured limit. The captured inputs also say, per level, how
+//! each input compares with the size recorded for it: the median, the 99th
+//! percentile and the worst.
 const std = @import("std");
 const warp = @import("warp");
 const gen = @import("gen");
@@ -18,9 +21,15 @@ pub fn main(init: std.process.Init) !void {
         defer arena.deinit();
         const a = arena.allocator();
         var inputs: std.ArrayList([]const u8) = .empty;
+        var reference: std.ArrayList([levels]u64) = .empty;
+        var specs: std.ArrayList([]const u8) = .empty;
         if (std.mem.eql(u8, definition.name, "captured")) {
             var records = (try captured.Corpus.parse(captured.sizes)).records();
-            while (records.next()) |record| try inputs.append(a, try captured.input(a, record.fields[0]));
+            while (records.next()) |record| {
+                try inputs.append(a, try captured.input(a, record.fields[0]));
+                try specs.append(a, record.fields[0]);
+                try reference.append(a, try recordedSizes(record.fields[1]));
+            }
         } else for (definition.files) |file| {
             const bytes = try read(a, init.io, file);
             if (std.mem.eql(u8, definition.name, "loose-git")) {
@@ -34,14 +43,45 @@ pub fn main(init: std.process.Init) !void {
             var encoder = try warp.Compressor.init(a, .{ .level = @intCast(level) });
             defer encoder.deinit();
             var total: u64 = 0;
-            for (inputs.items) |input| total += try encoder.compress(input, output, .{});
+            const ratios = try a.alloc(f64, reference.items.len);
+            for (inputs.items, 0..) |input, i| {
+                const size = try encoder.compress(input, output, .{});
+                total += size;
+                if (level != 0 and ratios.len != 0) ratios[i] = @as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(reference.items[i][level - 1]));
+            }
             try progress.interface.print("size {s} L{d}: {d} <= {d} {s}\n", .{ definition.name, level, total, limit, if (total <= limit) "pass" else "FAIL" });
+            if (level != 0 and ratios.len != 0) try report(&progress.interface, ratios, specs.items);
             try progress.interface.flush();
             failed = failed or total > limit;
         }
     }
     try progress.interface.flush();
     if (failed) return error.SizeRegression;
+}
+
+/// The levels the recorded sizes cover: 1 through 12.
+const levels = 12;
+
+fn recordedSizes(text: []const u8) ![levels]u64 {
+    var sizes: [levels]u64 = undefined;
+    var fields = std.mem.tokenizeScalar(u8, text, ' ');
+    for (&sizes) |*size| size.* = try std.fmt.parseInt(u64, fields.next() orelse return error.BadCorpus, 10);
+    return sizes;
+}
+
+/// Each input's size over the recorded one, in the median, the 99th
+/// percentile and the worst case, and which input that is.
+fn report(w: *std.Io.Writer, ratios: []const f64, specs: []const []const u8) !void {
+    var order: [4096]u16 = undefined;
+    const sorted = order[0..ratios.len];
+    for (sorted, 0..) |*o, i| o.* = @intCast(i);
+    std.mem.sort(u16, sorted, ratios, struct {
+        fn less(r: []const f64, a: u16, b: u16) bool {
+            return r[a] < r[b];
+        }
+    }.less);
+    const worst = sorted[sorted.len - 1];
+    try w.print("  per input against the recorded size: median {d:.4} p99 {d:.4} worst {d:.4} ({s})\n", .{ ratios[sorted[sorted.len / 2]], ratios[sorted[sorted.len * 99 / 100]], ratios[worst], specs[worst] });
 }
 
 /// Transport compression changes no input: every decoded byte is hashed.

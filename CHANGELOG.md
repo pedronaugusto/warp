@@ -7,6 +7,8 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- `zig build check-sizes` reports, per level, the median, 99th percentile and worst
+  of each captured input's size over the size recorded for it. The gate is unchanged.
 - Choose a long-distance anchor's bucket from the whole 64-byte window, not its
   last bytes, and index the end of every long match in the `fast` and `dfast`
   tables, as the reference does. On Silesia at level 3 with a 128 MiB window the

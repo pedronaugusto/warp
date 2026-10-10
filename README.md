@@ -342,7 +342,9 @@ inputs through every level; compression allocates nothing after `init`, and
 
 `zig build check-sizes` verifies the fixed standard input snapshots and checks
 all levels against the captured size limits, summed separately for each corpus.
-The gate has no single-input bound.
+The gate has no single-input bound; for the captured inputs it also prints, per
+level, the median, 99th percentile and worst of each input's size over the size
+recorded for it.
 
 `zig build bench` times the default rows in ReleaseFast over the package workloads. Run `zig-out/bench/bench --runs 3 parallel` to select rows, or add
 `--smoke` or `--corpus <dir>`. The `speculative` rows include discovery and
