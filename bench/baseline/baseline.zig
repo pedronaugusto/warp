@@ -7,3 +7,9 @@
 pub const inflate = @import("inflate.zig");
 pub const crc32 = @import("crc32.zig");
 pub const crc32c = @import("crc32c.zig");
+
+test {
+    _ = inflate;
+    _ = crc32;
+    _ = crc32c;
+}

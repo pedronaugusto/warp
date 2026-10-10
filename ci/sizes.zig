@@ -4,7 +4,6 @@
 //! percentile and the worst.
 const std = @import("std");
 const warp = @import("warp");
-const gen = @import("gen");
 const captured = @import("captured");
 
 const File = struct { parts: []const []const u8, length: usize, sha256: []const u8 };

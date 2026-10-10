@@ -6,7 +6,9 @@
     "src/tests.zig",
     "src/bits.zig",
     "src/checksum.zig",
-    "src/checksum/crc.zig"
+    "src/checksum/crc.zig",
+    "bench/gen.zig",
+    "bench/baseline/baseline.zig"
   ],
   "test_support": [
     "src/testing/**"
@@ -70,7 +72,6 @@
       ]
     }
   },
-  "ziglint_exceptions": "ci/ziglint-exceptions.json",
   "extra_checks": [
     [
       "zig",
@@ -113,8 +114,25 @@
       "check-modules"
     ]
   ],
-  "unreachable_exceptions": "ci/unreachable-exceptions.json",
-  "debug_print_exceptions": "ci/debug-print-exceptions.json",
+  "glint_paths": [
+    "src",
+    "bench",
+    "ci",
+    "examples",
+    "build.zig"
+  ],
+  "glint": {
+    "rules": [
+      {
+        "id": "A004",
+        "level": "gate"
+      },
+      {
+        "id": "Z026",
+        "level": "gate"
+      }
+    ]
+  },
   "shipped": {
     "build": "The host source compiled by addCompressedAsset in consumer builds.",
     "docs": "The package architecture and ownership guide linked from README for consumers."

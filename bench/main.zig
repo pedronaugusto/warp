@@ -140,7 +140,7 @@ fn objects(arena: std.mem.Allocator, io: Io, dir: []const u8, name: []const u8, 
         const body = data[nl + 1 ..][0..size];
         pos = nl + 1 + size + 1;
         if (size > max_size) continue;
-        const object = try std.fmt.allocPrint(arena, "{s} {d}\x00{s}", .{ kind, size, body });
+        const object = try arena.print("{s} {d}\x00{s}", .{ kind, size, body });
         try inputs.append(arena, object);
         total += object.len;
         max = @max(max, object.len);

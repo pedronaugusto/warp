@@ -14,8 +14,8 @@ pub fn main(init: std.process.Init) !void {
             const executable = args[if (stage < 2) 1 else if (stage == 2) 2 else 3];
             var sample_buffer: [20]u8 = undefined;
             var stage_buffer: [20]u8 = undefined;
-            const sample_text = try std.fmt.bufPrint(&sample_buffer, "{d}", .{sample});
-            const stage_text = try std.fmt.bufPrint(&stage_buffer, "{d}", .{stage});
+            const sample_text = try std.mem.print(&sample_buffer, "{d}", .{sample});
+            const stage_text = try std.mem.print(&stage_buffer, "{d}", .{stage});
             const result = try std.process.run(init.gpa, init.io, .{ .argv = &.{ executable, kind, operation, sample_text, stage_text } });
             defer init.gpa.free(result.stdout);
             defer init.gpa.free(result.stderr);

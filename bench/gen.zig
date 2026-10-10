@@ -281,9 +281,9 @@ fn json(p: *Prng, out: []u8) void {
             var buf: [24]u8 = undefined;
             const value = switch (p.below(4)) {
                 // unreachable: 24 bytes hold any u64 in decimal
-                0 => std.fmt.bufPrint(&buf, "{d}", .{seq}) catch unreachable,
+                0 => std.mem.print(&buf, "{d}", .{seq}) catch unreachable,
                 // unreachable: 24 bytes hold any u64 in decimal
-                1 => std.fmt.bufPrint(&buf, "{d}", .{p.below(1000)}) catch unreachable,
+                1 => std.mem.print(&buf, "{d}", .{p.below(1000)}) catch unreachable,
                 2 => if (p.below(2) == 0) "true" else "false",
                 else => blk: {
                     const w = vocabulary.word(wordIndex(p));
@@ -316,7 +316,7 @@ test "an input is a function of its kind, seed and length, and a shorter one is 
 test "a spec reads back as written" {
     var buf: [64]u8 = undefined;
     const s: Spec = .{ .kind = .png, .seed = 9, .len = 65543 };
-    const written = try std.fmt.bufPrint(&buf, "{f}", .{s});
+    const written = try std.mem.print(&buf, "{f}", .{s});
     try std.testing.expectEqualStrings("png 9 65543", written);
     try std.testing.expectEqual(s, try Spec.parse(written));
     try std.testing.expectError(error.InvalidSpec, Spec.parse("png 9"));

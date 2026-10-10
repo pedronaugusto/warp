@@ -77,6 +77,15 @@ pub fn build(b: *std.Build) !void {
         const suite = b.addTest(.{ .root_module = root, .filters = filters });
         test_step.dependOn(&b.addRunArtifact(suite).step);
     }
+    // The benchmarks' input generator and the code warp replaces carry tests
+    // of their own; a test runs only from its module's root, so each is one.
+    for ([_][]const u8{ "bench/gen.zig", "bench/baseline/baseline.zig" }) |source| {
+        const suite = b.addTest(.{
+            .root_module = b.createModule(.{ .root_source_file = b.path(source), .target = target, .optimize = optimize }),
+            .filters = filters,
+        });
+        test_step.dependOn(&b.addRunArtifact(suite).step);
+    }
     test_step.dependOn(&b.addRunArtifact(module_check).step);
     b.step("check-modules", "Validate separately imported codecs and shared checksum state").dependOn(&b.addRunArtifact(module_check).step);
     const check = b.step("check", "Compile the tests, library, example and benchmarks without running them");
@@ -201,13 +210,10 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("ci/sizes.zig"),
         .target = b.graph.host,
         .optimize = .fast,
-        .imports = &.{
-            .{ .name = "warp", .module = warpModule(b, b.graph.host, .fast) },
-            .{ .name = "gen", .module = b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = b.graph.host, .optimize = .fast }) },
-        },
+        .imports = &.{.{ .name = "warp", .module = warpModule(b, b.graph.host, .fast) }},
     });
     const captured_module = b.createModule(.{ .root_source_file = b.path("src/testing/corpus/data.zig"), .target = b.graph.host, .optimize = .fast });
-    captured_module.addImport("gen", size_module.import_table.get("gen").?);
+    captured_module.addImport("gen", b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = b.graph.host, .optimize = .fast }));
     captured_module.addAnonymousImport("sizes.corpus", .{ .root_source_file = b.path("testdata/sizes.corpus") });
     size_module.addImport("captured", captured_module);
     const size_gate = b.addExecutable(.{ .name = "check-sizes", .root_module = size_module });
@@ -384,7 +390,7 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
     });
     const run = b.addRunArtifact(tool);
     run.addFileArg(options.source);
-    const output = run.addOutputFileArg(options.name);
+    const output = run.addOutputFileArg2(options.name, .{});
     run.addArgs(&.{ @tagName(options.container), b.fmt("{d}", .{options.level}) });
     return output;
 }

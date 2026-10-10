@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
                 const old_n = try old_c.compress(input, out, .{});
                 if (!std.mem.eql(u8, frame_copy, out[0..old_n])) return error.ChangedEncoding;
             }
-            try measure(gpa, io, w, @tagName(kind), try std.fmt.allocPrint(gpa, "deflate-encode-L{d}", .{level}), ctx, if (options.previous_main and !options.control) 3 else 2);
+            try measure(gpa, io, w, @tagName(kind), try gpa.print("deflate-encode-L{d}", .{level}), ctx, if (options.previous_main and !options.control) 3 else 2);
         }
         var encoded: Io.Writer = .fixed(out);
         var sc = try std.compress.flate.Compress.init(&encoded, window, .zlib, .level_6);
