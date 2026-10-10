@@ -47,13 +47,18 @@ pub fn readWeights(in: []const u8, w: *Weights) Error!void {
         n = try decodeWeights(in[1..][0..header], w.weights[0 .. max_symbols - 1]);
         w.len = @as(usize, header) + 1;
     }
-    @memset(&w.rank, 0);
+    // Four histograms, so that a run of equal weights is not one chain of
+    // loads waiting on the store before; weights past the last that a
+    // code may have share the final bucket and refuse the description.
+    var tally: [4][max_log + 2]u32 = @splat(@splat(0));
+    for (w.weights[0 .. n & ~@as(usize, 3)], 0..) |weight, i| tally[i & 3][@min(weight, max_log + 1)] += 1;
+    for (w.weights[n & ~@as(usize, 3) .. n]) |weight| tally[0][@min(weight, max_log + 1)] += 1;
     var total: u32 = 0;
-    for (w.weights[0..n]) |weight| {
-        if (weight > max_log) return error.InvalidStream;
-        w.rank[weight] += 1;
-        total += (@as(u32, 1) << @intCast(weight)) >> 1;
+    for (0..max_log + 1) |weight| {
+        w.rank[weight] = tally[0][weight] + tally[1][weight] + tally[2][weight] + tally[3][weight];
+        total += w.rank[weight] * ((@as(u32, 1) << @intCast(weight)) >> 1);
     }
+    if (tally[0][max_log + 1] + tally[1][max_log + 1] + tally[2][max_log + 1] + tally[3][max_log + 1] != 0) return error.InvalidStream;
     if (total == 0) return error.InvalidStream;
     // The last weight is implied: the total must be a power of two.
     const log = std.math.log2_int(u32, total) + 1;
@@ -175,27 +180,55 @@ pub const Table = struct {
 
 /// Single-symbol cells over `log` bits (at least the longest code): in
 /// order of weight, then symbol, weight w filling 2^(w-1) cells scaled to
-/// `log`, its code `w.log + 1 - w` bits long.
+/// `log`, its code `w.log + 1 - w` bits long. The symbols are sorted by
+/// weight first, so that every weight's cells are filled by one kind of
+/// store: the weights vary from symbol to symbol, and a choice of store
+/// per symbol is a branch that cannot be predicted.
 fn fillSingle(w: *const Weights, log: u4, cells: *[1 << max_log]u16) void {
     const scale: u4 = log - w.log;
-    var start: [max_log + 2]u32 = undefined;
-    var next: u32 = 0;
-    for (1..@as(usize, w.log) + 1) |weight| {
-        start[weight] = next;
-        next += w.rank[weight] << @intCast(weight - 1 + scale);
+    // The first position in `sorted` of each weight; absent symbols sort
+    // last, where they cost no branch.
+    var first: [max_log + 1]u32 = undefined;
+    var present: u32 = 0;
+    for (1..max_log + 1) |weight| {
+        first[weight] = present;
+        present += w.rank[weight];
     }
+    first[0] = present;
+    var sorted: [max_symbols]u8 = undefined;
     for (w.weights[0..w.count], 0..) |weight, s| {
-        if (weight == 0) continue;
-        const len = @as(u32, 1) << @intCast(weight - 1 + scale);
-        const cell: u16 = @as(u16, @intCast(s)) | @as(u16, w.log + 1 - weight) << 8;
-        const out = cells[start[weight]..][0..len];
+        sorted[first[weight]] = @intCast(s);
+        first[weight] += 1;
+    }
+    var at: usize = 0;
+    var index: usize = 0;
+    for (1..@as(usize, w.log) + 1) |weight| {
+        const count = w.rank[weight];
+        if (count == 0) continue;
+        const nb_bits: u16 = @as(u16, w.log + 1 - @as(u4, @intCast(weight))) << 8;
+        const len = @as(usize, 1) << @intCast(weight - 1 + scale);
+        const symbols = sorted[index..][0..count];
+        index += count;
         switch (len) {
-            1 => out[0] = cell,
-            2 => out[0..2].* = @splat(cell),
-            4 => out[0..4].* = @splat(cell),
-            else => @memset(out, cell),
+            1 => for (symbols) |s| {
+                cells[at] = nb_bits | s;
+                at += 1;
+            },
+            2 => for (symbols) |s| {
+                cells[at..][0..2].* = @splat(nb_bits | s);
+                at += 2;
+            },
+            4 => for (symbols) |s| {
+                cells[at..][0..4].* = @splat(nb_bits | s);
+                at += 4;
+            },
+            else => for (symbols) |s| {
+                // A power of two from 8: whole 16-byte stores.
+                const run: @Vector(8, u16) = @splat(nb_bits | s);
+                for (0..len / 8) |i| cells[at + 8 * i ..][0..8].* = run;
+                at += len;
+            },
         }
-        start[weight] += len;
     }
 }
 
@@ -872,6 +905,62 @@ test "double tables agree with two single lookups at every code length" {
             }
         }
     }
+}
+
+test "single tables list the symbols by weight, then symbol, at every scale" {
+    var prng: std.Random.DefaultPrng = .init(11);
+    const random = prng.random();
+    var table: [1 << max_log]u16 = undefined;
+    var round: usize = 0;
+    while (round < 300) : (round += 1) {
+        // A complete code of up to 256 symbols: weights w taking 2^(w-1)
+        // of the 2^log slots, symbols chosen at random.
+        const log = random.intRangeAtMost(u4, 1, max_log);
+        var w: Weights = .{ .log = log, .count = 0, .weights = @splat(0), .rank = @splat(0), .len = 0 };
+        var left: u32 = @as(u32, 1) << log;
+        var symbols: u32 = 0;
+        while (left != 0 and symbols < max_symbols) {
+            const top = std.math.log2_int(u32, left) + 1;
+            const weight = random.intRangeAtMost(u32, 1, @min(top, log));
+            var s = random.uintLessThan(usize, max_symbols);
+            while (w.weights[s] != 0) s = (s + 1) % max_symbols;
+            w.weights[s] = @intCast(weight);
+            w.rank[weight] += 1;
+            w.count = @max(w.count, @as(u32, @intCast(s + 1)));
+            left -= (@as(u32, 1) << @intCast(weight)) >> 1;
+            symbols += 1;
+        }
+        if (left != 0) continue;
+        for (log..max_log + 1) |wide| {
+            fillSingle(&w, @intCast(wide), &table);
+            // The same table, made the slow way.
+            var at: usize = 0;
+            for (1..@as(usize, log) + 1) |weight| {
+                for (w.weights[0..w.count], 0..) |x, s| {
+                    if (x != weight) continue;
+                    const cells = @as(usize, 1) << @intCast(weight - 1 + (wide - log));
+                    for (table[at..][0..cells]) |cell| try std.testing.expectEqual(@as(u16, @intCast(s)) | @as(u16, log + 1 - @as(u4, @intCast(weight))) << 8, cell);
+                    at += cells;
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1) << @intCast(wide), at);
+        }
+    }
+}
+
+test "weights are counted whatever their number, and any above the longest code are refused" {
+    var w: Weights = undefined;
+    // Four direct weights (1, 1, 2, 3) and the implied one (4): 1+1+2+4+8.
+    try readWeights(&.{ 127 + 4, 0x11, 0x32 }, &w);
+    try std.testing.expectEqual([_]u32{ 0, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }, w.rank);
+    try std.testing.expectEqual(@as(u32, 5), w.count);
+    // Five direct weights (1, 1, 1, 1, 3) and the implied one (4).
+    try readWeights(&.{ 127 + 5, 0x11, 0x11, 0x30 }, &w);
+    try std.testing.expectEqual([_]u32{ 0, 4, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }, w.rank);
+    try std.testing.expectEqual(@as(u32, 6), w.count);
+    // A weight of 13 cannot be a code of up to 12 bits.
+    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0xd1 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 5, 0x11, 0x11, 0xf0 }, &w));
 }
 
 test "descriptions whose weights do not form a code are refused" {

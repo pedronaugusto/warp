@@ -7,6 +7,8 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Fill Zstandard Huffman decoding tables weight by weight from symbols sorted by
+  weight, and count a description's weights in four histograms.
 - Decode Zstandard sequences from whole 8-byte table cells held in registers
   instead of field by field, load the code tables' addresses once per block,
   copy short literal runs and matches in two 16-byte moves whatever their length,
