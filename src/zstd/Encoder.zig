@@ -517,7 +517,7 @@ pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: boo
         c.store.reset();
         var w: window.Window = .{ .in = in, .start = base, .low = base };
         w.low = w.lowFor(end, p.window_log);
-        if (end - at >= 8) _ = c.search(p, w, &prime_reps, at, end);
+        if (end - at >= 8 and !c.indexUnscanned(p, w, at, end)) _ = c.search(p, w, &prime_reps, at, end);
         at = end;
     }
     var prev: usize = 0;
@@ -753,16 +753,17 @@ pub fn search(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, start: us
             c.store.store(w.in, m.at - tail, m.at, end, off, m.len);
             reps.* = sequences.updateReps(reps.*, off, tail == 0);
             at = m.at + m.len;
-            c.indexLong(p, w, @max(m.at, at -| 1024), at);
+            _ = c.indexUnscanned(p, w, @max(m.at, at -| 1024), at);
         }
         return c.searchPrefix(p, w, reps, at, end);
     }
     return c.searchPrefix(p, w, reps, start, end);
 }
 
-/// Index the end of a long-distance match for the strategies that only
-/// index what they scan: the bytes after it may repeat the bytes in it.
-fn indexLong(c: *Encoder, p: Params, w: window.Window, from: usize, to: usize) void {
+/// Index bytes that were not scanned, for the strategies that only index
+/// what they scan: every third position, as the reference does for a
+/// dictionary's content. Others index nothing here.
+fn indexUnscanned(c: *Encoder, p: Params, w: window.Window, from: usize, to: usize) bool {
     const table = c.hash_table[0 .. @as(usize, 1) << p.hash_log];
     switch (p.strategy) {
         .fast => switch (@max(4, @min(p.min_match, 7))) {
@@ -773,8 +774,9 @@ fn indexLong(c: *Encoder, p: Params, w: window.Window, from: usize, to: usize) v
             inline 4, 5, 6, 7 => |mls| dfast.fill(mls, table, p.hash_log, c.chain_table[0 .. @as(usize, 1) << p.chain_log], p.chain_log, w, from, to),
             else => unreachable,
         },
-        else => {},
+        else => return false,
     }
+    return true;
 }
 
 pub fn searchPrefix(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, start: usize, end: usize) usize {

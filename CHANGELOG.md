@@ -7,6 +7,9 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Prime the overlap of a parallel Zstandard job at levels 1 to 4 by indexing every third
+  position, as the reference does for a dictionary, instead of searching it. A few
+  hundredths of a percent more output, and about 3% more speed.
 - Find the cheapest run items of a dynamic header in one pass, with a sliding window
   over the 11 to 138 zeros an item may cover, rather than trying every count at
   every position, and end empty input at levels 10 to 12 without a path search. The
