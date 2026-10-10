@@ -117,8 +117,8 @@ stopped, through `Options.diagnostic`.
 
 **Encoding.** A `Compressor` takes its memory once, sized for the level and the
 largest input it will see, and each call clears only the part its input uses.
-Level 1 keeps the two latest positions per hash of four bytes, and the latest
-position per hash of three for short matches near by. Levels 2 to 9 use hash
+Level 1 keeps the two latest positions per hash of four bytes, and finds no
+match of three. Levels 2 to 9 use hash
 chains over a 32 KiB window, positions stored as 16-bit offsets that move with
 the window; 2 and 3 take the longest match found, 4 to 9 look one position ahead
 and take a literal when the match there is better by length and distance. Each

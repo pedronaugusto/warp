@@ -103,7 +103,6 @@ pub const Sizes = struct {
     hash4_bits: u5 = 0,
     hash3_bits: u5 = 0,
     ht_bits: u5 = 0,
-    short_bits: u5 = 0,
     tree_bits: u5 = 0,
     /// The farthest a match reaches, a power of two.
     window: usize = match.window,
@@ -137,7 +136,6 @@ pub const Sizes = struct {
             .table => {
                 s.table = true;
                 s.ht_bits = @max(10, @min(ht_bits_max, fit));
-                s.short_bits = s.ht_bits - 4;
             },
             .chains => {
                 s.chains = true;
@@ -181,7 +179,6 @@ pub const Sizes = struct {
             .hash4_bits = hash_bits,
             .hash3_bits = hash_bits - 2,
             .ht_bits = hash_bits,
-            .short_bits = hash_bits - 4,
             .window = window,
             // Blocks of up to 4,096 matches and 16 KiB of literals (zlib's
             // 16,384 symbols at its default memLevel), less in a small
@@ -210,7 +207,7 @@ pub const Sizes = struct {
     }
 
     fn tableMemory(s: Sizes) usize {
-        return if (s.table) match.HashTable.memory(s.ht_bits, s.short_bits) else 0;
+        return if (s.table) match.HashTable.memory(s.ht_bits) else 0;
     }
 
     fn treesMemory(s: Sizes) usize {
@@ -277,7 +274,6 @@ pub const Engine = struct {
             var at: usize = 0;
             e.ht = .{
                 .table = take([2]i16, buffer, &at, @as(usize, 1) << sizes.ht_bits),
-                .short = take(i16, buffer, &at, @as(usize, 1) << sizes.short_bits),
                 .window = @intCast(sizes.window),
             };
         }
@@ -331,7 +327,7 @@ pub const Engine = struct {
             .none => {},
             .table => {
                 const bits_ = @min(e.sizes.ht_bits, fit_bits);
-                e.ht.reset(lowest, bits_, @min(e.sizes.short_bits, bits_));
+                e.ht.reset(lowest, bits_);
             },
             .chains => e.hc.reset(lowest, @min(e.sizes.hash4_bits, fit_bits), @min(e.sizes.hash3_bits, fit_bits)),
             .trees => {

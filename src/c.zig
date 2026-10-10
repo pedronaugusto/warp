@@ -738,7 +738,6 @@ pub export fn deflateCopy(destination: ?*Stream, source: ?*Stream) c_int {
     fresh.encoder.engine.hc.hash4 = moved(old.encoder.engine.hc.hash4, old, fresh);
     fresh.encoder.engine.hc.prev = moved(old.encoder.engine.hc.prev, old, fresh);
     fresh.encoder.engine.ht.table = moved(old.encoder.engine.ht.table, old, fresh);
-    fresh.encoder.engine.ht.short = moved(old.encoder.engine.ht.short, old, fresh);
     return ok;
 }
 
