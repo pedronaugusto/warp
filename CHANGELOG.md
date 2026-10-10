@@ -7,6 +7,12 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Read the block splitter's observations from the symbol counts the parse keeps, when
+  a check is due, instead of making them one literal and match at a time. The blocks,
+  and so the bytes, are unchanged at every level; levels 2 to 9 run 1 to 3% faster.
+- The greedy and lazy parsers hold the sequence count, the literal run and the check
+  counter in locals between checks, and the matchfinder's descriptors beside them.
+  The bytes are unchanged.
 - Prime the overlap of a parallel Zstandard job at levels 1 to 4 by indexing every third
   position, as the reference does for a dictionary, instead of searching it. A few
   hundredths of a percent more output, and about 3% more speed.

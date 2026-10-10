@@ -8,6 +8,8 @@
 //! share lowering as the block grows (a long block has amortized its
 //! header).
 
+const std = @import("std");
+
 pub const kinds = 10;
 pub const check_every = 512;
 
@@ -25,6 +27,24 @@ pub const Splitter = struct {
     pub inline fn match(s: *Splitter, length: u32) void {
         s.new[8 + @as(usize, @intFromBool(length >= 9))] += 1;
         s.n_new += 1;
+    }
+
+    /// The observations since the last comparison, read from the block's
+    /// symbol counts rather than made one symbol at a time: the counts hold
+    /// every literal and every length, so what is new is what they hold
+    /// beyond what `seen` has taken in. A parser that keeps the counts
+    /// compares with this and observes nothing per symbol.
+    pub fn observeCounts(s: *Splitter, litlen: []const u32) void {
+        var kinds_now: [kinds]u32 = @splat(0);
+        for (litlen[0..256], 0..) |n, byte| kinds_now[((byte >> 5) & 6) | (byte & 1)] += n;
+        // Lengths 3 to 8 are symbols 257 to 262; 9 and longer, 263 on.
+        for (litlen[257..263]) |n| kinds_now[8] += n;
+        for (litlen[263..286]) |n| kinds_now[9] += n;
+        s.n_new = 0;
+        for (&s.new, kinds_now, s.seen) |*new, now, seen| {
+            new.* = now - seen;
+            s.n_new += new.*;
+        }
     }
 
     /// Enough new observations to compare.
@@ -92,3 +112,44 @@ pub const Splitter = struct {
         s.* = .{};
     }
 };
+
+test "observations read from the symbol counts are those made symbol by symbol" {
+    const block = @import("block.zig");
+    var counts: block.Counts = .{};
+    var made: Splitter = .{};
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+    for (0..4000) |_| {
+        if (random.boolean()) {
+            const byte = random.int(u8);
+            counts.literal(byte);
+            made.literal(byte);
+        } else {
+            const length = random.intRangeAtMost(u32, 3, 258);
+            counts.match(length, random.intRangeAtMost(u32, 1, 32768));
+            made.match(length);
+        }
+    }
+    var read: Splitter = .{};
+    read.observeCounts(&counts.litlen);
+    try std.testing.expectEqual(made.new, read.new);
+    try std.testing.expectEqual(made.n_new, read.n_new);
+    // After a comparison that takes the observations in, the next ones are
+    // those the counts hold beyond them.
+    try std.testing.expect(!read.differs());
+    made = .{};
+    for (0..700) |_| {
+        if (random.boolean()) {
+            const byte = random.int(u8);
+            counts.literal(byte);
+            made.literal(byte);
+        } else {
+            const length = random.intRangeAtMost(u32, 3, 258);
+            counts.match(length, 1);
+            made.match(length);
+        }
+    }
+    read.observeCounts(&counts.litlen);
+    try std.testing.expectEqual(made.new, read.new);
+    try std.testing.expectEqual(made.n_new, read.n_new);
+}

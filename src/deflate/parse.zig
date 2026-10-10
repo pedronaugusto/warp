@@ -119,7 +119,6 @@ pub fn Cursor(comptime keep_literals: bool) type {
 
         pub inline fn literal(c: *Self, byte: u8) void {
             c.b.counts.literal(byte);
-            c.b.split.literal(byte);
             c.keep(byte);
             c.run += 1;
             c.pending += 1;
@@ -150,7 +149,6 @@ pub fn Cursor(comptime keep_literals: bool) type {
         pub inline fn addMatch(c: *Self, length: u32, distance: u32) void {
             const b = c.b;
             b.counts.match(length, distance);
-            b.split.match(length);
             b.seqs[b.n] = .{ .literals = c.run, .length = @intCast(length), .distance = @intCast(distance) };
             b.n += 1;
             c.run = 0;
@@ -158,7 +156,7 @@ pub fn Cursor(comptime keep_literals: bool) type {
         }
 
         /// Whether the literals kept are near their room.
-        inline fn literalsFull(c: *const Self) bool {
+        pub inline fn literalsFull(c: *const Self) bool {
             return keep_literals and c.b.n_lits + literal_slack > c.b.lits.len;
         }
 
@@ -187,11 +185,18 @@ pub fn Cursor(comptime keep_literals: bool) type {
             if (c.pending < split.check_every) return false;
             c.pending = 0;
             const len: usize = @intCast(@as(isize, @intCast(p)) - b.start);
-            if (len >= Builder.min_len and c.remaining(p) >= Builder.min_len and b.split.differs()) {
+            if (len >= Builder.min_len and c.remaining(p) >= Builder.min_len and c.differs()) {
                 c.endBlock(p);
                 return keep_literals;
             }
             return false;
+        }
+
+        /// Whether the symbols since the last comparison differ from the
+        /// block's before them.
+        inline fn differs(c: *Self) bool {
+            c.b.split.observeCounts(&c.b.counts.litlen);
+            return c.b.split.differs();
         }
 
         /// `maybeEnd` after a literal: only once enough symbols are pending.
@@ -281,27 +286,68 @@ pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype
 }
 
 /// Levels 2-3 (and any level's parse under `filtered`, with `min_len` 6).
+/// The block in the making is held in locals between the points that look at
+/// it; the builder and cursor are brought up to date there.
 pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
+    const keeps = @TypeOf(c.*).keeps_literals;
     const n = h.in.len;
-    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else n;
-    var p = c.b.p;
-    defer c.b.p = p;
+    const stop = if (keeps) c.stop() else n;
+    const b = c.b;
+    var p = b.p;
+    var count = b.n;
+    var run = c.run;
+    var pending = c.pending;
+    defer {
+        b.p = p;
+        b.n = count;
+        c.run = run;
+        c.pending = pending;
+    }
     while (p < stop) {
         const max = maxLen(n, p);
         if (max >= 4) {
             var distance: u32 = 0;
             const len = hc.longestMatch(dictionary, full_window, h, @intCast(p), 2, max, params.nice, params.depth, &distance);
             if (worthIt(len, distance, min_len)) {
-                c.addMatch(len, distance);
+                b.counts.match(len, distance);
+                b.seqs[count] = .{ .literals = run, .length = @intCast(len), .distance = @intCast(distance) };
+                count += 1;
+                run = 0;
+                pending += 1;
                 skipInside(full_window, hc, h, p, len);
                 p += len;
-                if (c.maybeEnd(p)) return;
+                if (count >= b.seqs.len or pending >= split.check_every or (keeps and c.literalsFull())) {
+                    b.n = count;
+                    c.run = run;
+                    c.pending = pending;
+                    const ended = c.maybeEnd(p);
+                    count = b.n;
+                    run = c.run;
+                    pending = c.pending;
+                    if (ended) return;
+                }
                 continue;
             }
         }
-        c.literal(h.in[p]);
+        const byte = h.in[p];
+        b.counts.literal(byte);
+        if (keeps) {
+            b.lits[b.n_lits] = byte;
+            b.n_lits += 1;
+        }
+        run += 1;
+        pending += 1;
         p += 1;
-        if (c.maybeEndLiteral(p)) return;
+        if (pending >= split.check_every) {
+            b.n = count;
+            c.run = run;
+            c.pending = pending;
+            const ended = c.maybeEnd(p);
+            count = b.n;
+            run = c.run;
+            pending = c.pending;
+            if (ended) return;
+        }
     }
 }
 
@@ -324,62 +370,122 @@ inline fn score(len: u32, distance: u32) i32 {
 
 /// Levels 4-9: a match is held while the next position is searched, with
 /// half the depth; a clearly better match there makes the held position a
-/// literal. A match of `nice` bytes is taken at once.
+/// literal. A match of `nice` bytes is taken at once. The block in the making
+/// is held in locals between the points that look at it, as `greedy` does.
 pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
+    const keeps = @TypeOf(c.*).keeps_literals;
     const n = h.in.len;
-    const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else n;
+    const stop = if (keeps) c.stop() else n;
     const look = @max(1, params.depth / 2);
-    var p = c.b.p;
-    var cur_len: u32 = if (@TypeOf(c.*).keeps_literals) c.b.held_len else 0;
-    var cur_dist: u32 = if (@TypeOf(c.*).keeps_literals) c.b.held_dist else 0;
+    const b = c.b;
+    var p = b.p;
+    var count = b.n;
+    var run = c.run;
+    var pending = c.pending;
+    var cur_len: u32 = if (keeps) b.held_len else 0;
+    var cur_dist: u32 = if (keeps) b.held_dist else 0;
     defer {
-        c.b.p = p;
-        if (@TypeOf(c.*).keeps_literals) {
-            c.b.held_len = cur_len;
-            c.b.held_dist = cur_dist;
+        b.p = p;
+        b.n = count;
+        c.run = run;
+        c.pending = pending;
+        if (keeps) {
+            b.held_len = cur_len;
+            b.held_dist = cur_dist;
         }
     }
     while (p < stop or cur_len != 0) {
         if (cur_len == 0) {
             if (maxLen(n, p) < 4) {
-                c.literal(h.in[p]);
+                lazyLiteral(keeps, b, h.in[p]);
+                run += 1;
+                pending += 1;
                 p += 1;
-                if (c.maybeEndLiteral(p)) return;
+                if (pending >= split.check_every) {
+                    b.n = count;
+                    c.run = run;
+                    c.pending = pending;
+                    const ended = c.maybeEnd(p);
+                    count = b.n;
+                    run = c.run;
+                    pending = c.pending;
+                    if (ended) return;
+                }
                 continue;
             }
             cur_len = hc.longestMatch(dictionary, full_window, h, @intCast(p), min_len - 1, maxLen(n, p), params.nice, params.depth, &cur_dist);
             if (!worthIt(cur_len, cur_dist, min_len)) {
                 cur_len = 0;
-                c.literal(h.in[p]);
+                lazyLiteral(keeps, b, h.in[p]);
+                run += 1;
+                pending += 1;
                 p += 1;
-                if (c.maybeEndLiteral(p)) return;
+                if (pending >= split.check_every) {
+                    b.n = count;
+                    c.run = run;
+                    c.pending = pending;
+                    const ended = c.maybeEnd(p);
+                    count = b.n;
+                    run = c.run;
+                    pending = c.pending;
+                    if (ended) return;
+                }
                 continue;
             }
         }
         // Keep a lazy match's lookahead together. Streaming alone may hold
         // it until the next input arrives; whole inputs always finish it.
         while (cur_len < params.nice and p + 1 < n and maxLen(n, p + 1) >= 4) {
-            if (@TypeOf(c.*).keeps_literals and p + 1 >= stop and !c.final) return;
+            if (keeps and p + 1 >= stop and !c.final) return;
             var next_dist: u32 = 0;
             const next_len = hc.longestMatch(dictionary, full_window, h, @intCast(p + 1), cur_len - 1, maxLen(n, p + 1), params.nice, look, &next_dist);
             if (next_len < cur_len or score(next_len, next_dist) - score(cur_len, cur_dist) <= 2) {
-                c.addMatch(cur_len, cur_dist);
+                b.counts.match(cur_len, cur_dist);
+                b.seqs[count] = .{ .literals = run, .length = @intCast(cur_len), .distance = @intCast(cur_dist) };
+                count += 1;
+                run = 0;
+                pending += 1;
                 skipInside(full_window, hc, h, p + 1, cur_len - 1);
                 p += cur_len;
                 cur_len = 0;
                 break;
             }
-            c.literal(h.in[p]);
+            lazyLiteral(keeps, b, h.in[p]);
+            run += 1;
+            pending += 1;
             p += 1;
             cur_len = next_len;
             cur_dist = next_dist;
         } else {
-            c.addMatch(cur_len, cur_dist);
+            b.counts.match(cur_len, cur_dist);
+            b.seqs[count] = .{ .literals = run, .length = @intCast(cur_len), .distance = @intCast(cur_dist) };
+            count += 1;
+            run = 0;
+            pending += 1;
             skipInside(full_window, hc, h, p, cur_len);
             p += cur_len;
             cur_len = 0;
         }
-        if (c.maybeEnd(p)) return;
+        if (count >= b.seqs.len or pending >= split.check_every or (keeps and c.literalsFull())) {
+            b.n = count;
+            c.run = run;
+            c.pending = pending;
+            const ended = c.maybeEnd(p);
+            count = b.n;
+            run = c.run;
+            pending = c.pending;
+            if (ended) return;
+        }
+    }
+}
+
+/// A literal into the block's counts, and its byte kept when the literals
+/// are kept apart.
+inline fn lazyLiteral(comptime keeps: bool, b: *Builder, byte: u8) void {
+    b.counts.literal(byte);
+    if (keeps) {
+        b.lits[b.n_lits] = byte;
+        b.n_lits += 1;
     }
 }
 

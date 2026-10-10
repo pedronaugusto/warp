@@ -10,6 +10,7 @@ test {
     _ = @import("bits");
     _ = @import("match.zig");
     _ = @import("deflate/block.zig");
+    _ = @import("deflate/split.zig");
     _ = @import("testing/decode_test.zig");
     _ = @import("testing/encode_test.zig");
     _ = @import("testing/api_test.zig");

@@ -486,8 +486,18 @@ pub const Engine = struct {
                 parse_.fastest(dictionary, full_window, c, ht, h);
                 if (!@TypeOf(c.*).keeps_literals) e.ht = local;
             },
-            .greedy => parse_.greedy(dictionary, full_window, c, &e.hc, h, params, min_len),
-            .lazy => parse_.lazy(dictionary, full_window, c, &e.hc, h, params, min_len),
+            .greedy => {
+                var local: match.HashChains = if (!@TypeOf(c.*).keeps_literals) e.hc else undefined;
+                const hc = if (@TypeOf(c.*).keeps_literals) &e.hc else &local;
+                parse_.greedy(dictionary, full_window, c, hc, h, params, min_len);
+                if (!@TypeOf(c.*).keeps_literals) e.hc = local;
+            },
+            .lazy => {
+                var local: match.HashChains = if (!@TypeOf(c.*).keeps_literals) e.hc else undefined;
+                const hc = if (@TypeOf(c.*).keeps_literals) &e.hc else &local;
+                parse_.lazy(dictionary, full_window, c, hc, h, params, min_len);
+                if (!@TypeOf(c.*).keeps_literals) e.hc = local;
+            },
             .optimal => @call(.never_inline, optimal.parse, .{ dictionary, full_window, c, e.opt, &e.bt, h, lv.optimal }),
         }
     }
