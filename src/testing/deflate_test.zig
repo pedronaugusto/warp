@@ -176,7 +176,7 @@ test "a long run of literals is looked at every few positions, and the bytes are
     // Noise, prose, the same noise again (within a 2^17 window) and prose.
     const in = try std.mem.concat(gpa, u8, &.{ noise, text, noise[0..30_000], text[0..20_000] });
     defer gpa.free(in);
-    for ([_]u4{ 1, 2, 3, 5, 6, 9 }) |level| for ([_]u4{ 12, 15 }) |window_bits| {
+    for ([_]u4{ 1, 2, 3, 5, 6, 9 }) |level| for ([_]u4{ 9, 12, 15 }) |window_bits| {
         const options: Deflate.Options = .{ .level = level, .window_bits = window_bits, .container = .zlib };
         const whole = try compressFed(gpa, in, options, .{});
         defer gpa.free(whole);
