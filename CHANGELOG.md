@@ -20,9 +20,9 @@ All notable changes to warp are documented here. The format follows
   first build of the loop). AArch64 is unchanged.
 - Level 1 finds no match of three bytes and keeps no table for them: the lookup at every
   position without a longer match cost 5 to 8% of the level's speed (more on data that
-  mostly has no matches) for 0.45% of Silesia's output and 0.37% of the captured
-  corpus's, none of the git source tar's. Level 1 still compresses Silesia and the tar
-  to fewer bytes than the reference's level 1 does, and the size gate is unchanged.
+  mostly has no matches) for 0.45% of Silesia's output, 0.37% of the captured corpus's
+  and 0.002% of the git source tar's. Level 1 still compresses Silesia and the tar to
+  fewer bytes than the reference's level 1 does, and the size gate is unchanged.
 - Read the block splitter's observations from the symbol counts the parse keeps, when
   a check is due, instead of making them one literal and match at a time. The blocks,
   and so the bytes, are unchanged at every level; levels 2 to 9 run 1 to 3% faster.
