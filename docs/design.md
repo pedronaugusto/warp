@@ -29,8 +29,14 @@ match tables, sequences, entropy and virtual positions in initialization memory.
 DEFLATE optimal-parser state occupies that memory only when the configured levels
 can use it; lower levels retain no unused optimal costs or observations.
 Whole-input parsers retain their cursor across block boundaries, keep counts
-and split observations in a local builder, and use one input bound. Dispatch
-stays beside that builder so its stores do not alias matchfinder tables. Lazy
+in a local builder, and use one input bound; the greedy and lazy parsers hold
+the sequence count, the literal run and the check counter in locals between
+checks. The block splitter's observations are read from the counts when a check
+is due, not made symbol by symbol. After 128 literals in a row without a match a
+parser searches every second position, and so on to every eighth, and takes the
+positions between as literals; the run belongs to the builder, so a stream
+comes out the same however its input arrives. Dispatch stays beside the builder
+so its stores do not alias matchfinder tables. Lazy
 lookahead stays in one loop; streaming alone retains a held match between calls
 and yields at block boundaries to drain output. Both use the same match
 selection and block writer. The optimal parser stays out of ordinary dispatch
@@ -43,8 +49,12 @@ the fast loop; ordinary DEFLATE distances are already bounded to 32 KiB by
 the alphabet. The register-heavy loop stays out of its resumable phase caller. Header
 length decoding keeps its index local and saves progress on every return,
 including a truncated unit. Source commits independently preserve input bits.
-The output adapter borrows the fast loop’s existing stream argument rather than
-carrying a second pointer to the same state through its call boundary. Smaller streaming windows retain explicit distance checks.
+The fast loop makes no call: a refused stream or a match into the history ends
+it with what is left to do, which follows with the state written back, so
+nothing the loop holds is kept alive across a call (on x86-64 it would be spilled
+to the stack every round). The output adapter says whether a match reaches the
+output, copies it, or copies it from the history out of line. Smaller streaming
+windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 
