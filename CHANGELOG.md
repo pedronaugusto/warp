@@ -7,6 +7,10 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Find the cheapest run items of a dynamic header in one pass, with a sliding window
+  over the 11 to 138 zeros an item may cover, rather than trying every count at
+  every position, and end empty input at levels 10 to 12 without a path search. The
+  bytes are unchanged; small blocks at those levels take a third of the time.
 - `zig build check-sizes` reports, per level, the median, 99th percentile and worst
   of each captured input's size over the size recorded for it. The gate is unchanged.
 - Choose a long-distance anchor's bucket from the whole 64-byte window, not its

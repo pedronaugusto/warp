@@ -248,7 +248,12 @@ pub fn parse(comptime dictionary: bool, comptime full_window: bool, c: anytype, 
 /// end of the input.
 pub fn finish(c: anytype, o: *State, h: match.History, final: bool, params: Params) void {
     const p = c.b.p;
-    if (!final and @as(isize, @intCast(p)) == c.b.start) return;
+    if (@as(isize, @intCast(p)) == c.b.start) {
+        // Nothing is left to parse: the end is an empty block, which has no
+        // path to find.
+        if (final) c.emit(p, true);
+        return;
+    }
     mergeLens(o);
     close(c, o, h, p, p, final, params);
 }

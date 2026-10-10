@@ -212,29 +212,13 @@ const min_header_cost = 3 * 4 + 2;
 fn optimizeHeader(header: *Header, lens: []const u8) void {
     var pass: usize = 0;
     while (pass < 3) : (pass += 1) {
-        var cost: [321]u32 = undefined;
         var item: [320]u16 = undefined;
         var take: [320]u8 = undefined;
-        cost[lens.len] = 0;
-        var i = lens.len;
-        while (i > 0) {
-            i -= 1;
-            const l = lens[i];
-            cost[i] = preCost(header, l) + cost[i + 1];
-            item[i] = l;
-            take[i] = 1;
-            var run: usize = 1;
-            while (i + run < lens.len and lens[i + run] == l and run < 138) run += 1;
-            if (i != 0 and lens[i - 1] == l) considerRun(header, &cost, &item, &take, i, run, 16, 3, 6, 2);
-            if (l == 0) {
-                considerRun(header, &cost, &item, &take, i, run, 17, 3, 10, 3);
-                considerRun(header, &cost, &item, &take, i, run, 18, 11, 138, 7);
-            }
-        }
+        cheapestItems(header, lens, &item, &take);
         var candidate = header.*;
         var counts: [19]u32 = @splat(0);
         candidate.n_items = 0;
-        i = 0;
+        var i: usize = 0;
         while (i < lens.len) {
             candidate.items[candidate.n_items] = item[i];
             candidate.n_items += 1;
@@ -255,14 +239,71 @@ fn preCost(header: *const Header, symbol: usize) u32 {
     return if (n == 0) 8 else n;
 }
 
-fn considerRun(header: *const Header, cost: *[321]u32, items: *[320]u16, takes: *[320]u8, at: usize, run: usize, symbol: u16, min: usize, max: usize, extra: u32) void {
-    if (run < min) return;
-    for (min..@min(run, max) + 1) |n| {
-        const price = preCost(header, symbol) + extra + cost[at + n];
-        if (price < cost[at]) {
-            cost[at] = price;
-            items[at] = symbol | @as(u16, @intCast(n - min)) << 8;
-            takes[at] = @intCast(n);
+/// For each position of `lens`, the item that starts the cheapest coding of
+/// everything from there on, and the lengths it covers. Items are a length,
+/// 16 (the last length 3-6 times), 17 (3-10 zeros) or 18 (11-138 zeros), each
+/// priced by `header.pre_lens`; of equal prices the first tried wins: the
+/// length, then 16, 17, 18, each with the fewest repeats.
+fn cheapestItems(header: *const Header, lens: []const u8, item: *[320]u16, take: *[320]u8) void {
+    var cost: [321]u32 = undefined;
+    cost[lens.len] = 0;
+    const price16 = preCost(header, 16) + 2;
+    const price17 = preCost(header, 17) + 3;
+    const price18 = preCost(header, 18) + 7;
+    // The zeros of the run being priced that could end an 18, as positions
+    // with their costs: the ones past the 11th still to come and not past
+    // the 138th, the cheapest in front. A newer (nearer) position replaces
+    // an older one that costs no less.
+    var window: [128]struct { at: u16, cost: u32 } = undefined;
+    var front: usize = 0;
+    var back: usize = 0;
+    var run: usize = 0;
+    var i = lens.len;
+    while (i > 0) {
+        i -= 1;
+        const l = lens[i];
+        run = if (i + 1 < lens.len and lens[i + 1] == l) run + 1 else 1;
+        cost[i] = preCost(header, l) + cost[i + 1];
+        item[i] = l;
+        take[i] = 1;
+        if (i != 0 and lens[i - 1] == l and run >= 3) {
+            for (3..@min(run, 6) + 1) |n| {
+                const price = price16 + cost[i + n];
+                if (price < cost[i]) {
+                    cost[i] = price;
+                    item[i] = 16 | @as(u16, @intCast(n - 3)) << 8;
+                    take[i] = @intCast(n);
+                }
+            }
+        }
+        if (l != 0) continue;
+        if (run >= 3) for (3..@min(run, 10) + 1) |n| {
+            const price = price17 + cost[i + n];
+            if (price < cost[i]) {
+                cost[i] = price;
+                item[i] = 17 | @as(u16, @intCast(n - 3)) << 8;
+                take[i] = @intCast(n);
+            }
+        };
+        if (run == 1) {
+            front = 0;
+            back = 0;
+        }
+        while (back > front and window[front & 127].at > i + 138) front += 1;
+        if (run >= 11) {
+            const at = i + 11;
+            while (back > front and window[(back - 1) & 127].cost >= cost[at]) back -= 1;
+            window[back & 127] = .{ .at = @intCast(at), .cost = cost[at] };
+            back += 1;
+        }
+        if (back > front) {
+            const best = window[front & 127];
+            const price = price18 + best.cost;
+            if (price < cost[i]) {
+                cost[i] = price;
+                item[i] = 18 | @as(u16, @intCast(best.at - i - 11)) << 8;
+                take[i] = @intCast(best.at - i);
+            }
         }
     }
 }
@@ -611,6 +652,76 @@ test "a dynamic cost that cannot beat the bound is not refined, and is never bel
             try std.testing.expect(cost >= exact);
             // Whatever is below the bound is the exact cost.
             if (cost < beat or exact < beat) try std.testing.expectEqual(exact, cost);
+        }
+    }
+}
+
+/// The search `cheapestItems` replaces, which tries every repeat count at every position.
+fn cheapestItemsByTrial(header: *const Header, lens: []const u8, item: *[320]u16, take: *[320]u8) void {
+    var cost: [321]u32 = undefined;
+    cost[lens.len] = 0;
+    var i = lens.len;
+    while (i > 0) {
+        i -= 1;
+        const l = lens[i];
+        cost[i] = preCost(header, l) + cost[i + 1];
+        item[i] = l;
+        take[i] = 1;
+        var run: usize = 1;
+        while (i + run < lens.len and lens[i + run] == l and run < 138) run += 1;
+        const symbols = [_]struct { symbol: u16, min: usize, max: usize, extra: u32 }{
+            .{ .symbol = 16, .min = 3, .max = 6, .extra = 2 },
+            .{ .symbol = 17, .min = 3, .max = 10, .extra = 3 },
+            .{ .symbol = 18, .min = 11, .max = 138, .extra = 7 },
+        };
+        for (symbols) |r| {
+            if (r.symbol == 16 and !(i != 0 and lens[i - 1] == l)) continue;
+            if (r.symbol != 16 and l != 0) continue;
+            if (run < r.min) continue;
+            for (r.min..@min(run, r.max) + 1) |n| {
+                const price = preCost(header, r.symbol) + r.extra + cost[i + n];
+                if (price < cost[i]) {
+                    cost[i] = price;
+                    item[i] = r.symbol | @as(u16, @intCast(n - r.min)) << 8;
+                    take[i] = @intCast(n);
+                }
+            }
+        }
+    }
+}
+
+test "the cheapest header items are what trying every repeat count finds" {
+    var prng: std.Random.DefaultPrng = .init(21);
+    const random = prng.random();
+    var header: Header = undefined;
+    var lens: [316]u8 = undefined;
+    for (0..400) |round| {
+        for (&header.pre_lens) |*l| l.* = random.uintLessThan(u8, 8);
+        // Lengths in runs of every size, zeros most of all.
+        var at: usize = 0;
+        const total = 258 + random.uintLessThan(usize, 58);
+        while (at < total) {
+            const value: u8 = if (random.uintLessThan(u8, 3) == 0) random.uintLessThan(u8, 16) else 0;
+            const run = switch (round % 3) {
+                0 => 1 + random.uintLessThan(usize, 12),
+                1 => 1 + random.uintLessThan(usize, 160),
+                else => 1 + random.uintLessThan(usize, 4),
+            };
+            for (lens[at..@min(total, at + run)]) |*l| l.* = value;
+            at += run;
+        }
+        var item: [320]u16 = undefined;
+        var take: [320]u8 = undefined;
+        var want_item: [320]u16 = undefined;
+        var want_take: [320]u8 = undefined;
+        cheapestItems(&header, lens[0..total], &item, &take);
+        cheapestItemsByTrial(&header, lens[0..total], &want_item, &want_take);
+        // Items are read from the front by their lengths, so those must agree.
+        var i: usize = 0;
+        while (i < total) {
+            try std.testing.expectEqual(want_item[i], item[i]);
+            try std.testing.expectEqual(want_take[i], take[i]);
+            i += take[i];
         }
     }
 }
