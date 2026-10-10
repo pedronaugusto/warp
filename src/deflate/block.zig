@@ -124,8 +124,11 @@ const Header = struct {
 const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
 
 /// The dynamic code's lengths for `counts`, its header and its cost in bits;
-/// `codewords` makes the codewords.
-fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_header: bool) u64 {
+/// `codewords` makes the codewords. A cost of `beat` or more is not made
+/// exact: the caller has a cheaper choice, and only the header is left to
+/// refine, which can save no more than its own cost less the fewest bits a
+/// header takes.
+fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_header: bool, beat: u64) u64 {
     var lit_counts = counts.litlen;
     var dist_counts: [32]u32 = @splat(0);
     @memcpy(dist_counts[0..dist_symbols], &counts.dist);
@@ -192,9 +195,17 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_hea
     while (hclen > 4 and header.pre_lens[precode_order[hclen - 1]] == 0) hclen -= 1;
     header.hclen = @intCast(hclen);
 
-    if (optimize_header and header.n_items > 16) optimizeHeader(header, lens[0..total]);
-    return 14 + headerCost(header) + dataCost(counts, code);
+    const data = dataCost(counts, code);
+    if (optimize_header and header.n_items > 16) {
+        const unrefined = headerCost(header);
+        if (14 + unrefined + data -| (unrefined -| min_header_cost) < beat) optimizeHeader(header, lens[0..total]);
+    }
+    return 14 + headerCost(header) + data;
 }
+
+/// The fewest bits any header takes after its 14 fixed ones: four code-length
+/// code lengths of three bits, and the two items that 258 lengths need.
+const min_header_cost = 3 * 4 + 2;
 
 /// Price the header's run symbols under its current code, then rebuild
 /// that code. Keep only an exact improvement, including HCLEN's cost.
@@ -280,7 +291,7 @@ pub fn dynamicLengths(counts_in: *const Counts) Lengths {
     counts.litlen[end_of_block] += 1;
     var code: Code = undefined;
     var header: Header = undefined;
-    const cost = dynamicCode(&counts, &code, &header, true);
+    const cost = dynamicCode(&counts, &code, &header, true, std.math.maxInt(u64));
     return .{ .litlen = code.litlen_lens, .dist = code.dist_lens, .cost = cost };
 }
 
@@ -373,13 +384,20 @@ pub const Data = struct {
 /// `tail` literals; the cheapest kind `kinds` allows for `counts`, which
 /// do not include the end of the block.
 pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []const Sequence, tail: u32, counts_in: *const Counts, final: bool, kinds: Kinds) void {
+    if (kinds == .stored_only) return writeStored(w, data.raw.?, final);
+    // A block with nothing in it is the fixed code's end of block: no other
+    // block is as short.
+    if (seqs.len == 0 and tail == 0) {
+        w.add(@as(u64, @intFromBool(final)) | 2, 3);
+        writeData(interleaved, w, data.bytes, seqs, tail, &fixed);
+        return;
+    }
     var counts = counts_in.*;
     counts.litlen[end_of_block] += 1;
-    if (kinds == .stored_only) return writeStored(w, data.raw.?, final);
     var code: Code = undefined;
     var header: Header = undefined;
     const fixed_cost = 3 + dataCost(&counts, &fixed);
-    const dynamic_cost = if (kinds == .any or kinds == .optimal) 3 + dynamicCode(&counts, &code, &header, kinds == .optimal) else std.math.maxInt(u64);
+    const dynamic_cost = if (kinds == .any or kinds == .optimal) 3 + dynamicCode(&counts, &code, &header, kinds == .optimal, fixed_cost - 3) else std.math.maxInt(u64);
     if (data.raw) |raw| {
         if (storedCost(raw.len, w.bitPosition()) < @min(fixed_cost, dynamic_cost)) return writeStored(w, raw, final);
     }
@@ -555,12 +573,44 @@ test "refined dynamic header cost matches its serialized bits" {
         counts.litlen[end_of_block] += 1;
         var code: Code = undefined;
         var header: Header = undefined;
-        const expected = dynamicCode(&counts, &code, &header, true);
+        const expected = dynamicCode(&counts, &code, &header, true, std.math.maxInt(u64));
         codewords(&code, &header);
         var buffer: [2048]u8 = undefined;
         var writer: bits.Writer = .init(&buffer, 0);
         writeHeader(&writer, &header);
         writeData(false, &writer, input, &.{}, @intCast(input.len), &code);
         try std.testing.expectEqual(expected, writer.bitPosition());
+    }
+}
+
+test "a block with nothing in it is the fixed code's end of block, whatever may be chosen" {
+    for ([_]Kinds{ .any, .optimal, .no_dynamic }) |kinds| {
+        for ([_]bool{ true, false }) |final| {
+            var buffer: [16]u8 = undefined;
+            var writer: bits.Writer = .init(&buffer, 0);
+            const counts: Counts = .{};
+            write(false, &writer, .{ .bytes = &.{}, .raw = &.{} }, &.{}, 0, &counts, final, kinds);
+            writer.alignToByte();
+            try std.testing.expectEqualSlices(u8, &.{ if (final) 3 else 2, 0 }, buffer[0..writer.at]);
+        }
+    }
+}
+
+test "a dynamic cost that cannot beat the bound is not refined, and is never below the exact one" {
+    for (0..16) |seed| {
+        const input = try gen.alloc(std.testing.allocator, .text, seed, 600 + 40 * seed);
+        defer std.testing.allocator.free(input);
+        var counts: Counts = .{};
+        for (input) |byte| counts.literal(byte);
+        counts.litlen[end_of_block] += 1;
+        var code: Code = undefined;
+        var header: Header = undefined;
+        const exact = dynamicCode(&counts, &code, &header, true, std.math.maxInt(u64));
+        for ([_]u64{ 0, exact -| 40, exact -| 1, exact, exact + 1, exact + 40 }) |beat| {
+            const cost = dynamicCode(&counts, &code, &header, true, beat);
+            try std.testing.expect(cost >= exact);
+            // Whatever is below the bound is the exact cost.
+            if (cost < beat or exact < beat) try std.testing.expectEqual(exact, cost);
+        }
     }
 }

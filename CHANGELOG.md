@@ -7,6 +7,8 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Write an empty DEFLATE block without weighing dynamic codes, and refine a
+  dynamic header only when it could still win the block. The bytes are unchanged.
 - Select row candidates in 16-entry Zstandard rows with a narrowed compare
   on AArch64; the candidates and their order are unchanged.
 - Fill Zstandard Huffman decoding tables weight by weight from symbols sorted by
