@@ -269,6 +269,10 @@ fn decodeAllocationFailures(gpa: std.mem.Allocator) !void {
     try testing.expectEqual(allocations, counter.allocations);
 }
 
+fn canceledDecompression(io: std.Io, p: *zstd.parallel.Decompressor, encoded: []const u8, decoded: []u8) !void {
+    try testing.expectError(error.Canceled, p.decompress(io, encoded, decoded, .{}));
+}
+
 test "zstd parallel decode: exact storage, allocation failures and canceled workers" {
     try testing.checkAllAllocationFailures(testing.allocator, decodeAllocationFailures, .{});
     const gpa = testing.allocator;
@@ -283,9 +287,20 @@ test "zstd parallel decode: exact storage, allocation failures and canceled work
     const n = try c.compress(input, encoded, .{});
     var p = try zstd.parallel.Decompressor.init(gpa, .{});
     defer p.deinit();
-    const fio = try shakedown.FaultIo.init(gpa, testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }} });
-    defer fio.deinit();
-    try testing.expectError(error.Canceled, p.decompress(fio.io(), encoded[0..n], decoded, .{}));
+    // Deferred starts keep the workers outstanding at the injected
+    // cancellation: a native scheduler may finish them before Group.await,
+    // which then bypasses the Io call.
+    const sim = try shakedown.Sim.init(gpa, .{
+        .async_start = .deferred,
+        .faults = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }},
+    });
+    defer sim.deinit();
+    switch (sim.run(canceledDecompression, .{ sim.io(), &p, encoded[0..n], decoded })) {
+        .finished => {},
+        .failed => |err| return err,
+        else => return error.UnfinishedCancellation,
+    }
+    try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.groupAwait));
     _ = try p.decompress(testing.io, encoded[0..n], decoded, .{});
     try testing.expectEqualSlices(u8, input, decoded);
     try testing.expectError(error.InvalidOptions, zstd.parallel.Decompressor.init(gpa, .{ .concurrency = 0 }));
@@ -327,17 +342,32 @@ test "zstd parallel seekable: independent dictionary frames, reader parity and c
     }
 }
 
+fn canceledSeekable(io: std.Io, p: *zstd.parallel.Compressor, records: []zstd.seekable.Record, output: []u8) !void {
+    var sink: std.Io.Writer = .fixed(output);
+    try testing.expectError(error.Canceled, p.writeSeekable(io, "four frames of borrowed content", &sink, records, 8, false));
+}
+
 test "zstd parallel seekable: cancellation, output errors, empty input and reuse" {
     const gpa = testing.allocator;
     var p = try zstd.parallel.Compressor.init(gpa, .{ .job_len = 128, .concurrency = 3, .tuning = .{ .window_log = 10 } });
     defer p.deinit();
-    const fio = try shakedown.FaultIo.init(gpa, testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }} });
-    defer fio.deinit();
     var records: [4]zstd.seekable.Record = undefined;
     var output: [4096]u8 = undefined;
-    var sink: std.Io.Writer = .fixed(&output);
-    try testing.expectError(error.Canceled, p.writeSeekable(fio.io(), "four frames of borrowed content", &sink, &records, 8, false));
-    sink = .fixed(output[0..0]);
+    // Deferred starts keep the frames outstanding at the injected
+    // cancellation: a native scheduler may finish them before Group.await,
+    // which then bypasses the Io call.
+    const sim = try shakedown.Sim.init(gpa, .{
+        .async_start = .deferred,
+        .faults = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }},
+    });
+    defer sim.deinit();
+    switch (sim.run(canceledSeekable, .{ sim.io(), &p, &records, &output })) {
+        .finished => {},
+        .failed => |err| return err,
+        else => return error.UnfinishedCancellation,
+    }
+    try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.groupAwait));
+    var sink: std.Io.Writer = .fixed(output[0..0]);
     try testing.expectError(error.WriteFailed, p.writeSeekable(testing.io, "content", &sink, &records, 8, false));
     for ([_]bool{ true, false }) |stream| {
         sink = .fixed(&output);
