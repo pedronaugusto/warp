@@ -8,10 +8,11 @@ const HostedOptions = struct {
     single_integrated: bool,
 };
 
-pub fn build(b: *std.Build) !void {
-    // lazyImport compares every package of the dependency tree at comptime;
-    // a large tree runs past the default quota of 1000 branches.
-    @setEvalBranchQuota(100_000);
+/// What a project that depends on warp builds: the `warp` module and the codec
+/// modules `checksums`, `deflate` and `zstd`, the library, `libz` with `-Dc-abi`,
+/// and `addCompressedAsset` for a build that embeds a compressed file. The
+/// tests, checks, benchmarks and gate are `dev`'s.
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const package = packageModules(b, target, optimize);
@@ -20,63 +21,78 @@ pub fn build(b: *std.Build) !void {
     b.modules.put(b.allocator, "checksums", package.checksum) catch @panic("OOM");
     b.modules.put(b.allocator, "deflate", package.deflate) catch @panic("OOM");
     b.modules.put(b.allocator, "zstd", package.zstd) catch @panic("OOM");
-    const library = b.addLibrary(.{ .name = "warp", .root_module = module });
-    b.installArtifact(library);
-    var c_library: ?*std.Build.Step.Compile = null;
+    b.installArtifact(b.addLibrary(.{ .name = "warp", .root_module = module }));
     if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
         const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
         addShared(b, c_module, target, optimize);
-        const artifact = b.addLibrary(.{ .name = "z", .root_module = c_module });
-        b.installArtifact(artifact);
-        c_library = artifact;
+        b.installArtifact(b.addLibrary(.{ .name = "z", .root_module = c_module }));
     }
+}
 
-    // Everything below is this repository's own: a project depending on
-    // warp builds the module and nothing else, and fetches nothing for it.
-    if (b.pkg_hash.len != 0) return;
+/// warp's development: its tests, checks, examples and benchmarks under
+/// preflight's gate. Run through bay.
+pub fn dev(b: *std.Build, tools: type) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const test_filter = b.option([]const u8, "test-filter", "Select tests by name");
+    const c_abi = b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false;
+    // Declare measurement settings up front, as options of this build.
+    const hosted: HostedOptions = .{
+        .phase = b.option([]const u8, "hosted-phase", "Measurement source phase") orelse "candidate",
+        .control = b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false,
+        .commit = b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree",
+        .single_previous = b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false,
+        .single_integrated = b.option(bool, "hosted-single-integrated", "Compile one-codec hosted driver against integrated main") orelse false,
+    };
+    const hosted_previous_main = b.option(bool, "hosted-previous-main", "Compare indicative rows with pinned previous main") orelse false;
+    const package = b.dependency("warp", .{ .target = target, .optimize = optimize, .@"c-abi" = c_abi });
+    const p = package.builder;
 
-    const asset = compressedAsset(b, b, .{ .source = b.path("README.md"), .name = "README.gz" });
+    const module = package.module("warp");
+    const library = package.artifact("warp");
+
+    const asset = compressedAsset(b, p, .{ .source = p.path("README.md"), .name = "README.gz" });
     const asset_test_module = b.createModule(.{
-        .root_source_file = b.path("ci/asset.zig"),
+        .root_source_file = p.path("ci/asset.zig"),
         .target = b.graph.host,
         .optimize = .safe,
-        .imports = &.{.{ .name = "warp", .module = warpModule(b, b.graph.host, .safe) }},
+        .imports = &.{.{ .name = "warp", .module = warpModule(p, b.graph.host, .safe) }},
     });
     asset_test_module.addAnonymousImport("asset", .{ .root_source_file = asset });
-    asset_test_module.addAnonymousImport("original", .{ .root_source_file = b.path("README.md") });
+    asset_test_module.addAnonymousImport("original", .{ .root_source_file = p.path("README.md") });
     const asset_test = b.addExecutable(.{ .name = "check-assets", .root_module = asset_test_module });
     b.step("check-assets", "Generate and verify an embedded compressed asset").dependOn(&b.addRunArtifact(asset_test).step);
 
     const module_check = b.addExecutable(.{
         .name = "check-modules",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("ci/modules.zig"),
+            .root_source_file = p.path("ci/modules.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "warp", .module = package.warp },       .{ .name = "checksums", .module = package.checksum },
-                .{ .name = "deflate", .module = package.deflate }, .{ .name = "zstd", .module = package.zstd },
+                .{ .name = "warp", .module = module },                       .{ .name = "checksums", .module = package.module("checksums") },
+                .{ .name = "deflate", .module = package.module("deflate") }, .{ .name = "zstd", .module = package.module("zstd") },
             },
         }),
     });
-    const filters = if (b.option([]const u8, "test-filter", "Select tests by name")) |filter| &.{filter} else &.{};
+    const filters = if (test_filter) |filter| &.{filter} else &.{};
     const test_module = b.createModule(.{
-        .root_source_file = b.path("src/tests.zig"),
+        .root_source_file = p.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
-    addShared(b, test_module, target, optimize);
+    addShared(p, test_module, target, optimize);
     // The differential corpus, captured once from other implementations
     // (pedronaugusto/trials, warp/), and the inputs it names.
     for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
-        test_module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = b.path(b.fmt("testdata/{s}.corpus", .{name})) });
+        test_module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = p.path(b.fmt("testdata/{s}.corpus", .{name})) });
     }
-    test_module.addAnonymousImport("gen", .{ .root_source_file = b.path("bench/gen.zig") });
+    test_module.addAnonymousImport("gen", .{ .root_source_file = p.path("bench/gen.zig") });
     const tests = b.addTest(.{ .name = "warp-tests", .filters = filters, .root_module = test_module });
     const test_step = b.step("test", "Run the tests and example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
     // Separate module suites are real test roots for the build-derived lint facts.
-    for ([_]*std.Build.Module{ package.checksum, package.deflate.import_table.get("bits").?, package.checksum.import_table.get("crc").? }) |root| {
+    for ([_]*std.Build.Module{ package.module("checksums"), package.module("deflate").import_table.get("bits").?, package.module("checksums").import_table.get("crc").? }) |root| {
         const suite = b.addTest(.{ .root_module = root, .filters = filters });
         test_step.dependOn(&b.addRunArtifact(suite).step);
     }
@@ -84,7 +100,7 @@ pub fn build(b: *std.Build) !void {
     // of their own; a test runs only from its module's root, so each is one.
     for ([_][]const u8{ "bench/gen.zig", "bench/baseline/baseline.zig" }) |source| {
         const suite = b.addTest(.{
-            .root_module = b.createModule(.{ .root_source_file = b.path(source), .target = target, .optimize = optimize }),
+            .root_module = b.createModule(.{ .root_source_file = p.path(source), .target = target, .optimize = optimize }),
             .filters = filters,
         });
         test_step.dependOn(&b.addRunArtifact(suite).step);
@@ -95,12 +111,12 @@ pub fn build(b: *std.Build) !void {
     check.dependOn(&tests.step);
     check.dependOn(&module_check.step);
     check.dependOn(&library.step);
-    if (c_library) |artifact| check.dependOn(&artifact.step);
+    if (c_abi) check.dependOn(&package.artifact("z").step);
 
     const cli = b.addExecutable(.{
         .name = "warp",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/cli.zig"),
+            .root_source_file = p.path("bench/cli.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "warp", .module = module }},
@@ -114,7 +130,7 @@ pub fn build(b: *std.Build) !void {
 
     const example = b.addExecutable(.{
         .name = "usage",
-        .root_module = b.createModule(.{ .root_source_file = b.path("examples/usage.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "warp", .module = module }} }),
+        .root_module = b.createModule(.{ .root_source_file = p.path("examples/usage.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "warp", .module = module }} }),
     });
     const examples = b.step("examples", "Build and run the usage example");
     examples.dependOn(&b.addRunArtifact(example).step);
@@ -123,7 +139,7 @@ pub fn build(b: *std.Build) !void {
 
     const zstd_cli = b.addExecutable(.{
         .name = "zstd-cli",
-        .root_module = b.createModule(.{ .root_source_file = b.path("bench/cli/zstd.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "warp", .module = module }} }),
+        .root_module = b.createModule(.{ .root_source_file = p.path("bench/cli/zstd.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "warp", .module = module }} }),
     });
     const zstd_cli_run = b.addRunArtifact(zstd_cli);
     zstd_cli_run.stdio = .inherit;
@@ -143,10 +159,10 @@ pub fn build(b: *std.Build) !void {
         const object = b.addObject(.{
             .name = leg.name,
             .root_module = b.createModule(.{
-                .root_source_file = b.path("ci/freestanding.zig"),
+                .root_source_file = p.path("ci/freestanding.zig"),
                 .target = leg_target,
                 .optimize = .small,
-                .imports = &.{.{ .name = "warp", .module = warpModule(b, leg_target, .small) }},
+                .imports = &.{.{ .name = "warp", .module = warpModule(p, leg_target, .small) }},
             }),
         });
         b.step(leg.name, b.fmt("Build every public call for {s}", .{@tagName(leg.query.cpu_arch.?)})).dependOn(&object.step);
@@ -160,10 +176,10 @@ pub fn build(b: *std.Build) !void {
     const no_crc = b.addObject(.{
         .name = "check-no-crc",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("ci/freestanding.zig"),
+            .root_source_file = p.path("ci/freestanding.zig"),
             .target = no_crc_target,
             .optimize = .small,
-            .imports = &.{.{ .name = "warp", .module = warpModule(b, no_crc_target, .small) }},
+            .imports = &.{.{ .name = "warp", .module = warpModule(p, no_crc_target, .small) }},
         }),
     });
     const no_crc_step = b.step("check-no-crc", "Build with an explicitly disabled CRC CPU feature");
@@ -176,8 +192,8 @@ pub fn build(b: *std.Build) !void {
         no_crc_target,
     };
     for (abi_targets, 0..) |abi_target, i| {
-        const abi_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = abi_target, .optimize = .small });
-        addShared(b, abi_module, abi_target, .small);
+        const abi_module = b.createModule(.{ .root_source_file = p.path("src/c.zig"), .target = abi_target, .optimize = .small });
+        addShared(p, abi_module, abi_target, .small);
         const object = b.addObject(.{ .name = b.fmt("check-c-abi-{d}", .{i}), .root_module = abi_module });
         abi_check.dependOn(&object.step);
     }
@@ -185,88 +201,72 @@ pub fn build(b: *std.Build) !void {
     b.getInstallStep().dependOn(&tests.step);
     b.getInstallStep().dependOn(&example.step);
 
-    // The test doubles are shakedown's, a lazy dependency only the tests
-    // import. Its error is returned last, so one configure pass asks for it
-    // and for preflight together.
-    // Declare measurement settings before any lazy fetch. The first configure
-    // pass must accept the same options as the pass after dependencies arrive.
-    const hosted: HostedOptions = .{
-        .phase = b.option([]const u8, "hosted-phase", "Measurement source phase") orelse "candidate",
-        .control = b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false,
-        .commit = b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree",
-        .single_previous = b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false,
-        .single_integrated = b.option(bool, "hosted-single-integrated", "Compile one-codec hosted driver against integrated main") orelse false,
-    };
-    var needed: error{LazyDependencyNeeded}!void = {};
+    // The test doubles are shakedown's. warp links no aegis of its own, so
+    // shakedown's is the one in the binary.
+    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
+    test_module.addImport("shakedown", shakedown.module("shakedown"));
     // Manual indicative measurements; ordinary CI compiles without fetching
     // a historical package. The workflow explicitly enables its pinned main.
-    if (b.option(bool, "hosted-previous-main", "Compare indicative rows with pinned previous main") orelse false) {
+    if (hosted_previous_main) {
         if (b.dependencyLazy(if (hosted.single_integrated) "integrated_main" else "previous_main", .{ .target = target, .optimize = .fast })) |previous| {
-            addHostedBench(b, target, previous.module("warp"), true, hosted, check);
-        } else |err| needed = err;
-    } else addHostedBench(b, target, warpModule(b, target, .fast), false, hosted, check);
+            addHostedBench(b, p, target, previous.module("warp"), true, hosted, check);
+        } else |_| {}
+    } else addHostedBench(b, p, target, warpModule(p, target, .fast), false, hosted, check);
 
-    if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize })) |shakedown| {
-        test_module.addImport("shakedown", shakedown.module("shakedown"));
-    } else |err| needed = err;
     const size_module = b.createModule(.{
-        .root_source_file = b.path("ci/sizes.zig"),
+        .root_source_file = p.path("ci/sizes.zig"),
         .target = b.graph.host,
         .optimize = .fast,
-        .imports = &.{.{ .name = "warp", .module = warpModule(b, b.graph.host, .fast) }},
+        .imports = &.{.{ .name = "warp", .module = warpModule(p, b.graph.host, .fast) }},
     });
-    const captured_module = b.createModule(.{ .root_source_file = b.path("src/testing/corpus/data.zig"), .target = b.graph.host, .optimize = .fast });
-    captured_module.addImport("gen", b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = b.graph.host, .optimize = .fast }));
-    captured_module.addAnonymousImport("sizes.corpus", .{ .root_source_file = b.path("testdata/sizes.corpus") });
+    const captured_module = b.createModule(.{ .root_source_file = p.path("src/testing/corpus/data.zig"), .target = b.graph.host, .optimize = .fast });
+    captured_module.addImport("gen", b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = b.graph.host, .optimize = .fast }));
+    captured_module.addAnonymousImport("sizes.corpus", .{ .root_source_file = p.path("testdata/sizes.corpus") });
     size_module.addImport("captured", captured_module);
     const size_gate = b.addExecutable(.{ .name = "check-sizes", .root_module = size_module });
     const size_run = b.addRunArtifact(size_gate);
-    size_run.setCwd(b.path("."));
+    size_run.setCwd(p.path("."));
     size_run.has_side_effects = true;
     b.step("check-sizes", "Check each level's total against the captured limit on every standard corpus").dependOn(&size_run.step);
     check.dependOn(&size_gate.step);
-    // CI wiring. preflight is lazy and only the root build asks for it.
-    if (b.lazyImport(@This(), "preflight")) |preflight| {
-        preflight.addCi(b, .{
-            .tests = test_step,
-            .portable_tests = true,
-            // This ship requires compile-only benchmarks in CI. Their
-            // manual runs and compile dependencies are owned below.
-            .bench = .{
-                .programs = &.{},
-                .imports = benchImports,
-                .target = target,
-                .optimize = optimize,
-            },
+    tools.preflight.addCi(b, p, .{
+        .tests = test_step,
+        .portable_tests = true,
+        // This ship requires compile-only benchmarks in CI. Their
+        // manual runs and compile dependencies are owned below.
+        .bench = .{
+            .programs = &.{},
+            .imports = benchImports,
+            .target = target,
+            .optimize = optimize,
+        },
+    });
+    // addCi can still be discovering its transitive lazy tools. End that
+    // configure pass before using steps it has not installed yet.
+    const bench_step = if (b.top_level_steps.get("bench")) |entry| &entry.step else return;
+    const programs = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "bench", .source = "bench/main.zig" },
+        .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
+    };
+    var previous: ?*std.Build.Step = null;
+    for (programs) |program| {
+        const artifact = b.addExecutable(.{
+            .name = program.name,
+            .root_module = b.createModule(.{ .root_source_file = p.path(program.source), .target = target, .optimize = .fast, .imports = benchImports(b, target, .fast) }),
         });
-        // addCi can still be discovering its transitive lazy tools. Return
-        // that configure pass before using steps it has not installed yet.
-        const bench_step = if (b.top_level_steps.get("bench")) |entry| &entry.step else return error.LazyDependencyNeeded;
-        const programs = [_]struct { name: []const u8, source: []const u8 }{
-            .{ .name = "bench", .source = "bench/main.zig" },
-            .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
-        };
-        var previous: ?*std.Build.Step = null;
-        for (programs) |program| {
-            const artifact = b.addExecutable(.{
-                .name = program.name,
-                .root_module = b.createModule(.{ .root_source_file = b.path(program.source), .target = target, .optimize = .fast, .imports = benchImports(b, target, .fast) }),
-            });
-            check.dependOn(&artifact.step);
-            test_step.dependOn(&artifact.step);
-            bench_step.dependOn(&b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
-            const run = b.addRunArtifact(artifact);
-            run.setCwd(b.tmpPath());
-            run.has_side_effects = true;
-            if (previous) |before| run.step.dependOn(before);
-            previous = &run.step;
-            bench_step.dependOn(&run.step);
-        }
-        // A project that depends on warp by path, with no packages to
-        // fetch: the build a consumer gets.
-        preflight.addConsumerCheck(b, .{ .package = "warp", .program = b.path("ci/consumer.zig") });
+        check.dependOn(&artifact.step);
+        test_step.dependOn(&artifact.step);
+        bench_step.dependOn(&b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
+        const run = b.addRunArtifact(artifact);
+        run.setCwd(b.tmpPath());
+        run.has_side_effects = true;
+        if (previous) |before| run.step.dependOn(before);
+        previous = &run.step;
+        bench_step.dependOn(&run.step);
     }
-    return needed;
+    // A project that depends on warp by path, with no packages to
+    // fetch: the build a consumer gets.
+    tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig") });
 }
 
 /// Public concerns share one instance of the low layers in a compilation.
@@ -356,10 +356,12 @@ fn addKernelModules(b: *std.Build, module: *std.Build.Module, target: std.Build.
 /// its own mode, so a ReleaseFast benchmark over the Debug module would
 /// time the Debug module. The benchmarks also import the generators and
 /// the code warp replaces, copied as it was.
+/// `b` is the development build.
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
-    const warp = warpModule(b, target, optimize);
-    const gen = b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = target, .optimize = optimize });
-    const baseline = b.createModule(.{ .root_source_file = b.path("bench/baseline/baseline.zig"), .target = target, .optimize = optimize });
+    const p = b.dependency("warp", .{ .target = target, .optimize = optimize }).builder;
+    const warp = warpModule(p, target, optimize);
+    const gen = b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = target, .optimize = optimize });
+    const baseline = b.createModule(.{ .root_source_file = p.path("bench/baseline/baseline.zig"), .target = target, .optimize = optimize });
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "warp", .module = warp },
         .{ .name = "gen", .module = gen },
@@ -398,34 +400,32 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
     return output;
 }
 
-fn addHostedBench(b: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, settings: HostedOptions, check: *std.Build.Step) void {
+fn addHostedBench(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, settings: HostedOptions, check: *std.Build.Step) void {
     const runner = b.addExecutable(.{
         .name = "interleave",
-        .root_module = b.createModule(.{ .root_source_file = b.path("bench/interleave.zig"), .target = b.graph.host, .optimize = .fast }),
+        .root_module = b.createModule(.{ .root_source_file = p.path("bench/interleave.zig"), .target = b.graph.host, .optimize = .fast }),
     });
     check.dependOn(&runner.step);
-    const current = warpModule(b, target, .fast);
+    const current = warpModule(p, target, .fast);
     const options = b.addOptions();
     options.addOption(bool, "previous_main", enabled);
     options.addOption([]const u8, "phase", settings.phase);
     options.addOption(bool, "control", settings.control);
     options.addOption([]const u8, "commit", settings.commit);
     const m = b.createModule(.{
-        .root_source_file = b.path("bench/hosted.zig"),
+        .root_source_file = p.path("bench/hosted.zig"),
         .target = target,
         .optimize = .fast,
         .imports = &.{
             .{ .name = "warp", .module = current },
             .{ .name = "previous", .module = if (enabled) previous else current },
-            .{ .name = "gen", .module = b.createModule(.{ .root_source_file = b.path("bench/gen.zig"), .target = target, .optimize = .fast }) },
+            .{ .name = "gen", .module = b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = target, .optimize = .fast }) },
         },
     });
     m.addOptions("options", options);
-    if (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .fast })) |shakedown| {
-        m.addImport("shakedown", shakedown.module("shakedown"));
-    } else |_| return;
+    m.addImport("shakedown", b.dependency("shakedown", .{ .target = target, .optimize = .fast }).module("shakedown"));
     const single = b.createModule(.{
-        .root_source_file = b.path("bench/hosted_single.zig"),
+        .root_source_file = p.path("bench/hosted_single.zig"),
         .target = target,
         .optimize = .fast,
         .imports = &.{

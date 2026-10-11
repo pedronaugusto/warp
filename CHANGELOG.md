@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Breaking
+
+- warp is developed with [bay](https://github.com/pedronaugusto/bay): preflight and shakedown are dev dependencies, and the tests, checks, examples and benchmarks are the development build's (`bay test`, `bay bench`, `bay check-sizes`), and the two pinned earlier revisions of warp that the manual measurements compare against are dev dependencies too. What a project that depends on warp builds is unchanged: the modules, the library, `-Dc-abi` and `addCompressedAsset`.
+
 ### Changed
 
 - Level 1 inserts the positions inside a match four at a time, hashing all four before the
