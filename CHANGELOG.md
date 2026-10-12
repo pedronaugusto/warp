@@ -5,6 +5,12 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-12
+
+### Changed
+
+- Pins aegis 0.1.1, preflight 0.3.4, shakedown 0.2.6 and previous_main 0.1.0.
+
 ## [0.2.0] - 2026-10-12
 
 ### Breaking
