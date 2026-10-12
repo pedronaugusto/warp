@@ -128,11 +128,11 @@ fixtures exercise freestanding, big-endian, 32-bit, CRC-disabled and C-interface
 calls. Size gates compare aggregate totals; single-input tails are reported.
 Benchmarks compile in CI; timing evidence is measured separately.
 
-Manual x86 measurements use `zig build hosted-bench -Dhosted-previous-main=true`
-and the `Indicative x86 measurements` workflow on Linux and Windows (dispatch
-`indicative.yml` on a candidate branch). Its lazy
-benchmark dependencies pin e607c19 and integrated main 491e62b; consumers fetch
-no benchmark code.
+A package cannot pin itself as a baseline: bay builds every revision of the package
+under development from its working tree. A candidate is measured against a release with
+preflight's `bench-ab`, which builds the base from its own checkout, once these programs
+follow preflight's benchmark contract (`shakedown.bench` rows); today they are wired by
+hand in `dev` and print their own tables.
 The workflow builds one-codec executables against those immutable package
 dependencies and the candidate, using the same driver and compiler settings.
 It preserves the candidate source tree during every baseline build.

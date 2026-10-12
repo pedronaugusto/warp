@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- The hosted indicative measurements (`hosted-bench`, `hosted-single-build`, `-Dhosted-*`, the `Indicative x86 measurements` workflow) and the `previous_main` and `integrated_main` pins of warp itself. Under bay every revision of warp builds from the working tree, so the previous-main arm measured the candidate against itself; `bench/main.zig` measures the same rows against std and the code warp replaced.
+
 ## [0.2.1] - 2026-10-12
 
 ### Changed

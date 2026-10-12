@@ -1,13 +1,5 @@
 const std = @import("std");
 
-const HostedOptions = struct {
-    phase: []const u8,
-    control: bool,
-    commit: []const u8,
-    single_previous: bool,
-    single_integrated: bool,
-};
-
 /// What a project that depends on warp builds: the `warp` module and the codec
 /// modules `checksums`, `deflate` and `zstd`, the library, `libz` with `-Dc-abi`,
 /// and `addCompressedAsset` for a build that embeds a compressed file. The
@@ -37,14 +29,6 @@ pub fn dev(b: *std.Build, tools: type) void {
     const test_filter = b.option([]const u8, "test-filter", "Select tests by name");
     const c_abi = b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false;
     // Declare measurement settings up front, as options of this build.
-    const hosted: HostedOptions = .{
-        .phase = b.option([]const u8, "hosted-phase", "Measurement source phase") orelse "candidate",
-        .control = b.option(bool, "hosted-control", "Use previous main in both DEFLATE arms") orelse false,
-        .commit = b.option([]const u8, "hosted-commit", "Revision for indicative measurement provenance") orelse "working-tree",
-        .single_previous = b.option(bool, "hosted-single-previous", "Compile one-codec hosted driver against previous main") orelse false,
-        .single_integrated = b.option(bool, "hosted-single-integrated", "Compile one-codec hosted driver against integrated main") orelse false,
-    };
-    const hosted_previous_main = b.option(bool, "hosted-previous-main", "Compare indicative rows with pinned previous main") orelse false;
     const package = b.dependency("warp", .{ .target = target, .optimize = optimize, .@"c-abi" = c_abi });
     const p = package.builder;
 
@@ -205,13 +189,6 @@ pub fn dev(b: *std.Build, tools: type) void {
     // shakedown's is the one in the binary.
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
     test_module.addImport("shakedown", shakedown.module("shakedown"));
-    // Manual indicative measurements; ordinary CI compiles without fetching
-    // a historical package. The workflow explicitly enables its pinned main.
-    if (hosted_previous_main) {
-        if (b.dependencyLazy(if (hosted.single_integrated) "integrated_main" else "previous_main", .{ .target = target, .optimize = .fast })) |previous| {
-            addHostedBench(b, p, target, previous.module("warp"), true, hosted, check);
-        } else |_| {}
-    } else addHostedBench(b, p, target, warpModule(p, target, .fast), false, hosted, check);
 
     const size_module = b.createModule(.{
         .root_source_file = p.path("ci/sizes.zig"),
@@ -398,50 +375,4 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
     const output = run.addOutputFileArg2(options.name, .{});
     run.addArgs(&.{ @tagName(options.container), b.fmt("{d}", .{options.level}) });
     return output;
-}
-
-fn addHostedBench(b: *std.Build, p: *std.Build, target: std.Build.ResolvedTarget, previous: *std.Build.Module, enabled: bool, settings: HostedOptions, check: *std.Build.Step) void {
-    const runner = b.addExecutable(.{
-        .name = "interleave",
-        .root_module = b.createModule(.{ .root_source_file = p.path("bench/interleave.zig"), .target = b.graph.host, .optimize = .fast }),
-    });
-    check.dependOn(&runner.step);
-    const current = warpModule(p, target, .fast);
-    const options = b.addOptions();
-    options.addOption(bool, "previous_main", enabled);
-    options.addOption([]const u8, "phase", settings.phase);
-    options.addOption(bool, "control", settings.control);
-    options.addOption([]const u8, "commit", settings.commit);
-    const m = b.createModule(.{
-        .root_source_file = p.path("bench/hosted.zig"),
-        .target = target,
-        .optimize = .fast,
-        .imports = &.{
-            .{ .name = "warp", .module = current },
-            .{ .name = "previous", .module = if (enabled) previous else current },
-            .{ .name = "gen", .module = b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = target, .optimize = .fast }) },
-        },
-    });
-    m.addOptions("options", options);
-    m.addImport("shakedown", b.dependency("shakedown", .{ .target = target, .optimize = .fast }).module("shakedown"));
-    const single = b.createModule(.{
-        .root_source_file = p.path("bench/hosted_single.zig"),
-        .target = target,
-        .optimize = .fast,
-        .imports = &.{
-            .{ .name = "warp", .module = if (settings.single_previous or settings.single_integrated) previous else current },
-            .{ .name = "gen", .module = m.import_table.get("gen").? },
-            .{ .name = "shakedown", .module = m.import_table.get("shakedown").? },
-        },
-    });
-    single.addOptions("options", options);
-    const worker = b.addExecutable(.{ .name = "hosted-single", .root_module = single });
-    check.dependOn(&worker.step);
-    b.step("hosted-single-build", "Compile the one-codec hosted driver").dependOn(&b.addInstallArtifact(worker, .{}).step);
-    const artifact = b.addExecutable(.{ .name = "hosted-bench", .root_module = m });
-    check.dependOn(&artifact.step);
-    const step = b.step("hosted-bench", "Run indicative paired own/std/previous-main measurements");
-    const run = b.addRunArtifact(artifact);
-    run.has_side_effects = true;
-    step.dependOn(&run.step);
 }

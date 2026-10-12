@@ -21,17 +21,5 @@
             .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.3.0#978965e6499970b5b0ac5e658316ac7917d32f87",
             .hash = "shakedown-0.3.0-BR8U4wEjFgDarRGeXUKdstYvJneZDgavWzGPh9sT9rVX",
         },
-
-        .integrated_main = .{
-            .url = "git+https://github.com/pedronaugusto/warp?ref=v0.2.1#4db0ba5a1c97b86e4b815ff46acdd7e02aad8321",
-            .hash = "warp-0.2.1-JASxFepZEQDYfDwnAAY_2Vo90dqeQpL4BmViUV3Uqt87",
-            .lazy = true,
-        },
-
-        .previous_main = .{
-            .url = "git+https://github.com/pedronaugusto/warp?ref=v0.2.1#4db0ba5a1c97b86e4b815ff46acdd7e02aad8321",
-            .hash = "warp-0.2.1-JASxFepZEQDYfDwnAAY_2Vo90dqeQpL4BmViUV3Uqt87",
-            .lazy = true,
-        },
     },
 }
