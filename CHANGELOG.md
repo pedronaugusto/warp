@@ -17,26 +17,22 @@ All notable changes to warp are documented here. The format follows
   match, every third after 256, and so on to every eighth, and take the positions between
   as literals; a match ends it. The literal run is the builder's, so a stream comes out
   the same however its input arrives. Random bytes are encoded 7 to 9 times as fast (100
-  to 110 MB/s become 740 to 960 at levels 1, 3, 6 and 9, where the reference's run at 125
-  to 175); the git source tar, Silesia and the captured corpus come out 0.01 to 0.04%
+  to 110 MB/s become 740 to 960 at levels 1, 3, 6 and 9); the git source tar, Silesia and the captured corpus come out 0.01 to 0.04%
   larger, the tar and Silesia 1 to 3% faster at levels 2 to 9, and the captured corpus,
   which has random and already compressed kinds, 25 to 40% faster at levels 1 to 3.
 - The Zstandard row matchfinder (levels 5 to 12 over windows of 2^17 bytes or more) is
   built for each row length it uses, as it is for each minimum match, instead of
   branching on the row length in the search of every position. The output is unchanged;
-  levels 6, 7 and 9 encode 4 to 5% faster on Silesia, from 0.93, 0.95 and 0.96 of the
-  reference's speed to 0.98, 0.99 and 0.99.
+  levels 6, 7 and 9 encode 4 to 5% faster on Silesia.
 - The inflate fast loop makes no call: where a stream is refused, or a match reaches
   into the history, it leaves, and that is dealt with after it with the state written
   back. On x86-64 the state it held across those calls was spilled to the stack in every
   round; the loop's two instances now have 42 and 39 stack operands, from 47 and 62, and
-  decode 3% faster (measured translated, 3% above the previous build and level with the
-  first build of the loop). AArch64 is unchanged.
+  decode 3% faster. AArch64 is unchanged.
 - Level 1 finds no match of three bytes and keeps no table for them: the lookup at every
   position without a longer match cost 5 to 8% of the level's speed (more on data that
   mostly has no matches) for 0.45% of Silesia's output, 0.37% of the captured corpus's
-  and 0.002% of the git source tar's. Level 1 still compresses Silesia and the tar to
-  fewer bytes than the reference's level 1 does, and the size gate is unchanged.
+  and 0.002% of the git source tar's. The size gate is unchanged.
 - Read the block splitter's observations from the symbol counts the parse keeps, when
   a check is due, instead of making them one literal and match at a time. The blocks,
   and so the bytes, are unchanged at every level; levels 2 to 9 run 1 to 3% faster.
@@ -44,7 +40,7 @@ All notable changes to warp are documented here. The format follows
   counter in locals between checks, and the matchfinder's descriptors beside them.
   The bytes are unchanged.
 - Prime the overlap of a parallel Zstandard job at levels 1 to 4 by indexing every third
-  position, as the reference does for a dictionary, instead of searching it. A few
+  position, as a dictionary is indexed, instead of searching it. A few
   hundredths of a percent more output, and about 3% more speed.
 - Find the cheapest run items of a dynamic header in one pass, with a sliding window
   over the 11 to 138 zeros an item may cover, rather than trying every count at
@@ -54,7 +50,7 @@ All notable changes to warp are documented here. The format follows
   of each captured input's size over the size recorded for it. The gate is unchanged.
 - Choose a long-distance anchor's bucket from the whole 64-byte window, not its
   last bytes, and index the end of every long match in the `fast` and `dfast`
-  tables, as the reference does. On Silesia at level 3 with a 128 MiB window the
+  tables. On Silesia at level 3 with a 128 MiB window the
   output is 0.18% smaller.
 - Write an empty DEFLATE block without weighing dynamic codes, and refine a
   dynamic header only when it could still win the block. The bytes are unchanged.
@@ -69,11 +65,8 @@ All notable changes to warp are documented here. The format follows
 - Prove tiny optimal Zstandard inputs without repeated three-byte sequences
   before preparing match and price tables. The existing entropy and block
   writer still decide their encoded form; dictionaries keep normal search.
-
 - Keep whole-input level-1 matchfinder descriptors local across probes; table
   stores do not reload their hash sizes or pointers. Match selection is unchanged.
-- Update the lazy CI and test dependencies to verified green published commits.
-
 - Keep whole-input DEFLATE parsing in its cursor across block boundaries and
   specialize full-window search and decoding bounds. Keep whole-input counts
   and one input bound local to dispatch, and group lazy lookahead. Streaming
@@ -81,15 +74,14 @@ All notable changes to warp are documented here. The format follows
   header progress stays local within a call and is saved on every return.
   Optimal-parser scratch stays outside lower-level dispatch; byte and marker
   outputs share the fast loop’s existing stream argument.
+- Pins aegis 0.1.0.
 
 ### Added
 
 - Independently selectable `checksums`, `deflate` and `zstd` build modules.
   Aggregate and standalone imports share public types and checksum dispatch.
-
 - A deterministic per-level size gate over fixed, hashed standard input snapshots.
 - Shared fast Huffman decoding for symbolic history and branchless history resolution.
-
 - `zstd`: whole-buffer compression at levels −131072 through 22, with all
   nine search strategies, adaptive optimal parsing, and block splitting.
   Decoder support includes dictionaries, checksums, concatenated, skippable
@@ -122,7 +114,6 @@ All notable changes to warp are documented here. The format follows
 - CRC-32, CRC-32C and Adler-32, running and combined, on folding, CRC32, UDOT
   and AVX2 kernels chosen at run time.
 - `gzip.parseHeader` and `gzip.writeHeader` for every header field.
-
 - Near-optimal parsing at levels 10-12, with a configurable pass budget.
 - Streaming `Inflate` and `Deflate`, Reader/Writer adapters, every flush mode,
   8-15 bit windows, level changes and retained-history resets.
@@ -135,14 +126,12 @@ All notable changes to warp are documented here. The format follows
   and a compression CLI example.
 - C retained-history resets, sync points, validation control, decode marks,
   table-use introspection and reusable CRC combine operators.
-
 - Streaming zstd command example under `bench/cli/`.
 
 ### Fixed
 
 - Streaming close parses accepted buffered input before the final or flush tail,
   keeping block boundaries stable when pending output fills the caller buffer.
-
 - DEFLATE compressors keep optimal-parser state in their initialization buffer
   only when the configured levels can use it, reducing low-level value size.
 - Captured header verdicts retain static reason storage across later calls.
@@ -157,7 +146,6 @@ All notable changes to warp are documented here. The format follows
 - The parallel compressor refills completed slots while later chunks run.
 - C decoding reports progress before an error and supports full-flush recovery.
 - Refined dynamic headers use their final item count when choosing a block's code.
-
 - Level 10 considers a fixed-code parse for short blocks.
 - C block flushes stop before the final wrapper trailer; C ABI exports are
   compiled for 32-bit targets and CPUs with CRC disabled.
@@ -165,8 +153,6 @@ All notable changes to warp are documented here. The format follows
   streams, and size its match storage to the physical block capacity.
 - Refill parallel zstd compression workers as their ordered output is written,
   retaining the shared wait for input that fits in one batch.
-
-
 - Zstd compressed block targets prepare entropy once and reuse it across
   partitions. Repeat history is replayed only when a raw partition or a literal
   cut requires it.
