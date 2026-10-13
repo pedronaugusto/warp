@@ -209,38 +209,16 @@ pub fn dev(b: *std.Build, tools: type) void {
     tools.preflight.addCi(b, p, .{
         .tests = test_step,
         .portable_tests = true,
-        // This ship requires compile-only benchmarks in CI. Their
-        // manual runs and compile dependencies are owned below.
         .bench = .{
-            .programs = &.{},
+            .programs = &.{
+                .{ .name = "bench", .source = "bench/main.zig" },
+                .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
+            },
             .imports = benchImports,
             .target = target,
             .optimize = optimize,
         },
     });
-    // addCi can still be discovering its transitive lazy tools. End that
-    // configure pass before using steps it has not installed yet.
-    const bench_step = if (b.top_level_steps.get("bench")) |entry| &entry.step else return;
-    const programs = [_]struct { name: []const u8, source: []const u8 }{
-        .{ .name = "bench", .source = "bench/main.zig" },
-        .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
-    };
-    var previous: ?*std.Build.Step = null;
-    for (programs) |program| {
-        const artifact = b.addExecutable(.{
-            .name = program.name,
-            .root_module = b.createModule(.{ .root_source_file = p.path(program.source), .target = target, .optimize = .fast, .imports = benchImports(b, target, .fast) }),
-        });
-        check.dependOn(&artifact.step);
-        test_step.dependOn(&artifact.step);
-        bench_step.dependOn(&b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
-        const run = b.addRunArtifact(artifact);
-        run.setCwd(b.tmpPath());
-        run.has_side_effects = true;
-        if (previous) |before| run.step.dependOn(before);
-        previous = &run.step;
-        bench_step.dependOn(&run.step);
-    }
     // A project that depends on warp by path, with no packages to
     // fetch: the build a consumer gets.
     tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig") });
@@ -339,10 +317,12 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const warp = warpModule(p, target, optimize);
     const gen = b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = target, .optimize = optimize });
     const baseline = b.createModule(.{ .root_source_file = p.path("bench/baseline/baseline.zig"), .target = target, .optimize = optimize });
+    const ensign = b.dependency("ensign", .{ .target = target, .optimize = optimize }).module("ensign");
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "warp", .module = warp },
         .{ .name = "gen", .module = gen },
         .{ .name = "baseline", .module = baseline },
+        .{ .name = "ensign", .module = ensign },
     }) catch @panic("OOM");
 }
 

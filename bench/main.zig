@@ -1,458 +1,324 @@
-//! warp's own benchmarks: decoding, checksums and compression on generated
-//! workloads and, given `--corpus <dir>`, on the book's corpora (the
-//! batch files, tar and Silesia files pedronaugusto/trials prepares). Each
-//! row times warp beside the code it replaces in the family
-//! (bench/baseline/), interleaved, best and median of the runs.
+//! warp's DEFLATE benchmarks, measured through shakedown: decoding, checksums
+//! and compression on generated workloads and, given `--corpus <dir>`, on the
+//! book's corpora (the batch files, tar and Silesia files pedronaugusto/trials
+//! prepares). Each row times warp beside the code it replaces in the family
+//! (bench/baseline/) or beside std, one row each: `family/workload/variant`.
 //!
-//!   bench [--smoke] [--corpus <dir>] [--runs <n>] [decode|crc32|crc32c|adler32|compress|setup|stream-decode|stream-compress|websocket|parallel|speculative]...
+//!   bench [--smoke] [--corpus <dir>] [--row <prefix>]
 //!
-//! `--smoke` runs every row once on tiny inputs; `zig build test` does that.
-
+//! The families are decode, crc32, crc32c, adler32, compress, setup,
+//! stream-decode, stream-compress, websocket, parallel and speculative.
+//! `zig build bench` runs them all; `--row decode/text` runs the rows whose
+//! names start so, as preflight's `bench-ab` asks. Sizes of the compressed
+//! output are `check-sizes`' to keep, not a timing's.
 const std = @import("std");
 const Io = std.Io;
+const ensign = @import("ensign");
 const warp = @import("warp");
 const gen = @import("gen");
 const baseline = @import("baseline");
+const support = @import("support.zig");
 const stream = @import("stream.zig");
 const parallel = @import("parallel.zig");
 const speculative = @import("speculative.zig");
 
-const Options = struct {
+const Session = support.Session;
+const Error = support.Error;
+const Workload = support.Workload;
+
+/// The bench's own arguments, read by ensign.
+const Arguments = struct {
     smoke: bool = false,
     corpus: ?[]const u8 = null,
-    runs: usize = 7,
-};
-
-/// One workload: the inputs, as whole streams.
-const Workload = struct {
-    name: []const u8,
-    inputs: []const []const u8,
-    total: u64,
-    max: usize,
+    row: ?[]const u8 = null,
+    prefix: ?[]const u8 = null,
+    pub const spec: ensign.Spec(@This()) = .{ .name = "bench", .options = .{
+        .smoke = .{ .help = "Run each row once, untimed" },
+        .corpus = .{ .help = "Add the book's corpora, from this directory", .hint = .directory },
+        .row = .{ .help = "Run the rows whose names start with this" },
+        .prefix = .{ .positional = true, .help = "The same as --row" },
+    } };
 };
 
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const io = init.io;
-    const args = try init.minimal.args.toSlice(arena);
-    var options: Options = .{};
-    var what: std.ArrayList([]const u8) = .empty;
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--smoke")) {
-            options.smoke = true;
-        } else if (std.mem.eql(u8, args[i], "--corpus")) {
-            i += 1;
-            options.corpus = args[i];
-        } else if (std.mem.eql(u8, args[i], "--runs")) {
-            i += 1;
-            options.runs = try std.fmt.parseInt(usize, args[i], 10);
-        } else try what.append(arena, args[i]);
-    }
-    if (what.items.len == 0) try what.appendSlice(arena, &.{ "decode", "compress", "crc32", "crc32c", "adler32", "setup", "stream-decode", "stream-compress", "websocket", "parallel", "speculative" });
-    if (options.smoke) options.runs = 1;
-
-    var out_buf: [4096]u8 = undefined;
-    var stdout = Io.File.stdout().writer(io, &out_buf);
-    const w = &stdout.interface;
-    const k = warp.kernels();
-    try w.print("warp bench: crc32 kernel {t}, crc32c kernel {t}, adler32 kernel {t}, {d} runs\n", .{ k.crc32, k.crc32c, k.adler32, options.runs });
-    try w.flush();
-
-    const workloads = try loadWorkloads(arena, io, options);
-    for (what.items) |name| {
-        if (std.mem.eql(u8, name, "decode")) {
-            try decode(arena, io, w, options, workloads);
-        } else if (std.mem.eql(u8, name, "crc32") or std.mem.eql(u8, name, "crc32c") or std.mem.eql(u8, name, "adler32")) {
-            try checksums(arena, io, w, options, name);
-        } else if (std.mem.eql(u8, name, "compress")) {
-            try compress(arena, io, w, options, workloads);
-        } else if (std.mem.eql(u8, name, "setup")) {
-            try setup(arena, io, w, options);
-        } else if (std.mem.eql(u8, name, "stream-decode")) {
-            const run: stream.Run = .{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke };
-            const wls = try streamWorkloads(arena, workloads);
-            const streams = try arena.alloc([]const []const u8, wls.len);
-            for (wls, streams) |wl, *s| s.* = try zlibStreams(arena, .{ .name = wl.name, .inputs = wl.inputs, .total = wl.total, .max = wl.max }, .level_6);
-            try stream.decode(run, wls, streams);
-        } else if (std.mem.eql(u8, name, "stream-compress")) {
-            try stream.compress(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke }, try streamWorkloads(arena, workloads));
-        } else if (std.mem.eql(u8, name, "websocket")) {
-            try stream.websocket(.{ .arena = arena, .io = io, .w = w, .runs = options.runs, .smoke = options.smoke });
-        } else if (std.mem.eql(u8, name, "parallel") or std.mem.eql(u8, name, "speculative")) {
-            const list = try arena.alloc(parallel.Workload, workloads.len);
-            for (list, workloads) |*p, wl| p.* = .{ .name = wl.name, .inputs = wl.inputs };
-            if (std.mem.eql(u8, name, "parallel")) try parallel.run(init.gpa, io, w, list, options.runs) else try speculative.run(init.gpa, io, w, list, options.runs);
-        } else return error.UnknownBenchmark;
-        try w.flush();
-    }
+    const arguments = ensign.parseOrExit(Arguments, init);
+    var buffer: [4096]u8 = undefined;
+    var stdout = Io.File.stdout().writerStreaming(init.io, &buffer);
+    var session: Session = .init(init, &stdout.interface, arguments.smoke, arguments.row orelse arguments.prefix orelse "", arguments.corpus);
+    try decode(&session);
+    try checksums(&session);
+    try compress(&session);
+    try setup(&session);
+    try stream.rows(&session);
+    try parallel.rows(&session);
+    try speculative.rows(&session);
+    try stdout.interface.flush();
 }
 
-/// The workloads as the streaming rows take them.
-fn streamWorkloads(arena: std.mem.Allocator, workloads: []const Workload) ![]stream.Workload {
-    const list = try arena.alloc(stream.Workload, workloads.len);
-    for (list, workloads) |*s, wl| s.* = .{ .name = wl.name, .inputs = wl.inputs, .total = wl.total, .max = wl.max };
-    return list;
-}
+const Level = std.compress.flate.Compress.Options;
 
-fn loadWorkloads(arena: std.mem.Allocator, io: Io, options: Options) ![]Workload {
-    var list: std.ArrayList(Workload) = .empty;
-    const size: usize = if (options.smoke) 20_000 else 4 << 20;
-    for ([_]gen.Kind{ .text, .binary, .png, .json, .runs }) |kind| {
-        const one = try gen.alloc(arena, kind, 1, size);
-        try list.append(arena, .{ .name = @tagName(kind), .inputs = try arena.dupe([]const u8, &.{one}), .total = one.len, .max = one.len });
-    }
-    // Small objects: many short texts, as git's loose objects are.
-    {
-        const count: usize = if (options.smoke) 10 else 4000;
-        const inputs = try arena.alloc([]const u8, count);
-        var total: u64 = 0;
-        var prng: gen.Prng = .init(7);
-        for (inputs, 0..) |*in, n| {
-            in.* = try gen.alloc(arena, .text, n, 200 + prng.below(2000));
-            total += in.len;
-        }
-        try list.append(arena, .{ .name = "small-text", .inputs = inputs, .total = total, .max = 2200 });
-    }
-    if (options.corpus) |dir| {
-        try list.append(arena, try objects(arena, io, dir, "loose-git", "objects-git.batch", std.math.maxInt(usize)));
-        try list.append(arena, try objects(arena, io, dir, "loose-git-small", "objects-git.batch", 4096));
-        try list.append(arena, try files(arena, io, dir, "tar", &.{"git-v2.51.0.tar"}));
-        try list.append(arena, try files(arena, io, dir, "silesia", &.{ "silesia/dickens", "silesia/mozilla", "silesia/mr", "silesia/nci", "silesia/ooffice", "silesia/osdb", "silesia/reymont", "silesia/samba", "silesia/sao", "silesia/webster", "silesia/x-ray", "silesia/xml" }));
-    }
-    return list.items;
-}
+pub const Decode = struct {
+    session: *Session,
+    index: usize,
+    variant: enum { exact, margin, relic },
+    arena: std.heap.ArenaAllocator = undefined,
+    d: *warp.Decompressor = undefined,
+    relic: *baseline.inflate.Decoder = undefined,
+    streams: []const []const u8 = &.{},
+    inputs: []const []const u8 = &.{},
+    out: []u8 = &.{},
 
-/// `git cat-file --batch` output, each object as a loose object deflates it.
-fn objects(arena: std.mem.Allocator, io: Io, dir: []const u8, name: []const u8, file: []const u8, max_size: usize) !Workload {
-    const path = try std.fs.path.join(arena, &.{ dir, file });
-    const data = try Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
-    var inputs: std.ArrayList([]const u8) = .empty;
-    var total: u64 = 0;
-    var max: usize = 0;
-    var pos: usize = 0;
-    while (pos < data.len) {
-        const nl = std.mem.findScalarPos(u8, data, pos, '\n') orelse return error.BadBatch;
-        var it = std.mem.splitScalar(u8, data[pos..nl], ' ');
-        _ = it.next();
-        const kind = it.next() orelse return error.BadBatch;
-        const size = try std.fmt.parseInt(usize, it.next() orelse return error.BadBatch, 10);
-        const body = data[nl + 1 ..][0..size];
-        pos = nl + 1 + size + 1;
-        if (size > max_size) continue;
-        const object = try arena.print("{s} {d}\x00{s}", .{ kind, size, body });
-        try inputs.append(arena, object);
-        total += object.len;
-        max = @max(max, object.len);
-    }
-    return .{ .name = name, .inputs = inputs.items, .total = total, .max = max };
-}
-
-fn files(arena: std.mem.Allocator, io: Io, dir: []const u8, name: []const u8, names: []const []const u8) !Workload {
-    var inputs: std.ArrayList([]const u8) = .empty;
-    var total: u64 = 0;
-    var max: usize = 0;
-    for (names) |n| {
-        const data = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ dir, n }), arena, .unlimited);
-        try inputs.append(arena, data);
-        total += data.len;
-        max = @max(max, data.len);
-    }
-    return .{ .name = name, .inputs = inputs.items, .total = total, .max = max };
-}
-
-/// zlib streams of each input at `level`, written by std's compressor (the
-/// same streams for every decoder).
-fn zlibStreams(arena: std.mem.Allocator, workload: Workload, level: std.compress.flate.Compress.Options) ![]const []const u8 {
-    const window = try arena.alloc(u8, std.compress.flate.max_window_len);
-    const streams = try arena.alloc([]const u8, workload.inputs.len);
-    const out = try arena.alloc(u8, workload.max + workload.max / 8 + 1024);
-    for (workload.inputs, streams) |in, *s| {
-        var w: Io.Writer = .fixed(out);
-        var c = try std.compress.flate.Compress.init(&w, window, .zlib, level);
-        try c.writer.writeAll(in);
-        try c.finish();
-        s.* = try arena.dupe(u8, w.buffered());
-    }
-    return streams;
-}
-
-const Timing = struct { best: u64, median: u64 };
-
-fn now(io: Io) i96 {
-    return Io.Clock.awake.now(io).nanoseconds;
-}
-
-/// Time each of `fns` on `ctx` `runs` times, interleaved: one run of each
-/// in turn, so drift in the machine falls on all of them alike.
-fn timeAll(io: Io, runs: usize, comptime n: usize, ctx: anytype, comptime fns: [n]fn (@TypeOf(ctx)) anyerror!void) ![n]Timing {
-    var samples: [n][64]u64 = undefined;
-    for (0..runs) |r| {
-        inline for (fns, 0..) |f, j| {
-            const t0 = now(io);
-            try f(ctx);
-            samples[j][r] = @intCast(now(io) - t0);
-        }
-    }
-    var out: [n]Timing = undefined;
-    for (&out, 0..) |*t, j| {
-        const s = samples[j][0..runs];
-        std.sort.pdq(u64, s, {}, std.sort.asc(u64));
-        t.* = .{ .best = s[0], .median = s[runs / 2] };
-    }
-    return out;
-}
-
-fn mbps(bytes: u64, ns: u64) f64 {
-    return @as(f64, @floatFromInt(bytes)) / 1e6 / (@as(f64, @floatFromInt(@max(ns, 1))) / 1e9);
-}
-
-const DecodeCtx = struct {
-    d: *warp.Decompressor,
-    relic: *baseline.inflate.Decoder,
-    streams: []const []const u8,
-    inputs: []const []const u8,
-    out: []u8,
-    margin: bool,
-
-    fn warpRun(c: DecodeCtx) anyerror!void {
+    pub fn setup(c: *Decode) Error!void {
+        c.arena = .init(c.session.gpa);
+        errdefer c.arena.deinit();
+        const a = c.arena.allocator();
+        const wl = c.session.loaded.?[c.index];
+        c.inputs = wl.inputs;
+        c.streams = c.session.zlib.get(c.index).?;
+        c.out = try a.alloc(u8, wl.max + warp.inflate_margin);
+        c.d = try a.create(warp.Decompressor);
+        c.d.* = .init;
+        c.relic = try a.create(baseline.inflate.Decoder);
+        c.relic.* = .{};
+        // One untimed pass, checking the output.
         for (c.streams, c.inputs) |s, in| {
-            const len = if (c.margin) in.len + warp.inflate_margin else in.len;
-            const r = try c.d.inflate(s, c.out[0..len], .{});
-            if (r.out_len != in.len) return error.WrongLength;
+            _ = try c.d.inflate(s, c.out[0..in.len], .{});
+            if (!std.mem.eql(u8, c.out[0..in.len], in)) return error.WrongOutput;
         }
     }
 
-    fn warpMargin(c: DecodeCtx) anyerror!void {
-        var m = c;
-        m.margin = true;
-        return warpRun(m);
+    pub fn teardown(c: *Decode) Error!void {
+        c.arena.deinit();
     }
 
-    fn warpExact(c: DecodeCtx) anyerror!void {
-        var m = c;
-        m.margin = false;
-        return warpRun(m);
-    }
-
-    fn relicRun(c: DecodeCtx) anyerror!void {
-        for (c.streams, c.inputs) |s, in| {
-            var r: Io.Reader = .fixed(s);
-            const n = try c.relic.zlib(&r, c.out[0..in.len]);
-            if (n != in.len) return error.WrongLength;
-        }
+    pub fn run(c: *Decode, units: u64) Error!void {
+        for (0..units) |_| for (c.streams, c.inputs) |s, in| switch (c.variant) {
+            .exact, .margin => {
+                const len = if (c.variant == .margin) in.len + warp.inflate_margin else in.len;
+                const r = try c.d.inflate(s, c.out[0..len], .{});
+                if (r.out_len != in.len) return error.WrongLength;
+            },
+            .relic => {
+                var r: Io.Reader = .fixed(s);
+                const n = try c.relic.zlib(&r, c.out[0..in.len]);
+                if (n != in.len) return error.WrongLength;
+            },
+        };
     }
 };
 
-fn decode(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options, workloads: []const Workload) !void {
-    const d = try arena.create(warp.Decompressor);
-    d.* = .init;
-    const relic = try arena.create(baseline.inflate.Decoder);
-    relic.* = .{};
-    try w.print("\ndecode (std's zlib streams, level 6) | workload | MB out | warp exact MB/s | warp +margin MB/s | relic MB/s | warp/relic\n", .{});
-    for (workloads) |wl| {
-        const streams = try zlibStreams(arena, wl, .level_6);
-        const out = try arena.alloc(u8, wl.max + warp.inflate_margin);
-        const ctx: DecodeCtx = .{ .d = d, .relic = relic, .streams = streams, .inputs = wl.inputs, .out = out, .margin = false };
-        // One untimed pass of each, checking the output.
-        try DecodeCtx.warpExact(ctx);
-        for (streams, wl.inputs) |s, in| {
-            _ = try d.inflate(s, out[0..in.len], .{});
-            if (!std.mem.eql(u8, out[0..in.len], in)) return error.WrongOutput;
+/// Decoding std's zlib streams at level 6: warp with the output exact and with
+/// the margin, beside relic's decoder.
+fn decode(s: *Session) !void {
+    if (!s.wants("decode/")) return;
+    for (try s.workloads(), 0..) |wl, index| {
+        if (!s.wants(try s.name("decode/{s}/", .{wl.name}))) continue;
+        _ = try s.streams(index);
+        for ([_]struct { []const u8, @FieldType(Decode, "variant") }{ .{ "warp exact", .exact }, .{ "warp margin", .margin }, .{ "relic", .relic } }) |variant| {
+            const ctx = try s.arena.create(Decode);
+            ctx.* = .{ .session = s, .index = index, .variant = variant[1] };
+            try s.measure(Decode, ctx, support.rowOf(Decode, try s.name("decode/{s}/{s}", .{ wl.name, variant[0] }), "pass"));
         }
-        try DecodeCtx.relicRun(ctx);
-        const t = try timeAll(io, options.runs, 3, ctx, .{ DecodeCtx.warpExact, DecodeCtx.warpMargin, DecodeCtx.relicRun });
-        try w.print("decode | {s} | {d:.1} | {d:.0} | {d:.0} | {d:.0} | {d:.2}x\n", .{
-            wl.name,                                                                          @as(f64, @floatFromInt(wl.total)) / 1e6, mbps(wl.total, t[0].best), mbps(wl.total, t[1].best), mbps(wl.total, t[2].best),
-            @as(f64, @floatFromInt(t[2].best)) / @as(f64, @floatFromInt(@max(t[0].best, 1))),
-        });
-        try w.flush();
     }
 }
 
-const ChecksumCtx = struct {
+const Checksum = struct {
     data: []const u8,
-    reps: usize,
-    sink: *u32,
+    sink: u32 = 0,
 
-    fn each(c: ChecksumCtx, comptime f: fn ([]const u8) u32) void {
-        for (0..c.reps) |_| {
-            // A barrier, so no call is hoisted out of the loop as invariant.
-            asm volatile (""
-                :
-                : [data] "r" (c.data.ptr),
-                : .{ .memory = true });
-            c.sink.* +%= f(c.data);
-        }
-    }
-    fn warpCrc(c: ChecksumCtx) anyerror!void {
-        c.each(warp.Crc32.hash);
-    }
-    fn relicCrc(c: ChecksumCtx) anyerror!void {
-        c.each(baseline.crc32.Crc32.hash);
-    }
-    fn stdCrc(c: ChecksumCtx) anyerror!void {
-        c.each(std.hash.Crc32.hash);
-    }
-    fn warpCrcC(c: ChecksumCtx) anyerror!void {
-        c.each(warp.Crc32c.hash);
-    }
-    fn chronicleCrcC(c: ChecksumCtx) anyerror!void {
-        c.each(baseline.crc32c.hash);
-    }
-    fn stdCrcC(c: ChecksumCtx) anyerror!void {
-        c.each(std.hash.crc.@"CRC-32/ISCSI".hash);
-    }
-    fn warpAdler(c: ChecksumCtx) anyerror!void {
-        c.each(warp.Adler32.hash);
-    }
-    fn relicAdler(c: ChecksumCtx) anyerror!void {
-        c.each(baseline.inflate.adler32);
-    }
-    fn stdAdler(c: ChecksumCtx) anyerror!void {
-        c.each(std.hash.Adler32.hash);
+    fn runner(comptime hash: fn ([]const u8) u32) *const fn (*Checksum, u64) Error!void {
+        return struct {
+            fn run(c: *Checksum, units: u64) Error!void {
+                for (0..units) |_| {
+                    // A barrier, so no call is hoisted out of the loop as invariant.
+                    asm volatile (""
+                        :
+                        : [data] "r" (c.data.ptr),
+                        : .{ .memory = true });
+                    c.sink +%= hash(c.data);
+                }
+                std.mem.doNotOptimizeAway(c.sink);
+            }
+        }.run;
     }
 };
 
-fn checksums(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options, which: []const u8) !void {
-    const sizes = [_]usize{ 64, 1024, 64 << 10, 64 << 20 };
-    const big_len: usize = if (options.smoke) 70 << 10 else 64 << 20;
-    const big = try gen.alloc(arena, .noise, 3, big_len + 8);
-    var sink: u32 = 0;
-    const crc32c = std.mem.eql(u8, which, "crc32c");
-    try w.print("\n{s} | size | alignment | warp GB/s | {s} GB/s | std GB/s\n", .{ which, if (crc32c) "chronicle" else "relic" });
-    for (sizes) |size| {
-        if (size > big.len - 8) continue;
-        for ([_]usize{ 0, 1, 7 }) |alignment| {
-            // Enough repetitions of small sizes to time.
-            const budget: usize = if (options.smoke) 1 << 16 else 64 << 20;
-            const reps = @max(1, budget / size);
-            const data = big[alignment..][0..size];
-            const ctx: ChecksumCtx = .{ .data = data, .reps = reps, .sink = &sink };
-            const t = if (std.mem.eql(u8, which, "crc32"))
-                try timeAll(io, options.runs, 3, ctx, .{ ChecksumCtx.warpCrc, ChecksumCtx.relicCrc, ChecksumCtx.stdCrc })
-            else if (crc32c)
-                try timeAll(io, options.runs, 3, ctx, .{ ChecksumCtx.warpCrcC, ChecksumCtx.chronicleCrcC, ChecksumCtx.stdCrcC })
-            else
-                try timeAll(io, options.runs, 3, ctx, .{ ChecksumCtx.warpAdler, ChecksumCtx.relicAdler, ChecksumCtx.stdAdler });
-            const bytes: u64 = @intCast(size * reps);
-            try w.print("{s} | {d} | {d} | {d:.2} | {d:.2} | {d:.2}\n", .{ which, size, alignment, mbps(bytes, t[0].best) / 1000, mbps(bytes, t[1].best) / 1000, mbps(bytes, t[2].best) / 1000 });
-        }
-    }
-    std.mem.doNotOptimizeAway(sink);
-}
+const Algorithm = struct {
+    name: []const u8,
+    other: []const u8,
+    runs: [3]*const fn (*Checksum, u64) Error!void,
+};
 
-/// Per-stream cost of tiny streams: an empty one and a 37-byte object.
-fn setup(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options) !void {
-    const d = try arena.create(warp.Decompressor);
-    d.* = .init;
-    const relic = try arena.create(baseline.inflate.Decoder);
-    relic.* = .{};
-    const rounds: usize = if (options.smoke) 10 else 200_000;
-    const inputs = [_][]const u8{ "", "blob 28\x00tiny file for the setup case\n" };
-    try w.print("\nsetup | input | warp ns/stream | relic ns/stream\n", .{});
-    for (inputs) |in| {
-        const wl: Workload = .{ .name = "setup", .inputs = &.{in}, .total = in.len, .max = in.len };
-        const streams = try zlibStreams(arena, wl, .level_6);
-        var out: [64]u8 = undefined;
-        const Ctx = struct {
-            d: *warp.Decompressor,
-            relic: *baseline.inflate.Decoder,
-            stream: []const u8,
-            out: []u8,
-            rounds: usize,
-            fn warpRun(c: @This()) anyerror!void {
-                for (0..c.rounds) |_| _ = try c.d.inflate(c.stream, c.out, .{});
-            }
-            fn relicRun(c: @This()) anyerror!void {
-                for (0..c.rounds) |_| {
-                    var r: Io.Reader = .fixed(c.stream);
-                    _ = try c.relic.zlib(&r, c.out);
+const algorithms = [_]Algorithm{
+    .{ .name = "crc32", .other = "relic", .runs = .{ Checksum.runner(warp.Crc32.hash), Checksum.runner(baseline.crc32.Crc32.hash), Checksum.runner(std.hash.Crc32.hash) } },
+    .{ .name = "crc32c", .other = "chronicle", .runs = .{ Checksum.runner(warp.Crc32c.hash), Checksum.runner(baseline.crc32c.hash), Checksum.runner(std.hash.crc.@"CRC-32/ISCSI".hash) } },
+    .{ .name = "adler32", .other = "relic", .runs = .{ Checksum.runner(warp.Adler32.hash), Checksum.runner(baseline.inflate.adler32), Checksum.runner(std.hash.Adler32.hash) } },
+};
+
+/// CRC-32, CRC-32C and Adler-32 per call at four sizes and three alignments,
+/// beside the family's earlier code and std.
+fn checksums(s: *Session) !void {
+    const sizes = [_]struct { usize, []const u8 }{ .{ 64, "64 B" }, .{ 1024, "1 KiB" }, .{ 64 << 10, "64 KiB" }, .{ 64 << 20, "64 MiB" } };
+    const big_len: usize = if (s.options.smoke) 70 << 10 else 64 << 20;
+    var big: ?[]u8 = null;
+    for (algorithms) |algorithm| {
+        if (!s.wants(try s.name("{s}/", .{algorithm.name}))) continue;
+        if (big == null) big = try gen.alloc(s.arena, .noise, 3, big_len + 8);
+        for (sizes) |size| {
+            if (size[0] > big_len) continue;
+            for ([_]usize{ 0, 1, 7 }) |alignment| {
+                for (algorithm.runs, [_][]const u8{ "warp", algorithm.other, "std" }) |run, who| {
+                    const ctx = try s.arena.create(Checksum);
+                    ctx.* = .{ .data = big.?[alignment..][0..size[0]] };
+                    try s.measure(Checksum, ctx, .{
+                        .name = try s.name("{s}/{s}/align {d}/{s}", .{ algorithm.name, size[1], alignment, who }),
+                        .unit = "call",
+                        .run = run,
+                    });
                 }
             }
-        };
-        const t = try timeAll(io, options.runs, 2, Ctx{ .d = d, .relic = relic, .stream = streams[0], .out = out[0..in.len], .rounds = rounds }, .{ Ctx.warpRun, Ctx.relicRun });
-        try w.print("setup | {d} B | {d:.1} | {d:.1}\n", .{ in.len, @as(f64, @floatFromInt(t[0].best)) / @as(f64, @floatFromInt(rounds)), @as(f64, @floatFromInt(t[1].best)) / @as(f64, @floatFromInt(rounds)) });
-    }
-    // A compression costs microseconds: a tenth of the rounds.
-    try setupCompress(arena, io, w, options, @max(1, rounds / 10), &inputs);
-}
-
-/// Per-stream cost of compressing tiny inputs, beside std's, which sets up
-/// a whole window per stream.
-fn setupCompress(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options, rounds: usize, inputs: []const []const u8) !void {
-    _ = options;
-    const window = try arena.alloc(u8, std.compress.flate.max_window_len);
-    var out: [128]u8 = undefined;
-    try w.print("\nsetup compress | level | input | warp ns/stream | std ns/stream\n", .{});
-    const levels = [_]struct { u4, std.compress.flate.Compress.Options }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 12, .level_9 } };
-    for (levels) |level| for (inputs) |in| {
-        const c = try arena.create(warp.Compressor);
-        c.* = try .init(arena, .{ .level = level[0] });
-        defer c.deinit();
-        var sizes: [2]u64 = undefined;
-        const Ctx = struct {
-            inner: CompressCtx,
-            rounds: usize,
-            fn warpRun(x: @This()) anyerror!void {
-                for (0..x.rounds) |_| try x.inner.warpRun();
-            }
-            fn stdRun(x: @This()) anyerror!void {
-                for (0..x.rounds) |_| try x.inner.stdRun();
-            }
-        };
-        const inner: CompressCtx = .{ .c = c, .std_level = level[1], .window = window, .inputs = &.{in}, .out = &out, .sizes = &sizes };
-        const t = try timeAll(io, 7, 2, Ctx{ .inner = inner, .rounds = rounds }, .{ Ctx.warpRun, Ctx.stdRun });
-        try w.print("setup compress | {d} | {d} B | {d:.0} | {d:.0}\n", .{ level[0], in.len, @as(f64, @floatFromInt(t[0].best)) / @as(f64, @floatFromInt(rounds)), @as(f64, @floatFromInt(t[1].best)) / @as(f64, @floatFromInt(rounds)) });
-    };
-}
-
-const CompressCtx = struct {
-    c: *warp.Compressor,
-    std_level: std.compress.flate.Compress.Options,
-    window: []u8,
-    inputs: []const []const u8,
-    out: []u8,
-    sizes: *[2]u64,
-
-    fn warpRun(c: CompressCtx) anyerror!void {
-        var total: u64 = 0;
-        for (c.inputs) |in| total += try c.c.compress(in, c.out, .{});
-        c.sizes[0] = total;
-    }
-
-    fn stdRun(c: CompressCtx) anyerror!void {
-        var total: u64 = 0;
-        for (c.inputs) |in| {
-            var w: Io.Writer = .fixed(c.out);
-            var s = try std.compress.flate.Compress.init(&w, c.window, .zlib, c.std_level);
-            try s.writer.writeAll(in);
-            try s.finish();
-            total += w.buffered().len;
         }
-        c.sizes[1] = total;
+    }
+}
+
+/// Compression, warp at its own levels or std's at the nearest.
+pub const Compress = struct {
+    session: *Session,
+    index: usize,
+    level: u4,
+    std_level: Level,
+    use_std: bool,
+    arena: std.heap.ArenaAllocator = undefined,
+    c: *warp.Compressor = undefined,
+    window: []u8 = &.{},
+    out: []u8 = &.{},
+    inputs: []const []const u8 = &.{},
+
+    pub fn setup(c: *Compress) Error!void {
+        c.arena = .init(c.session.gpa);
+        errdefer c.arena.deinit();
+        const a = c.arena.allocator();
+        const wl = c.session.loaded.?[c.index];
+        c.inputs = wl.inputs;
+        c.window = try a.alloc(u8, std.compress.flate.max_window_len);
+        c.out = try a.alloc(u8, warp.Compressor.bound(wl.max, .{}));
+        c.c = try a.create(warp.Compressor);
+        c.c.* = try .init(a, .{ .level = c.level });
+    }
+
+    pub fn teardown(c: *Compress) Error!void {
+        c.c.deinit();
+        c.arena.deinit();
+    }
+
+    pub fn run(c: *Compress, units: u64) Error!void {
+        var total: u64 = 0;
+        for (0..units) |_| for (c.inputs) |in| {
+            if (c.use_std) {
+                var w: Io.Writer = .fixed(c.out);
+                var s = try std.compress.flate.Compress.init(&w, c.window, .zlib, c.std_level);
+                try s.writer.writeAll(in);
+                try s.finish();
+                total += w.buffered().len;
+            } else total += try c.c.compress(in, c.out, .{});
+        };
+        std.mem.doNotOptimizeAway(total);
     }
 };
 
-/// Compression at levels 1, 6 and 9 beside std's at the same levels (relic
-/// compresses with std): input MB/s and the output's share of the input.
-fn compress(arena: std.mem.Allocator, io: Io, w: *Io.Writer, options: Options, workloads: []const Workload) !void {
-    const window = try arena.alloc(u8, std.compress.flate.max_window_len);
-    try w.print("\ncompress (zlib) | workload | level | MB in | warp MB/s | std MB/s | warp/std | warp size | std size\n", .{});
-    const levels = [_]struct { u4, std.compress.flate.Compress.Options }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 9, .level_9 }, .{ 10, .level_9 }, .{ 11, .level_9 }, .{ 12, .level_9 } };
-    for (workloads) |wl| for (levels) |level| {
-        const c = try arena.create(warp.Compressor);
-        c.* = try .init(arena, .{ .level = level[0] });
-        defer c.deinit();
-        const out = try arena.alloc(u8, warp.Compressor.bound(wl.max, .{}));
-        var sizes: [2]u64 = undefined;
-        const ctx: CompressCtx = .{ .c = c, .std_level = level[1], .window = window, .inputs = wl.inputs, .out = out, .sizes = &sizes };
-        const t = try timeAll(io, options.runs, 2, ctx, .{ CompressCtx.warpRun, CompressCtx.stdRun });
-        const total: f64 = @floatFromInt(wl.total);
-        try w.print("compress | {s} | {d} | {d:.1} | {d:.0} | {d:.0} | {d:.2}x | {d:.2}% | {d:.2}%\n", .{
-            wl.name,                                                                          level[0],                                        total / 1e6,                                     mbps(wl.total, t[0].best), mbps(wl.total, t[1].best),
-            @as(f64, @floatFromInt(t[1].best)) / @as(f64, @floatFromInt(@max(t[0].best, 1))), 100 * @as(f64, @floatFromInt(sizes[0])) / total, 100 * @as(f64, @floatFromInt(sizes[1])) / total,
-        });
-        try w.flush();
+/// Compression at levels 1, 6, 9 and warp's 10 to 12 (std has no more than
+/// its own 9): input per pass, with the output's share of the input left to
+/// `check-sizes`.
+fn compress(s: *Session) !void {
+    if (!s.wants("compress/")) return;
+    const levels = [_]struct { u4, Level }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 9, .level_9 }, .{ 10, .level_9 }, .{ 11, .level_9 }, .{ 12, .level_9 } };
+    for (try s.workloads(), 0..) |wl, index| {
+        if (!s.wants(try s.name("compress/{s}/", .{wl.name}))) continue;
+        for (levels) |level| for ([_]bool{ false, true }) |use_std| {
+            // std stops at 9: its rows past that would measure the same code again.
+            if (use_std and level[0] > 9) continue;
+            const ctx = try s.arena.create(Compress);
+            ctx.* = .{ .session = s, .index = index, .level = level[0], .std_level = level[1], .use_std = use_std };
+            try s.measure(Compress, ctx, support.rowOf(Compress, try s.name("compress/{s}/level {d}/{s}", .{ wl.name, level[0], if (use_std) "std" else "warp" }), "pass"));
+        };
+    }
+}
+
+const inputs = [_][]const u8{ "", "blob 28\x00tiny file for the setup case\n" };
+
+/// The cost of one tiny stream: decoding it beside relic, compressing it
+/// beside std, which sets up a whole window per stream.
+pub const Setup = struct {
+    session: *Session,
+    mode: enum { warp_decode, relic_decode, warp_compress, std_compress },
+    level: u4,
+    std_level: Level,
+    input: []const u8,
+    arena: std.heap.ArenaAllocator = undefined,
+    d: *warp.Decompressor = undefined,
+    relic: *baseline.inflate.Decoder = undefined,
+    c: *warp.Compressor = undefined,
+    window: []u8 = &.{},
+    stream: []const u8 = &.{},
+    out: [128]u8 = undefined,
+
+    pub fn setup(c: *Setup) Error!void {
+        c.arena = .init(c.session.gpa);
+        errdefer c.arena.deinit();
+        const a = c.arena.allocator();
+        c.d = try a.create(warp.Decompressor);
+        c.d.* = .init;
+        c.relic = try a.create(baseline.inflate.Decoder);
+        c.relic.* = .{};
+        c.window = try a.alloc(u8, std.compress.flate.max_window_len);
+        c.c = try a.create(warp.Compressor);
+        c.c.* = try .init(a, .{ .level = c.level });
+        var w: Io.Writer = .fixed(&c.out);
+        var s = try std.compress.flate.Compress.init(&w, c.window, .zlib, .level_6);
+        try s.writer.writeAll(c.input);
+        try s.finish();
+        c.stream = try a.dupe(u8, w.buffered());
+    }
+
+    pub fn teardown(c: *Setup) Error!void {
+        c.c.deinit();
+        c.arena.deinit();
+    }
+
+    pub fn run(c: *Setup, units: u64) Error!void {
+        for (0..units) |_| switch (c.mode) {
+            .warp_decode => std.mem.doNotOptimizeAway(try c.d.inflate(c.stream, c.out[0..c.input.len], .{})),
+            .relic_decode => {
+                var r: Io.Reader = .fixed(c.stream);
+                std.mem.doNotOptimizeAway(try c.relic.zlib(&r, c.out[0..c.input.len]));
+            },
+            .warp_compress => std.mem.doNotOptimizeAway(try c.c.compress(c.input, &c.out, .{})),
+            .std_compress => {
+                var w: Io.Writer = .fixed(&c.out);
+                var s = try std.compress.flate.Compress.init(&w, c.window, .zlib, c.std_level);
+                try s.writer.writeAll(c.input);
+                try s.finish();
+                std.mem.doNotOptimizeAway(w.buffered().len);
+            },
+        };
+    }
+};
+
+fn setup(s: *Session) !void {
+    if (!s.wants("setup/")) return;
+    for (inputs) |in| {
+        for ([_]struct { []const u8, @FieldType(Setup, "mode") }{ .{ "warp", .warp_decode }, .{ "relic", .relic_decode } }) |who| {
+            const ctx = try s.arena.create(Setup);
+            ctx.* = .{ .session = s, .mode = who[1], .level = 1, .std_level = .level_6, .input = in };
+            try s.measure(Setup, ctx, support.rowOf(Setup, try s.name("setup/decode/{d} B/{s}", .{ in.len, who[0] }), "stream"));
+        }
+    }
+    const levels = [_]struct { u4, Level }{ .{ 1, .level_1 }, .{ 6, .level_6 }, .{ 12, .level_9 } };
+    for (levels) |level| for (inputs) |in| {
+        for ([_]struct { []const u8, @FieldType(Setup, "mode") }{ .{ "warp", .warp_compress }, .{ "std", .std_compress } }) |who| {
+            const ctx = try s.arena.create(Setup);
+            ctx.* = .{ .session = s, .mode = who[1], .level = level[0], .std_level = level[1], .input = in };
+            try s.measure(Setup, ctx, support.rowOf(Setup, try s.name("setup/compress/level {d}/{d} B/{s}", .{ level[0], in.len, who[0] }), "stream"));
+        }
     };
 }

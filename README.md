@@ -351,9 +351,12 @@ The gate has no single-input bound; for the captured inputs it also prints, per
 level, the median, 99th percentile and worst of each input's size over the size
 recorded for it.
 
-`bay bench` times the default rows in ReleaseFast over the package workloads. Run `zig-out/bench/bench --runs 3 parallel` to select rows, or add
-`--smoke` or `--corpus <dir>`. The `speculative` rows include discovery and
-marker resolution for whole streams, alongside native decoding. CI compiles the benchmarks and never times them.
+`bay bench` times every row in ReleaseFast through shakedown, one JSONL line per row (`family/workload/variant`):
+decode, the three checksums, compress, setup, stream-decode, stream-compress, websocket, parallel and speculative in
+`bench`, and zstd in `zstd-bench`. Run `zig-out/bench/bench --row decode/text` to select rows, or add `--smoke` or
+`--corpus <dir>`; `zstd-bench --help` lists its modes. `bay bench-ab -- --base <commit> --program bench --row decode/text`
+compares a candidate with an earlier commit. The `speculative` rows include discovery and marker resolution for whole
+streams, alongside native decoding. CI compiles the benchmarks and never times them.
 
 ## Licence
 

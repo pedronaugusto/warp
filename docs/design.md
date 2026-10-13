@@ -129,19 +129,7 @@ calls. Size gates compare aggregate totals; single-input tails are reported.
 Benchmarks compile in CI; timing evidence is measured separately.
 
 A package cannot pin itself as a baseline: bay builds every revision of the package
-under development from its working tree. A candidate is measured against a release with
-preflight's `bench-ab`, which builds the base from its own checkout, once these programs
-follow preflight's benchmark contract (`shakedown.bench` rows); today they are wired by
-hand in `dev` and print their own tables.
-The workflow builds one-codec executables against those immutable package
-dependencies and the candidate, using the same driver and compiler settings.
-It preserves the candidate source tree during every baseline build.
-It alternates their processes across 21 adjacent samples of two traversals,
-with two invocations of the previous-main executable as a control. This
-separates codec throughput from caller position in a combined executable.
-Generated inputs, ReleaseFast baseline targets and reused storage are identical
-across adjacent, alternating samples. Each batch’s final output is checked outside the
-timer. Raw times, absolute throughput and paired ratio spread are reported as
-indicative: runner contention and ordering effects remain possible. DEFLATE uses
-zlib frames at matching levels; Zstandard uses checksum-off frames for both
-Warp and std. Missing historical or std APIs are explicitly unmeasured.
+under development from its working tree. A candidate is measured against an earlier commit
+with preflight's `bench-ab`, which builds the base from its own checkout; the programs
+are `shakedown.bench` rows declared through `.bench`, one row per measured thing, so
+`bay bench` and `bay bench-ab` run them. Output sizes are `check-sizes`', not rows.

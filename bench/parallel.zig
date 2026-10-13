@@ -1,57 +1,98 @@
 //! Ordered chunk compression and indexed decompression, by worker count.
 const std = @import("std");
-const warp = @import("warp");
 const Io = std.Io;
+const warp = @import("warp");
+const support = @import("support.zig");
 
-pub const Workload = struct { name: []const u8, inputs: []const []const u8 };
+const Session = support.Session;
+const Error = support.Error;
 
-pub fn run(gpa: std.mem.Allocator, io: Io, out: *Io.Writer, workloads: []const Workload, runs: usize) !void {
-    try out.writeAll("\nparallel | workload | level | workers | encode MB/s | decode MB/s | index MB/s | bytes | memory\n");
-    for (workloads) |wl| {
-        for ([_]u4{ 1, 6, 12 }) |level| for ([_]u16{ 1, 2, 4, 8 }) |workers| {
-            const options: warp.parallel.Options = .{ .level = level, .concurrency = workers };
-            var encoder = try warp.parallel.Compressor.init(gpa, options);
-            defer encoder.deinit();
-            var decoder = try warp.parallel.Decompressor.init(gpa, .{ .concurrency = workers });
-            defer decoder.deinit();
-            var ns: [3]u64 = @splat(std.math.maxInt(u64));
-            var total: usize = 0;
-            var compressed: usize = 0;
-            for (wl.inputs) |input| {
-                const storage = try gpa.alloc(u8, input.len + input.len / 8 + 1024);
-                defer gpa.free(storage);
-                var sink: Io.Writer = .fixed(storage);
-                try encoder.compress(io, input, &sink);
-                const stream = sink.buffered();
-                var index = try warp.gzip.Index.build(gpa, stream, .gzip, 128 << 10);
-                defer index.deinit();
-                const decoded = try gpa.alloc(u8, input.len);
-                defer gpa.free(decoded);
-                _ = try decoder.decompress(io, stream, decoded, &index);
-                if (!std.mem.eql(u8, input, decoded)) return error.WrongOutput;
-                total += input.len;
-                compressed += stream.len;
-                var best: [3]u64 = @splat(std.math.maxInt(u64));
-                for (0..runs) |_| {
-                    sink = .fixed(storage);
-                    var start = Io.Clock.awake.now(io).nanoseconds;
-                    try encoder.compress(io, input, &sink);
-                    best[0] = @min(best[0], @as(u64, @intCast(Io.Clock.awake.now(io).nanoseconds - start)));
-                    start = Io.Clock.awake.now(io).nanoseconds;
-                    _ = try decoder.decompress(io, sink.buffered(), decoded, &index);
-                    best[1] = @min(best[1], @as(u64, @intCast(Io.Clock.awake.now(io).nanoseconds - start)));
-                    start = Io.Clock.awake.now(io).nanoseconds;
-                    var rebuilt = try warp.gzip.Index.build(gpa, stream, .gzip, 128 << 10);
-                    best[2] = @min(best[2], @as(u64, @intCast(Io.Clock.awake.now(io).nanoseconds - start)));
-                    rebuilt.deinit();
-                }
-                if (ns[0] == std.math.maxInt(u64)) ns = .{ 0, 0, 0 };
-                ns[0] += best[0];
-                ns[1] += best[1];
-                ns[2] += best[2];
-            }
-            try out.print("parallel | {s} | {d} | {d} | {d:.1} | {d:.1} | {d:.1} | {d} | {d}\n", .{ wl.name, level, workers, @as(f64, @floatFromInt(total)) * 1e3 / @as(f64, @floatFromInt(@max(ns[0], 1))), @as(f64, @floatFromInt(total)) * 1e3 / @as(f64, @floatFromInt(@max(ns[1], 1))), @as(f64, @floatFromInt(total)) * 1e3 / @as(f64, @floatFromInt(@max(ns[2], 1))), compressed, warp.parallel.Compressor.memory(options) });
-            try out.flush();
+const Operation = enum { encode, decode, index };
+
+pub const Parallel = struct {
+    session: *Session,
+    workload: usize,
+    level: u4,
+    workers: u16,
+    operation: Operation,
+    arena: std.heap.ArenaAllocator = undefined,
+    encoder: ?warp.parallel.Compressor = null,
+    decoder: ?warp.parallel.Decompressor = null,
+    inputs: []const []const u8 = &.{},
+    storage: [][]u8 = &.{},
+    streams: [][]const u8 = &.{},
+    indexes: []warp.gzip.Index = &.{},
+    built: usize = 0,
+    decoded: [][]u8 = &.{},
+
+    pub fn setup(c: *Parallel) Error!void {
+        const gpa = c.session.gpa;
+        c.arena = .init(gpa);
+        errdefer c.arena.deinit();
+        const a = c.arena.allocator();
+        c.inputs = c.session.loaded.?[c.workload].inputs;
+        const options: warp.parallel.Options = .{ .level = c.level, .concurrency = c.workers };
+        c.encoder = try .init(gpa, options);
+        errdefer c.encoder.?.deinit();
+        c.storage = try a.alloc([]u8, c.inputs.len);
+        for (c.storage, c.inputs) |*slot, input| slot.* = try a.alloc(u8, input.len + input.len / 8 + 1024);
+        if (c.operation == .encode) return;
+        c.decoder = try .init(gpa, .{ .concurrency = c.workers });
+        errdefer c.decoder.?.deinit();
+        c.streams = try a.alloc([]const u8, c.inputs.len);
+        c.indexes = try a.alloc(warp.gzip.Index, c.inputs.len);
+        c.decoded = try a.alloc([]u8, c.inputs.len);
+        errdefer c.release();
+        for (c.inputs, c.storage, 0..) |input, storage, i| {
+            var sink: Io.Writer = .fixed(storage);
+            try c.encoder.?.compress(c.session.io, input, &sink);
+            c.streams[i] = try a.dupe(u8, sink.buffered());
+            c.indexes[i] = try .build(gpa, c.streams[i], .gzip, 128 << 10);
+            c.built += 1;
+            c.decoded[i] = try a.alloc(u8, input.len);
+            _ = try c.decoder.?.decompress(c.session.io, c.streams[i], c.decoded[i], &c.indexes[i]);
+            if (!std.mem.eql(u8, input, c.decoded[i])) return error.WrongOutput;
+        }
+    }
+
+    fn release(c: *Parallel) void {
+        for (c.indexes[0..c.built]) |*index| index.deinit();
+        c.built = 0;
+    }
+
+    pub fn teardown(c: *Parallel) Error!void {
+        c.release();
+        if (c.decoder) |*d| d.deinit();
+        c.decoder = null;
+        c.encoder.?.deinit();
+        c.encoder = null;
+        c.arena.deinit();
+    }
+
+    pub fn run(c: *Parallel, units: u64) Error!void {
+        const io = c.session.io;
+        for (0..units) |_| for (c.inputs, 0..) |input, i| switch (c.operation) {
+            .encode => {
+                var sink: Io.Writer = .fixed(c.storage[i]);
+                try c.encoder.?.compress(io, input, &sink);
+            },
+            .decode => _ = try c.decoder.?.decompress(io, c.streams[i], c.decoded[i], &c.indexes[i]),
+            .index => {
+                var rebuilt: warp.gzip.Index = try .build(c.session.gpa, c.streams[i], .gzip, 128 << 10);
+                rebuilt.deinit();
+            },
+        };
+    }
+};
+
+pub fn rows(s: *Session) !void {
+    if (!s.wants("parallel/")) return;
+    for (try s.workloads(), 0..) |wl, index| {
+        if (!s.wants(try s.name("parallel/{s}/", .{wl.name}))) continue;
+        for ([_]u4{ 1, 6, 12 }) |level| for ([_]u16{ 1, 2, 4, 8 }) |workers| for ([_]Operation{ .encode, .decode, .index }) |operation| {
+            const ctx = try s.arena.create(Parallel);
+            ctx.* = .{ .session = s, .workload = index, .level = level, .workers = workers, .operation = operation };
+            try s.measure(Parallel, ctx, support.rowOf(Parallel, try s.name("parallel/{s}/level {d}/workers {d}/{t}", .{ wl.name, level, workers, operation }), "pass"));
         };
     }
 }

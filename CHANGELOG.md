@@ -5,6 +5,11 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The benchmarks are `shakedown.bench` programs declared through preflight's `.bench`: `bay bench` and `bay bench-ab` run them, and every measured thing is a row (`family/workload/variant`) in JSONL instead of a printed table. `--runs` is gone (shakedown takes the samples); `--row <prefix>` selects rows. The zstd program keeps its modes as options. Output sizes and the per-connection memory figures are no longer printed; `check-sizes` keeps the sizes.
+- Pins aegis 0.1.4, preflight 0.4.3 and shakedown 0.4.0; ensign 0.1.1 reads the benchmarks' arguments.
+
 ## [0.2.2] - 2026-10-13
 
 ### Removed
