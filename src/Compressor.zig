@@ -9,10 +9,10 @@ const Compressor = @This();
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const bits = @import("bits");
+const bits = @import("bits.zig");
 const deflate = @import("deflate.zig");
 const container = @import("container.zig");
-const checksum = @import("checksum");
+const checksum = @import("checksum.zig");
 const gzip = @import("gzip.zig");
 
 /// Private: the engine's tables.

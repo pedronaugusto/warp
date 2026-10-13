@@ -4,9 +4,6 @@
   ],
   "test_roots": [
     "src/tests.zig",
-    "src/bits.zig",
-    "src/checksum.zig",
-    "src/checksum/crc.zig",
     "bench/gen.zig",
     "bench/baseline/baseline.zig"
   ],
@@ -107,11 +104,6 @@
       "zig",
       "build",
       "check-c-abi"
-    ],
-    [
-      "zig",
-      "build",
-      "check-modules"
     ]
   ],
   "glint_paths": [

@@ -1,22 +1,17 @@
 const std = @import("std");
 
-/// What a project that depends on warp builds: the `warp` module and the codec
-/// modules `checksums`, `deflate` and `zstd`, the library, `libz` with `-Dc-abi`,
-/// and `addCompressedAsset` for a build that embeds a compressed file. The
-/// tests, checks, benchmarks and gate are `dev`'s.
+/// What a project that depends on warp builds: the `warp` module, the library,
+/// `libz` with `-Dc-abi`, and `addCompressedAsset` for a build that embeds a
+/// compressed file. The tests, checks, benchmarks and gate are `dev`'s.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const package = packageModules(b, target, optimize);
-    const module = package.warp;
+    const module = warpModule(b, target, optimize);
     b.modules.put(b.allocator, "warp", module) catch @panic("OOM");
-    b.modules.put(b.allocator, "checksums", package.checksum) catch @panic("OOM");
-    b.modules.put(b.allocator, "deflate", package.deflate) catch @panic("OOM");
-    b.modules.put(b.allocator, "zstd", package.zstd) catch @panic("OOM");
     b.installArtifact(b.addLibrary(.{ .name = "warp", .root_module = module }));
     if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
         const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
-        addShared(b, c_module, target, optimize);
+        addKernelModules(b, c_module, target, optimize);
         b.installArtifact(b.addLibrary(.{ .name = "z", .root_module = c_module }));
     }
 }
@@ -47,25 +42,13 @@ pub fn dev(b: *std.Build, tools: type) void {
     const asset_test = b.addExecutable(.{ .name = "check-assets", .root_module = asset_test_module });
     b.step("check-assets", "Generate and verify an embedded compressed asset").dependOn(&b.addRunArtifact(asset_test).step);
 
-    const module_check = b.addExecutable(.{
-        .name = "check-modules",
-        .root_module = b.createModule(.{
-            .root_source_file = p.path("ci/modules.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "warp", .module = module },                       .{ .name = "checksums", .module = package.module("checksums") },
-                .{ .name = "deflate", .module = package.module("deflate") }, .{ .name = "zstd", .module = package.module("zstd") },
-            },
-        }),
-    });
     const filters = if (test_filter) |filter| &.{filter} else &.{};
     const test_module = b.createModule(.{
         .root_source_file = p.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
-    addShared(p, test_module, target, optimize);
+    addKernelModules(p, test_module, target, optimize);
     // The differential corpus, captured once from other implementations
     // (pedronaugusto/trials, warp/), and the inputs it names.
     for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
@@ -75,11 +58,6 @@ pub fn dev(b: *std.Build, tools: type) void {
     const tests = b.addTest(.{ .name = "warp-tests", .filters = filters, .root_module = test_module });
     const test_step = b.step("test", "Run the tests and example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
-    // Separate module suites are real test roots for the build-derived lint facts.
-    for ([_]*std.Build.Module{ package.module("checksums"), package.module("deflate").import_table.get("bits").?, package.module("checksums").import_table.get("crc").? }) |root| {
-        const suite = b.addTest(.{ .root_module = root, .filters = filters });
-        test_step.dependOn(&b.addRunArtifact(suite).step);
-    }
     // The benchmarks' input generator and the code warp replaces carry tests
     // of their own; a test runs only from its module's root, so each is one.
     for ([_][]const u8{ "bench/gen.zig", "bench/baseline/baseline.zig" }) |source| {
@@ -89,11 +67,8 @@ pub fn dev(b: *std.Build, tools: type) void {
         });
         test_step.dependOn(&b.addRunArtifact(suite).step);
     }
-    test_step.dependOn(&b.addRunArtifact(module_check).step);
-    b.step("check-modules", "Validate separately imported codecs and shared checksum state").dependOn(&b.addRunArtifact(module_check).step);
     const check = b.step("check", "Compile the tests, library, example and benchmarks without running them");
     check.dependOn(&tests.step);
-    check.dependOn(&module_check.step);
     check.dependOn(&library.step);
     if (c_abi) check.dependOn(&package.artifact("z").step);
 
@@ -177,7 +152,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     };
     for (abi_targets, 0..) |abi_target, i| {
         const abi_module = b.createModule(.{ .root_source_file = p.path("src/c.zig"), .target = abi_target, .optimize = .small });
-        addShared(p, abi_module, abi_target, .small);
+        addKernelModules(p, abi_module, abi_target, .small);
         const object = b.addObject(.{ .name = b.fmt("check-c-abi-{d}", .{i}), .root_module = abi_module });
         abi_check.dependOn(&object.step);
     }
@@ -224,45 +199,12 @@ pub fn dev(b: *std.Build, tools: type) void {
     tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig") });
 }
 
-/// Public concerns share one instance of the low layers in a compilation.
-const PackageModules = struct { warp: *std.Build.Module, checksum: *std.Build.Module, deflate: *std.Build.Module, zstd: *std.Build.Module };
-
-fn packageModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) PackageModules {
-    const shared = sharedModules(b, target, optimize);
-    const flate = b.createModule(.{ .root_source_file = b.path("src/flate.zig"), .target = target, .optimize = optimize });
-    flate.addImport("checksum", shared.checksum);
-    flate.addImport("bits", shared.bits);
-    flate.addImport("crc", shared.crc);
-    const zstd = b.createModule(.{ .root_source_file = b.path("src/zstd.zig"), .target = target, .optimize = optimize });
-    zstd.addImport("bits", shared.bits);
-    const root = b.createModule(.{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
-    root.addImport("checksum", shared.checksum);
-    root.addImport("deflate", flate);
-    root.addImport("zstd", zstd);
-    return .{ .warp = root, .checksum = shared.checksum, .deflate = flate, .zstd = zstd };
-}
-
+/// warp's one module. The checksum kernels that need instructions beyond the
+/// target's baseline are modules of their own beneath it (`addKernelModules`).
 fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
-    return packageModules(b, target, optimize).warp;
-}
-
-const SharedModules = struct { checksum: *std.Build.Module, bits: *std.Build.Module, crc: *std.Build.Module };
-
-fn sharedModules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) SharedModules {
-    const checksum = b.createModule(.{ .root_source_file = b.path("src/checksum.zig"), .target = target, .optimize = optimize });
-    const bits = b.createModule(.{ .root_source_file = b.path("src/bits.zig"), .target = target, .optimize = optimize });
-    const crc = b.createModule(.{ .root_source_file = b.path("src/checksum/crc.zig"), .target = target, .optimize = optimize });
-    checksum.addImport("crc", crc);
-    addKernelModules(b, checksum, target, optimize);
-    return .{ .checksum = checksum, .bits = bits, .crc = crc };
-}
-
-/// Tests and the C entry own their codec sources but share the same low layers.
-fn addShared(b: *std.Build, root: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
-    const shared = sharedModules(b, target, optimize);
-    root.addImport("checksum", shared.checksum);
-    root.addImport("bits", shared.bits);
-    root.addImport("crc", shared.crc);
+    const root = b.createModule(.{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
+    addKernelModules(b, root, target, optimize);
+    return root;
 }
 
 /// The checksum kernels that need instructions beyond the target's

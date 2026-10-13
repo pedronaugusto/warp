@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const Io = std.Io;
-const checksum = @import("checksum");
+const checksum = @import("checksum.zig");
 const Diagnostic = @import("Diagnostic.zig");
 
 const flag_text: u8 = 1;

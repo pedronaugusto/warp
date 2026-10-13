@@ -72,7 +72,10 @@ single cached feature choice. There is no shared mutable codec state.
   in a supplied buffer free nothing; allocated values retain their allocator.
 - Kernel modules enable their required instructions independently of the
   consumer baseline. Dispatch selects them only when runtime detection permits;
-  portable CRC and Adler kernels remain available.
+  portable CRC and Adler kernels remain available. They are the only modules
+  beside `warp`, which is one module for every codec: Zig sets CPU features per
+  module, not per function, so code built with extra instructions needs a module
+  of its own. They fold into `warp` when Zig can enable features per function.
 
 ## Extended operations
 

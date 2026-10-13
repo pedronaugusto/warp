@@ -407,7 +407,7 @@ fn streamDouble(t: *const Table, r: *bits.Reader, out: []u8) void {
 
 // ---- encoding ----
 
-const Writer = @import("bits").Writer;
+const Writer = @import("../bits.zig").Writer;
 
 /// The longest code the encoder makes.
 pub const encode_log = 11;
