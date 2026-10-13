@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The benchmarks run the parallel and speculative rows at 1, 2, 4 and 8 workers on every machine. A test runs the parallel codecs with sixteen workers on an `Io` with no thread, one and two, and checks the same bytes: the tasks the `Io` has no thread for run in place, and no worker waits for another to be scheduled.
+
 ## [0.2.3] - 2026-10-13
 
 ### Changed
