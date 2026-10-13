@@ -6,6 +6,7 @@ const gen = @import("gen");
 const parallel = @import("../parallel.zig");
 const Decompressor = @import("../Decompressor.zig");
 const container = @import("../container.zig");
+const Index = @import("../Index.zig");
 
 fn encode(gpa: std.mem.Allocator, io: std.Io, in: []const u8, options: parallel.Options) ![]u8 {
     var p = try parallel.Compressor.init(gpa, options);
@@ -42,6 +43,38 @@ test "parallel compression round-trips with identical bytes at any concurrency" 
         try testing.expectEqualSlices(u8, in, decoded[0..r.out_len]);
         try testing.expectEqual(many.len, r.in_len);
     };
+}
+
+test "parallel codecs finish with more workers than threads, with the same bytes" {
+    // A machine with fewer CPUs than workers: the Io runs the tasks it has no
+    // thread for in place, and no worker waits for another to be scheduled.
+    const gpa = testing.allocator;
+    const in = try gen.alloc(gpa, .text, 23, 120000);
+    defer gpa.free(in);
+    const decoded = try gpa.alloc(u8, in.len);
+    defer gpa.free(decoded);
+    const options: parallel.Options = .{ .level = 6, .chunk_len = 8192, .concurrency = 16 };
+    const serial = try encode(gpa, testing.io, in, .{ .level = 6, .chunk_len = 8192, .concurrency = 1 });
+    defer gpa.free(serial);
+    for ([_]std.Io.Limit{ .nothing, .limited(1), .limited(2) }) |limit| {
+        var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = limit });
+        defer threaded.deinit();
+        const io = threaded.io();
+        const many = try encode(gpa, io, in, options);
+        defer gpa.free(many);
+        try testing.expectEqualSlices(u8, serial, many);
+        var index = try Index.build(gpa, many, .gzip, 8192);
+        defer index.deinit();
+        var indexed = try parallel.Decompressor.init(gpa, .{ .concurrency = 16 });
+        defer indexed.deinit();
+        _ = try indexed.decompress(io, many, decoded, &index);
+        try testing.expectEqualSlices(u8, in, decoded);
+        @memset(decoded, 0);
+        var speculative = try parallel.Decompressor.init(gpa, .{ .concurrency = 16, .speculative = .{ .chunk_len = 16384, .search_len = 1024 } });
+        defer speculative.deinit();
+        const r = try speculative.inflate(io, many, decoded, .{ .accept = .gzip });
+        try testing.expectEqualSlices(u8, in, decoded[0..r.out_len]);
+    }
 }
 
 test "parallel compression reuses its exact allocation, including empty input" {
