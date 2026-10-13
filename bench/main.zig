@@ -1,8 +1,8 @@
 //! warp's DEFLATE benchmarks, measured through shakedown: decoding, checksums
 //! and compression on generated workloads and, given `--corpus <dir>`, on the
 //! book's corpora (the batch files, tar and Silesia files pedronaugusto/trials
-//! prepares). Each row times warp beside the code it replaces in the family
-//! (bench/baseline/) or beside std, one row each: `family/workload/variant`.
+//! prepares). Each row times warp beside std, one row each:
+//! `family/workload/variant`.
 //!
 //!   bench [--smoke] [--corpus <dir>] [--row <prefix>]
 //!
@@ -16,7 +16,6 @@ const Io = std.Io;
 const ensign = @import("ensign");
 const warp = @import("warp");
 const gen = @import("gen");
-const baseline = @import("baseline");
 const support = @import("support.zig");
 const stream = @import("stream.zig");
 const parallel = @import("parallel.zig");
@@ -60,10 +59,10 @@ const Level = std.compress.flate.Compress.Options;
 pub const Decode = struct {
     session: *Session,
     index: usize,
-    variant: enum { exact, margin, relic },
+    variant: enum { exact, margin, std },
     arena: std.heap.ArenaAllocator = undefined,
     d: *warp.Decompressor = undefined,
-    relic: *baseline.inflate.Decoder = undefined,
+    window: []u8 = &.{},
     streams: []const []const u8 = &.{},
     inputs: []const []const u8 = &.{},
     out: []u8 = &.{},
@@ -78,8 +77,7 @@ pub const Decode = struct {
         c.out = try a.alloc(u8, wl.max + warp.inflate_margin);
         c.d = try a.create(warp.Decompressor);
         c.d.* = .init;
-        c.relic = try a.create(baseline.inflate.Decoder);
-        c.relic.* = .{};
+        c.window = try a.alloc(u8, std.compress.flate.max_window_len);
         // One untimed pass, checking the output.
         for (c.streams, c.inputs) |s, in| {
             _ = try c.d.inflate(s, c.out[0..in.len], .{});
@@ -98,23 +96,23 @@ pub const Decode = struct {
                 const r = try c.d.inflate(s, c.out[0..len], .{});
                 if (r.out_len != in.len) return error.WrongLength;
             },
-            .relic => {
+            .std => {
                 var r: Io.Reader = .fixed(s);
-                const n = try c.relic.zlib(&r, c.out[0..in.len]);
-                if (n != in.len) return error.WrongLength;
+                var d: std.compress.flate.Decompress = .init(&r, .zlib, c.window);
+                try d.reader.readSliceAll(c.out[0..in.len]);
             },
         };
     }
 };
 
 /// Decoding std's zlib streams at level 6: warp with the output exact and with
-/// the margin, beside relic's decoder.
+/// the margin, beside std's decoder.
 fn decode(s: *Session) !void {
     if (!s.wants("decode/")) return;
     for (try s.workloads(), 0..) |wl, index| {
         if (!s.wants(try s.name("decode/{s}/", .{wl.name}))) continue;
         _ = try s.streams(index);
-        for ([_]struct { []const u8, @FieldType(Decode, "variant") }{ .{ "warp exact", .exact }, .{ "warp margin", .margin }, .{ "relic", .relic } }) |variant| {
+        for ([_]struct { []const u8, @FieldType(Decode, "variant") }{ .{ "warp exact", .exact }, .{ "warp margin", .margin }, .{ "std", .std } }) |variant| {
             const ctx = try s.arena.create(Decode);
             ctx.* = .{ .session = s, .index = index, .variant = variant[1] };
             try s.measure(Decode, ctx, support.rowOf(Decode, try s.name("decode/{s}/{s}", .{ wl.name, variant[0] }), "pass"));
@@ -145,18 +143,17 @@ const Checksum = struct {
 
 const Algorithm = struct {
     name: []const u8,
-    other: []const u8,
-    runs: [3]*const fn (*Checksum, u64) Error!void,
+    runs: [2]*const fn (*Checksum, u64) Error!void,
 };
 
 const algorithms = [_]Algorithm{
-    .{ .name = "crc32", .other = "relic", .runs = .{ Checksum.runner(warp.Crc32.hash), Checksum.runner(baseline.crc32.Crc32.hash), Checksum.runner(std.hash.Crc32.hash) } },
-    .{ .name = "crc32c", .other = "chronicle", .runs = .{ Checksum.runner(warp.Crc32c.hash), Checksum.runner(baseline.crc32c.hash), Checksum.runner(std.hash.crc.@"CRC-32/ISCSI".hash) } },
-    .{ .name = "adler32", .other = "relic", .runs = .{ Checksum.runner(warp.Adler32.hash), Checksum.runner(baseline.inflate.adler32), Checksum.runner(std.hash.Adler32.hash) } },
+    .{ .name = "crc32", .runs = .{ Checksum.runner(warp.Crc32.hash), Checksum.runner(std.hash.Crc32.hash) } },
+    .{ .name = "crc32c", .runs = .{ Checksum.runner(warp.Crc32c.hash), Checksum.runner(std.hash.crc.@"CRC-32/ISCSI".hash) } },
+    .{ .name = "adler32", .runs = .{ Checksum.runner(warp.Adler32.hash), Checksum.runner(std.hash.Adler32.hash) } },
 };
 
 /// CRC-32, CRC-32C and Adler-32 per call at four sizes and three alignments,
-/// beside the family's earlier code and std.
+/// beside std.
 fn checksums(s: *Session) !void {
     const sizes = [_]struct { usize, []const u8 }{ .{ 64, "64 B" }, .{ 1024, "1 KiB" }, .{ 64 << 10, "64 KiB" }, .{ 64 << 20, "64 MiB" } };
     const big_len: usize = if (s.options.smoke) 70 << 10 else 64 << 20;
@@ -167,7 +164,7 @@ fn checksums(s: *Session) !void {
         for (sizes) |size| {
             if (size[0] > big_len) continue;
             for ([_]usize{ 0, 1, 7 }) |alignment| {
-                for (algorithm.runs, [_][]const u8{ "warp", algorithm.other, "std" }) |run, who| {
+                for (algorithm.runs, [_][]const u8{ "warp", "std" }) |run, who| {
                     const ctx = try s.arena.create(Checksum);
                     ctx.* = .{ .data = big.?[alignment..][0..size[0]] };
                     try s.measure(Checksum, ctx, .{
@@ -246,17 +243,16 @@ fn compress(s: *Session) !void {
 
 const inputs = [_][]const u8{ "", "blob 28\x00tiny file for the setup case\n" };
 
-/// The cost of one tiny stream: decoding it beside relic, compressing it
+/// The cost of one tiny stream: decoding it beside std, compressing it
 /// beside std, which sets up a whole window per stream.
 pub const Setup = struct {
     session: *Session,
-    mode: enum { warp_decode, relic_decode, warp_compress, std_compress },
+    mode: enum { warp_decode, std_decode, warp_compress, std_compress },
     level: u4,
     std_level: Level,
     input: []const u8,
     arena: std.heap.ArenaAllocator = undefined,
     d: *warp.Decompressor = undefined,
-    relic: *baseline.inflate.Decoder = undefined,
     c: *warp.Compressor = undefined,
     window: []u8 = &.{},
     stream: []const u8 = &.{},
@@ -268,8 +264,6 @@ pub const Setup = struct {
         const a = c.arena.allocator();
         c.d = try a.create(warp.Decompressor);
         c.d.* = .init;
-        c.relic = try a.create(baseline.inflate.Decoder);
-        c.relic.* = .{};
         c.window = try a.alloc(u8, std.compress.flate.max_window_len);
         c.c = try a.create(warp.Compressor);
         c.c.* = try .init(a, .{ .level = c.level });
@@ -288,9 +282,10 @@ pub const Setup = struct {
     pub fn run(c: *Setup, units: u64) Error!void {
         for (0..units) |_| switch (c.mode) {
             .warp_decode => std.mem.doNotOptimizeAway(try c.d.inflate(c.stream, c.out[0..c.input.len], .{})),
-            .relic_decode => {
+            .std_decode => {
                 var r: Io.Reader = .fixed(c.stream);
-                std.mem.doNotOptimizeAway(try c.relic.zlib(&r, c.out[0..c.input.len]));
+                var d: std.compress.flate.Decompress = .init(&r, .zlib, c.window);
+                try d.reader.readSliceAll(c.out[0..c.input.len]);
             },
             .warp_compress => std.mem.doNotOptimizeAway(try c.c.compress(c.input, &c.out, .{})),
             .std_compress => {
@@ -307,7 +302,7 @@ pub const Setup = struct {
 fn setup(s: *Session) !void {
     if (!s.wants("setup/")) return;
     for (inputs) |in| {
-        for ([_]struct { []const u8, @FieldType(Setup, "mode") }{ .{ "warp", .warp_decode }, .{ "relic", .relic_decode } }) |who| {
+        for ([_]struct { []const u8, @FieldType(Setup, "mode") }{ .{ "warp", .warp_decode }, .{ "std", .std_decode } }) |who| {
             const ctx = try s.arena.create(Setup);
             ctx.* = .{ .session = s, .mode = who[1], .level = 1, .std_level = .level_6, .input = in };
             try s.measure(Setup, ctx, support.rowOf(Setup, try s.name("setup/decode/{d} B/{s}", .{ in.len, who[0] }), "stream"));

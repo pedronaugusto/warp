@@ -9,6 +9,10 @@ All notable changes to warp are documented here. The format follows
 
 - warp is one module, `warp`: the separate `checksums`, `deflate` and `zstd` modules are gone, and what they held is in `warp` (`warp.Crc32`, `warp.Compressor`, `warp.zstd`). A program compiles only what it calls, so one that only checksums carries no codec. The CPU-feature checksum kernels stay modules of their own inside, since Zig sets CPU features per module.
 
+### Changed
+
+- The benchmarks compare warp with std only: the copies of relic's inflate and CRC-32 and chronicle's CRC-32C they measured against are gone, since both now use warp.
+
 ## [0.2.4] - 2026-10-13
 
 ### Changed

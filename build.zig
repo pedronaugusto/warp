@@ -60,7 +60,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
     // The benchmarks' input generator and the code warp replaces carry tests
     // of their own; a test runs only from its module's root, so each is one.
-    for ([_][]const u8{ "bench/gen.zig", "bench/baseline/baseline.zig" }) |source| {
+    for ([_][]const u8{"bench/gen.zig"}) |source| {
         const suite = b.addTest(.{
             .root_module = b.createModule(.{ .root_source_file = p.path(source), .target = target, .optimize = optimize }),
             .filters = filters,
@@ -258,12 +258,10 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const p = b.dependency("warp", .{ .target = target, .optimize = optimize }).builder;
     const warp = warpModule(p, target, optimize);
     const gen = b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = target, .optimize = optimize });
-    const baseline = b.createModule(.{ .root_source_file = p.path("bench/baseline/baseline.zig"), .target = target, .optimize = optimize });
     const ensign = b.dependency("ensign", .{ .target = target, .optimize = optimize }).module("ensign");
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "warp", .module = warp },
         .{ .name = "gen", .module = gen },
-        .{ .name = "baseline", .module = baseline },
         .{ .name = "ensign", .module = ensign },
     }) catch @panic("OOM");
 }

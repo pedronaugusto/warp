@@ -4,8 +4,7 @@
   ],
   "test_roots": [
     "src/tests.zig",
-    "bench/gen.zig",
-    "bench/baseline/baseline.zig"
+    "bench/gen.zig"
   ],
   "test_support": [
     "src/testing/**"

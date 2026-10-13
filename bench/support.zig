@@ -11,7 +11,6 @@ const Io = std.Io;
 const warp = @import("warp");
 const gen = @import("gen");
 const shakedown = @import("shakedown");
-const baseline = @import("baseline");
 const provenance = @import("preflight_bench_options");
 
 /// What a row's hooks and run can fail with: the codecs' failures, the
@@ -21,7 +20,7 @@ pub const Error = std.mem.Allocator.Error || Io.Writer.Error || Io.Reader.Error 
     warp.Inflate.Reader.ReadError || warp.parallel.Decompressor.DecodeError || warp.parallel.Compressor.Error ||
     warp.gzip.Index.BuildError || warp.zstd.Decompressor.Error || warp.zstd.Compressor.CompressError ||
     warp.zstd.parallel.Compressor.Error || warp.zstd.parallel.Compressor.InitError || warp.zstd.Compress.Error ||
-    baseline.inflate.Error || error{ WrongLength, WrongOutput, InvalidOptions };
+    std.compress.flate.Decompress.Error || error{ WrongLength, WrongOutput, InvalidOptions };
 
 pub const Row = shakedown.bench.Row;
 
