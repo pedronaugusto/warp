@@ -43,6 +43,9 @@ pub const Session = struct {
     out: *Io.Writer,
     options: shakedown.bench.Options,
     corpus: ?[]const u8 = null,
+    /// The CPUs the machine has: a row of more workers than these measures the
+    /// scheduler, so the parallel families leave it out.
+    cpus: usize,
     loaded: ?[]const Workload = null,
     zlib: std.AutoHashMapUnmanaged(usize, []const []const u8) = .empty,
 
@@ -56,6 +59,7 @@ pub const Session = struct {
             // slowest rows (levels 10 to 12 over megabytes) take a second a sample.
             .options = .{ .smoke = smoke, .prefix = prefix, .samples = 7 },
             .corpus = corpus,
+            .cpus = std.Thread.getCpuCount() catch 1,
         };
     }
 

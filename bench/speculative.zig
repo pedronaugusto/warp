@@ -69,6 +69,7 @@ pub fn rows(s: *Session) !void {
         native.* = .{ .session = s, .workload = index, .workers = 1, .native = true };
         try s.measure(Speculative, native, support.rowOf(Speculative, try s.name("speculative/{s}/native", .{wl.name}), "pass"));
         for ([_]u16{ 1, 2, 4, 8 }) |workers| {
+            if (workers > s.cpus) continue;
             const ctx = try s.arena.create(Speculative);
             ctx.* = .{ .session = s, .workload = index, .workers = workers, .native = false };
             try s.measure(Speculative, ctx, support.rowOf(Speculative, try s.name("speculative/{s}/workers {d}", .{ wl.name, workers }), "pass"));

@@ -1,4 +1,4 @@
-//! Ordered chunk compression and indexed decompression, by worker count.
+//! Ordered chunk compression and indexed decompression, by worker count, up to the CPUs the machine has.
 const std = @import("std");
 const Io = std.Io;
 const warp = @import("warp");
@@ -90,6 +90,7 @@ pub fn rows(s: *Session) !void {
     for (try s.workloads(), 0..) |wl, index| {
         if (!s.wants(try s.name("parallel/{s}/", .{wl.name}))) continue;
         for ([_]u4{ 1, 6, 12 }) |level| for ([_]u16{ 1, 2, 4, 8 }) |workers| for ([_]Operation{ .encode, .decode, .index }) |operation| {
+            if (workers > s.cpus) continue;
             const ctx = try s.arena.create(Parallel);
             ctx.* = .{ .session = s, .workload = index, .level = level, .workers = workers, .operation = operation };
             try s.measure(Parallel, ctx, support.rowOf(Parallel, try s.name("parallel/{s}/level {d}/workers {d}/{t}", .{ wl.name, level, workers, operation }), "pass"));
