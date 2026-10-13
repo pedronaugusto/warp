@@ -1,29 +1,30 @@
 .{
     .name = .warp,
-    .version = "0.3.0",
+    .version = "0.3.1",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0xd3b58c6615b10424,
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "docs", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.1.4#2472c031192ce6f974b45cc77fd0edd57a999d6a",
-            .hash = "aegis-0.1.4-rsxout2iBwA5TdfWTNsF-rJ-AUiUgvlbc2WmlkdmNPwj",
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.1.6#2b97b877a07690ea3ac447f82f9efe660743a84a",
+            .hash = "aegis-0.1.6-rsxouvHOBwC2_K3U8Vewo9LnTYL48c57ztMYdlW72Z3r",
             .lazy = true,
         },
     },
     .dev_dependencies = .{
         .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.4.3#91c42412fed03aa24dfafb5061aee53875f47e02",
-            .hash = "preflight-0.4.3-LX1ZwtOTDgBp4LvGwzUJcRAhouDcVk6XkNMuN3cR4qxr",
+            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.4.5#22e928fba1b897fd5888cc7ef92037b29e1d8e06",
+            .hash = "preflight-0.4.5-LX1ZwgeZDgD4Mmm3Cxjy04JQkPBUlcYKDQa9BPv4_GWW",
         },
 
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.4.0#2c72de95e1701064fae7564bb991adb62c61313b",
-            .hash = "shakedown-0.4.0-BR8U4xDpFQAKO5NeqbUkAEbbDdba3UKJjmPA5nuZvF1Z",
+            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.4.1#1fd9fd619b105a65c7478525dfd83f24004e1b8a",
+            .hash = "shakedown-0.4.1-BR8U4z_qFQBovSS7wrfzvzZO0Vb8tTGeXEXcEUBXzxQE",
         },
+
         .ensign = .{
-            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.1.1#f5a8ed89f5e3437d7bd75f134902b71bfc998121",
-            .hash = "ensign-0.1.1-6eMTD4qFAwAZ66LLpU5Jw_44qrvqF0xDzWqhlSYSWZw2",
+            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.2.2#04c5e2d707b00924b2d70761072f40e5417a2e1d",
+            .hash = "ensign-0.2.2-6eMTD7kqBAAmFJQHEeqzTYspfVj5pVOX46LuKeQig8QN",
         },
     },
 }
