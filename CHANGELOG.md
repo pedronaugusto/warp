@@ -5,6 +5,8 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-14
+
 ### Breaking
 
 - Sizes and limits in options are aegis sizes: `Compressor.Options.max_input`, `parallel.Options.chunk_len`, the speculative decoder's `chunk_len` and `search_len`, `zstd.Compressor.Options.max_input`, `zstd.Compress.Options.pledged_size` and `target_block_size`, `zstd.Decompressor.Options.max_window`, `zstd.seekable.Writer.Options.frame_len`, `zstd.parallel.Options.job_len` and `writeSeekable`'s frame length. Defaults read as text (`.literal("128KiB")`).
