@@ -63,7 +63,11 @@ single cached feature choice. There is no shared mutable codec state.
 - Fast loops run only with checked input and output margins. Tail loops check
   each access. Spare caller output improves speed without changing acceptance.
 - Headers, dictionaries, checksum trailers, offsets and declared lengths are
-  validated. Diagnostics identify the failed structure and its position.
+  validated. Diagnostics identify the failed structure and its position, in bits
+  for DEFLATE and in bytes for zstd, each an aegis unit so the two never mix.
+- Sizes and limits a caller sets are aegis sizes at the API; the engines keep
+  their lengths as `usize` inside, where a typed value would cost the measured
+  loops and buy nothing a slice bound does not already check.
 - Output depends on input, options, dictionary and flush boundaries. Chunking,
   CPU dispatch and configured worker counts do not change its bytes.
 - Search depth, windows, blocks, descriptors and queues are bounded. Jobs are

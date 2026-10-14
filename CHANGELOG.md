@@ -5,6 +5,16 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Breaking
+
+- Sizes and limits in options are aegis sizes: `Compressor.Options.max_input`, `parallel.Options.chunk_len`, the speculative decoder's `chunk_len` and `search_len`, `zstd.Compressor.Options.max_input`, `zstd.Compress.Options.pledged_size` and `target_block_size`, `zstd.Decompressor.Options.max_window`, `zstd.seekable.Writer.Options.frame_len`, `zstd.parallel.Options.job_len` and `writeSeekable`'s frame length. Defaults read as text (`.literal("128KiB")`).
+- `Diagnostic.bit_offset` is an aegis count of bits and `zstd.Diagnostic.offset` one of bytes.
+- aegis is a dependency every build fetches, no longer lazy.
+
+### Changed
+
+- glint's aegis rules A001-A005 gated. Pins preflight 0.5.5 for development.
+
 ## [0.3.1] - 2026-10-14
 
 ### Changed
