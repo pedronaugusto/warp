@@ -57,7 +57,7 @@ test "speculative decoding joins unaligned blocks with shared history in every w
     const back = try a.alloc(u8, input.len);
     defer a.free(back);
     var stats: parallel.Decompressor.Statistics = .{};
-    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 4, .speculative = .{ .chunk_len = 65536, .search_len = 1024, .statistics = &stats } });
+    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 4, .speculative = .{ .chunk_len = .fromRaw(65536), .search_len = .fromRaw(1024), .statistics = &stats } });
     defer decoder.deinit();
     for (std.enums.values(container.Container)) |kind| for ([_]Deflate.Strategy{ .default, .fixed, .huffman_only }) |strategy| {
         const stream = try compressed(input, kind, strategy);
@@ -76,7 +76,7 @@ test "speculative decoding joins unaligned blocks with shared history in every w
 
 test "speculative decoding agrees with every captured producer and dictionary" {
     const a = testing.allocator;
-    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 2, .speculative = .{ .chunk_len = 65536, .search_len = 512, .work_limit = 1 } });
+    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 2, .speculative = .{ .chunk_len = .fromRaw(65536), .search_len = .fromRaw(512), .work_limit = 1 } });
     defer decoder.deinit();
     const c = try corpus.Corpus.parse(corpus.streams);
     var records = c.records();
@@ -122,7 +122,7 @@ fn compare(io: std.Io, decoder: *parallel.Decompressor, bytes: []const u8, left:
 
 test "speculative decoding preserves captured invalid-stream verdicts and diagnostics" {
     const a = testing.allocator;
-    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 2, .speculative = .{ .chunk_len = 8192, .search_len = 32, .work_limit = 1 } });
+    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 2, .speculative = .{ .chunk_len = .fromRaw(8192), .search_len = .fromRaw(32), .work_limit = 1 } });
     defer decoder.deinit();
     const left = try a.alloc(u8, 4 << 20);
     defer a.free(left);
@@ -152,7 +152,7 @@ test "speculative decoding handles concatenation, bad trailers, every truncation
     defer a.free(left);
     const right = try a.alloc(u8, left.len);
     defer a.free(right);
-    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 3, .speculative = .{ .chunk_len = 32768, .search_len = 128 } });
+    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 3, .speculative = .{ .chunk_len = .fromRaw(32768), .search_len = .fromRaw(128) } });
     defer decoder.deinit();
     try compare(testing.io, &decoder, stream, left, right, .{ .accept = .gzip });
     try compare(testing.io, &decoder, stream, left, right, .{ .accept = .gzip, .members = .one });
@@ -170,7 +170,7 @@ fn arbitrary(_: void, case: *shakedown.Case) !void {
     const output_len = shakedown.gen.intRange(case.source, usize, 0, 8192);
     const left = try case.gpa.alloc(u8, output_len);
     const right = try case.gpa.alloc(u8, output_len);
-    var decoder = try parallel.Decompressor.init(case.gpa, .{ .concurrency = 2, .speculative = .{ .chunk_len = 4096, .search_len = 8, .work_limit = 1 } });
+    var decoder = try parallel.Decompressor.init(case.gpa, .{ .concurrency = 2, .speculative = .{ .chunk_len = .fromRaw(4096), .search_len = .fromRaw(8), .work_limit = 1 } });
     defer decoder.deinit();
     try compare(testing.io, &decoder, bytes, left, right, .{ .accept = shakedown.gen.enumValue(case.source, container.Accept) });
 }
@@ -181,7 +181,7 @@ test "speculative fuzz: arbitrary bytes retain the native reference verdict" {
 
 test "speculative storage is exact, allocation failures and bounded fallback permit reuse" {
     const a = testing.allocator;
-    const options: parallel.Decompressor.Options = .{ .concurrency = 2, .speculative = .{ .chunk_len = 256, .search_len = 16, .work_limit = 1 } };
+    const options: parallel.Decompressor.Options = .{ .concurrency = 2, .speculative = .{ .chunk_len = .fromRaw(256), .search_len = .fromRaw(16), .work_limit = 1 } };
     var no_resize: shakedown.alloc.NoResize = .init(a);
     try testing.checkAllAllocationFailures(no_resize.allocator(), struct {
         fn once(allocator: std.mem.Allocator) !void {
@@ -253,7 +253,7 @@ fn validAndMutated(_: void, case: *shakedown.Case) !void {
     defer testing.allocator.free(stream);
     const left = try case.gpa.alloc(u8, input.len);
     const right = try case.gpa.alloc(u8, input.len);
-    var decoder = try parallel.Decompressor.init(case.gpa, .{ .concurrency = 3, .speculative = .{ .chunk_len = 32768, .search_len = 256, .work_limit = 1 } });
+    var decoder = try parallel.Decompressor.init(case.gpa, .{ .concurrency = 3, .speculative = .{ .chunk_len = .fromRaw(32768), .search_len = .fromRaw(256), .work_limit = 1 } });
     defer decoder.deinit();
     try compare(testing.io, &decoder, stream, left, right, .{ .accept = accept(kind) });
     if (stream.len > 0) {
@@ -275,7 +275,7 @@ test "speculative cancellation survives inline and concurrent workers and preser
     defer a.free(stream);
     const back = try a.alloc(u8, input.len);
     defer a.free(back);
-    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 4, .speculative = .{ .chunk_len = 65536, .search_len = 1024 } });
+    var decoder = try parallel.Decompressor.init(a, .{ .concurrency = 4, .speculative = .{ .chunk_len = .fromRaw(65536), .search_len = .fromRaw(1024) } });
     defer decoder.deinit();
     for ([_]std.Io.Limit{ .nothing, .unlimited }) |limit| {
         var threaded: std.Io.Threaded = .init(a, .{ .async_limit = limit });

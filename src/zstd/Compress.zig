@@ -2,6 +2,7 @@
 //! entropy engines. Input chunk boundaries do not choose block boundaries.
 const Compress = @This();
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Encoder = @import("Encoder.zig");
 const window_ = @import("match/window.zig");
@@ -13,10 +14,20 @@ pub const Options = struct {
     level: i32 = params_.default_level,
     tuning: Encoder.Tuning = .{},
     frame: Encoder.Frame = .{},
-    pledged_size: ?u64 = null,
+    pledged_size: ?aegis.units.Bytes(u64) = null,
     dictionary: ?*const Dictionary = null,
     /// Best-effort compressed block size, clamped to 1340..128 KiB.
-    target_block_size: ?u32 = null,
+    target_block_size: ?aegis.units.Bytes(u32) = null,
+
+    /// `pledged_size`, as the frame header and the check count it.
+    fn pledged(o: Options) ?u64 {
+        return if (o.pledged_size) |n| n.raw() else null;
+    }
+
+    /// `target_block_size`, as the block writer takes it.
+    fn targetBlock(o: Options) ?u32 {
+        return if (o.target_block_size) |n| n.raw() else null;
+    }
 };
 pub const Step = struct { in_len: usize, out_len: usize };
 pub const Drain = struct { out_len: usize, done: bool };
@@ -47,7 +58,7 @@ owned: []align(64) u8 = &.{},
 gpa: std.mem.Allocator = undefined,
 
 fn encoderOptions(options: Options) Encoder.Options {
-    return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = if (options.pledged_size) |n| if (n <= std.math.maxInt(usize)) @intCast(n) else null else null };
+    return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = if (options.pledged()) |n| if (std.math.cast(usize, n)) |len| .fromRaw(len) else null else null };
 }
 
 fn blockMax(p: Encoder.Params) usize {
@@ -60,7 +71,7 @@ fn staging(p: Encoder.Params) usize {
 
 /// Exact storage for tables, the retained history, input and pending output.
 pub fn memory(options: Options) usize {
-    const p = Encoder.resolve(encoderOptions(options), options.pledged_size);
+    const p = Encoder.resolve(encoderOptions(options), options.pledged());
     const block = blockMax(p);
     const size = Encoder.memory(encoderOptions(options)) +| (@as(usize, 1) << p.window_log) +| (staging(p) + block + 3 * 197 + 22);
     if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
@@ -82,10 +93,10 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
     std.debug.assert(buffer.len >= memory(options));
     const enc_options = encoderOptions(options);
     const enc_size = Encoder.memory(enc_options);
-    const p = Encoder.resolve(enc_options, options.pledged_size);
+    const p = Encoder.resolve(enc_options, options.pledged());
     const block = blockMax(p);
     const window_size = (@as(usize, 1) << p.window_log) + staging(p);
-    const s_block = @min(block, if (options.pledged_size) |n| @max(1024, n) else block);
+    const s_block = @min(block, if (options.pledged()) |n| @max(1024, n) else block);
     var s: Compress = .{ .options = options, .encoder = Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
     s.startFrame();
     return s;
@@ -122,8 +133,8 @@ fn startFrame(s: *Compress) void {
     s.reps = s.encoder.initialReps();
     s.encoder.prepare(s.params, s.base);
     var frame = s.options.frame;
-    frame.content_size = frame.content_size and s.options.pledged_size != null;
-    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged_size orelse 0, frame) catch unreachable; // unreachable: output reserves the maximum 18-byte frame header
+    frame.content_size = frame.content_size and s.options.pledged() != null;
+    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged() orelse 0, frame) catch unreachable; // unreachable: output reserves the maximum 18-byte frame header
 }
 
 /// Accept input and drain ready bytes. A full final block stays staged
@@ -170,7 +181,7 @@ pub fn flush(s: *Compress, out: []u8) Error!Drain {
 /// End the frame, checking its pledged size. Call until `done`.
 pub fn finish(s: *Compress, out: []u8) Error!Drain {
     if (s.phase == .failed) return error.SizeMismatch;
-    if (s.options.pledged_size) |pledge| if (pledge != s.total) {
+    if (s.options.pledged()) |pledge| if (pledge != s.total) {
         s.phase = .failed;
         return error.SizeMismatch;
     };
@@ -218,7 +229,7 @@ fn emit(s: *Compress, finishing: bool) void {
     } else s.encoder.store.storeLast(s.window[s.history..end]);
     s.encoder.mergeDictionary(s.window[0 .. s.history + s.have], s.history, end, s.total - s.have, s.params, s.reps, &next_reps);
     const raw = s.params.strategy == .fast and s.params.target_length > 0;
-    const n = (if (s.options.target_block_size) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch unreachable; // unreachable: output holds raw input plus headers for all 197 possible partitions
+    const n = (if (s.options.targetBlock()) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch unreachable; // unreachable: output holds raw input plus headers for all 197 possible partitions
     s.savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));
     s.pending = 0;
     s.pending_end = n;

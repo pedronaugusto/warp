@@ -1,6 +1,7 @@
 //! Entropy decoding in workers, followed by ordered history execution.
 const Decompressor = @This();
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Native = @import("../Decompressor.zig");
 const decode = @import("../decode.zig");
@@ -81,7 +82,7 @@ pub fn deinit(d: *Decompressor) void {
 }
 
 fn fail(options: Native.Options, err: Native.Error, offset: usize, reason: Diagnostic.Reason) Native.Error {
-    if (options.diagnostic) |diagnostic| diagnostic.* = .{ .offset = offset, .reason = reason };
+    if (options.diagnostic) |diagnostic| diagnostic.* = .{ .offset = .fromRaw(offset), .reason = reason };
     return err;
 }
 
@@ -104,7 +105,7 @@ pub fn decompress(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: 
                 at += 8 + skip.len;
             },
             .zstd => |header| {
-                if (header.window_size > options.max_window) return fail(options, error.WindowTooLarge, at, .window_too_large);
+                if (aegis.units.Bytes(u64).fromRaw(header.window_size).compare(options.max_window) == .gt) return fail(options, error.WindowTooLarge, at, .window_too_large);
                 const start = at;
                 at += header.header_len;
                 try d.decodeFrame(io, in, out, &at, &op, header, start, options);

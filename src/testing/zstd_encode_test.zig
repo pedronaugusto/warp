@@ -12,13 +12,13 @@ test "zstd encoder: long-distance anchors recover distant random content at ever
     const in = try inputs.alloc(gpa, .noise, 92, 600_000);
     defer gpa.free(in);
     @memcpy(in[400_000..], in[0..200_000]);
-    var c = try Compressor.init(gpa, .{ .level = 1, .max_input = in.len, .tuning = .{ .hash_log = 6, .chain_log = 6, .window_log = 20 } });
+    var c = try Compressor.init(gpa, .{ .level = 1, .max_input = .fromRaw(in.len), .tuning = .{ .hash_log = 6, .chain_log = 6, .window_log = 20 } });
     defer c.deinit();
     const out = try gpa.alloc(u8, Compressor.bound(in.len));
     defer gpa.free(out);
     const baseline = try c.compress(in, out, .{});
     for (std.enums.values(Compressor.Strategy)) |strategy| {
-        var long = try Compressor.init(gpa, .{ .level = 1, .max_input = in.len, .tuning = .{ .strategy = strategy, .long_distance = true, .window_log = 20, .hash_log = 6, .chain_log = 6 } });
+        var long = try Compressor.init(gpa, .{ .level = 1, .max_input = .fromRaw(in.len), .tuning = .{ .strategy = strategy, .long_distance = true, .window_log = 20, .hash_log = 6, .chain_log = 6 } });
         defer long.deinit();
         const n = try long.compress(in, out, .{});
         if (n + 150_000 >= baseline) std.debug.print("long {t}: {d} bytes; baseline {d}\n", .{ strategy, n, baseline });
@@ -57,7 +57,7 @@ test "zstd encoder: long-distance matches fit storage beyond a small size hint" 
     for (1..in.len / 512) |i| @memcpy(in[i * 512 ..][0..512], in[0..512]);
     var no_resize = shakedown.alloc.NoResize.init(gpa);
     var counter: testing.FailingAllocator = .init(no_resize.allocator(), .{});
-    const options: Compressor.Options = .{ .max_input = 37, .tuning = .{ .long_distance = true, .window_log = 10 } };
+    const options: Compressor.Options = .{ .max_input = .fromRaw(37), .tuning = .{ .long_distance = true, .window_log = 10 } };
     var c = try Compressor.init(counter.allocator(), options);
     defer c.deinit();
     try testing.expectEqual(Compressor.memory(options), counter.allocated_bytes);
@@ -71,14 +71,14 @@ test "zstd encoder: long-distance bucket wrap is deterministic across frames" {
     for ([_]inputs.Kind{ .text, .json, .periodic }) |kind| {
         const in = try inputs.alloc(gpa, kind, 2, 600_000);
         defer gpa.free(in);
-        var c = try Compressor.init(gpa, .{ .max_input = in.len, .tuning = .{ .long_distance = true } });
+        var c = try Compressor.init(gpa, .{ .max_input = .fromRaw(in.len), .tuning = .{ .long_distance = true } });
         defer c.deinit();
         try roundTrip(gpa, &c, in, .{});
     }
     const mixed = try inputs.alloc(gpa, .noise, 91, 1025 * 1024);
     defer gpa.free(mixed);
     for (1..1025) |packet| @memcpy(mixed[packet * 1024 ..][0..512], mixed[0..512]);
-    var c = try Compressor.init(gpa, .{ .max_input = mixed.len, .tuning = .{ .long_distance = true } });
+    var c = try Compressor.init(gpa, .{ .max_input = .fromRaw(mixed.len), .tuning = .{ .long_distance = true } });
     defer c.deinit();
     try roundTrip(gpa, &c, mixed, .{});
 }
@@ -100,7 +100,7 @@ test "zstd encoder: attached dictionaries, repeat histories and suppressed IDs" 
     var out: [8192]u8 = undefined;
     var back: [4096]u8 = undefined;
     for (all) |dictionary| for (std.enums.values(Compressor.Strategy)) |strategy| {
-        const options: Compressor.Options = .{ .max_input = plain.len, .dictionary = dictionary, .tuning = .{ .strategy = strategy } };
+        const options: Compressor.Options = .{ .max_input = .fromRaw(plain.len), .dictionary = dictionary, .tuning = .{ .strategy = strategy } };
         var counter: testing.FailingAllocator = .init(gpa, .{});
         var c = try Compressor.init(counter.allocator(), options);
         defer c.deinit();
@@ -123,7 +123,7 @@ test "zstd encoder: attached dictionaries, repeat histories and suppressed IDs" 
 test "zstd encoder: dictionary matches continue into the frame's prefix" {
     const gpa = testing.allocator;
     const dictionary = zstd.Dictionary.raw("abcdefgh");
-    var c = try Compressor.init(gpa, .{ .dictionary = &dictionary, .max_input = 48 });
+    var c = try Compressor.init(gpa, .{ .dictionary = &dictionary, .max_input = .fromRaw(48) });
     defer c.deinit();
     const plain = "abcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh";
     var out: [128]u8 = undefined;
@@ -143,9 +143,9 @@ test "zstd encoder: an unrelated dictionary preserves three-byte prefix matches"
     for (&input, 0..) |*byte, i| byte.* = if (i % 4 < 3) @intCast(i % 4 + 'A') else @truncate(i / 4);
     const dictionary = zstd.Dictionary.raw("unrelated dictionary content for this input");
     const tuning: Compressor.Tuning = .{ .min_match = 3, .strategy = .btultra2 };
-    var plain = try Compressor.init(gpa, .{ .level = 19, .max_input = input.len, .tuning = tuning });
+    var plain = try Compressor.init(gpa, .{ .level = 19, .max_input = .fromRaw(input.len), .tuning = tuning });
     defer plain.deinit();
-    var attached = try Compressor.init(gpa, .{ .level = 19, .dictionary = &dictionary, .max_input = input.len, .tuning = tuning });
+    var attached = try Compressor.init(gpa, .{ .level = 19, .dictionary = &dictionary, .max_input = .fromRaw(input.len), .tuning = tuning });
     defer attached.deinit();
     var encoded: [3000]u8 = undefined;
     const baseline = try plain.compress(&input, &encoded, .{ .checksum = false });
@@ -164,7 +164,7 @@ test "zstd encoder: tuning extremes normalize before sizing or searching" {
     const in = try inputs.alloc(gpa, .json, 4, 2048);
     defer gpa.free(in);
     for (std.enums.values(Compressor.Strategy)) |strategy| {
-        var c = try Compressor.init(gpa, .{ .max_input = in.len, .tuning = .{ .strategy = strategy, .window_log = 0, .hash_log = 0, .chain_log = 0, .search_log = 0, .min_match = 0 } });
+        var c = try Compressor.init(gpa, .{ .max_input = .fromRaw(in.len), .tuning = .{ .strategy = strategy, .window_log = 0, .hash_log = 0, .chain_log = 0, .search_log = 0, .min_match = 0 } });
         defer c.deinit();
         try roundTrip(gpa, &c, in, .{});
     }
@@ -215,7 +215,7 @@ test "zstd encoder: implemented strategies round-trip boundary lengths and frame
     const gpa = testing.allocator;
     const strategies = [_]Compressor.Strategy{ .fast, .dfast, .greedy, .lazy, .lazy2, .btlazy2, .btopt, .btultra, .btultra2 };
     for (strategies) |strategy| {
-        var c = try Compressor.init(gpa, .{ .level = 6, .tuning = .{ .strategy = strategy }, .max_input = 300_000 });
+        var c = try Compressor.init(gpa, .{ .level = 6, .tuning = .{ .strategy = strategy }, .max_input = .fromRaw(300_000) });
         defer c.deinit();
         for (std.enums.values(inputs.Kind)) |kind| for ([_]usize{ 0, 1, 6, 7, 16, 37, 255, 256, 1024, 16384, 65535, 131072, 300_000 }) |len| {
             const in = try inputs.alloc(gpa, kind, 4, len);
@@ -230,7 +230,7 @@ test "zstd encoder: input beyond max_input stays inside caller memory" {
     const in = try inputs.alloc(gpa, .json, 22, 20_000);
     defer gpa.free(in);
     for ([_]i32{ 1, 3, 6, 9, 13, 15, 16, 19, 22 }) |level| {
-        var c = try Compressor.init(gpa, .{ .level = level, .max_input = 37 });
+        var c = try Compressor.init(gpa, .{ .level = level, .max_input = .fromRaw(37) });
         defer c.deinit();
         try roundTrip(gpa, &c, in, .{});
     }
@@ -239,7 +239,7 @@ test "zstd encoder: input beyond max_input stays inside caller memory" {
 test "zstd encoder: small and large calls can change the level's strategy" {
     const gpa = testing.allocator;
     for ([_]i32{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22 }) |level| {
-        var c = try Compressor.init(gpa, .{ .level = level, .max_input = 300_000 });
+        var c = try Compressor.init(gpa, .{ .level = level, .max_input = .fromRaw(300_000) });
         defer c.deinit();
         for ([_]usize{ 300_000, 200, 100_000, 4096, 300_000 }) |len| {
             const in = try inputs.alloc(gpa, .text, 9, len);
@@ -251,7 +251,7 @@ test "zstd encoder: small and large calls can change the level's strategy" {
 
 test "zstd encoder: every output prefix fails cleanly and a retry is deterministic" {
     const gpa = testing.allocator;
-    var c = try Compressor.init(gpa, .{ .max_input = 1024 });
+    var c = try Compressor.init(gpa, .{ .max_input = .fromRaw(1024) });
     defer c.deinit();
     var out: [1024]u8 = undefined;
     const in = "abcabcabcabcabcabcabcabcabcabcabcabcabcabc";
@@ -264,7 +264,7 @@ test "zstd encoder: every output prefix fails cleanly and a retry is determinist
 }
 
 fn allocation(gpa: std.mem.Allocator) !void {
-    var c = try Compressor.init(gpa, .{ .level = 3, .max_input = 1024 });
+    var c = try Compressor.init(gpa, .{ .level = 3, .max_input = .fromRaw(1024) });
     defer c.deinit();
     var out: [128]u8 = undefined;
     _ = try c.compress("abcabcabcabcabcabc", &out, .{});
@@ -274,7 +274,7 @@ test "zstd encoder: allocation failure and exact memory with no allocations per 
     var no_resize: shakedown.alloc.NoResize = .init(testing.allocator);
     try testing.checkAllAllocationFailures(no_resize.allocator(), allocation, .{});
     for ([_]i32{ -131072, -5, 1, 3, 6, 9, 13, 15, 16, 19, 22 }) |level| {
-        const options: Compressor.Options = .{ .level = level, .max_input = 1024 };
+        const options: Compressor.Options = .{ .level = level, .max_input = .fromRaw(1024) };
         var counter: testing.FailingAllocator = .init(testing.allocator, .{});
         var c = try Compressor.init(counter.allocator(), options);
         defer c.deinit();
@@ -292,7 +292,7 @@ fn property(_: void, case: *shakedown.Case) !void {
     const in = try case.gpa.alloc(u8, len);
     const pattern = try shakedown.gen.string(case.source, case.gpa, .{ .kind = .bytes, .min_len = 1, .max_len = 100, .average = 30 });
     for (in, 0..) |*b, i| b.* = pattern[i % pattern.len];
-    var c = try Compressor.init(case.gpa, .{ .level = level, .max_input = len });
+    var c = try Compressor.init(case.gpa, .{ .level = level, .max_input = .fromRaw(len) });
     defer c.deinit();
     try roundTrip(case.gpa, &c, in, .{ .checksum = shakedown.gen.boolean(case.source), .content_size = shakedown.gen.boolean(case.source) });
 }
@@ -341,16 +341,16 @@ test "zstd encoder: level-six storage fits three MiB across row and chain size c
     const large = try inputs.alloc(testing.allocator, .json, 91, 200_000);
     defer testing.allocator.free(large);
     const small = large[0..8192];
-    var c = try zstd.Compressor.init(testing.allocator, .{ .level = 6, .max_input = large.len });
+    var c = try zstd.Compressor.init(testing.allocator, .{ .level = 6, .max_input = .fromRaw(large.len) });
     defer c.deinit();
     const encoder = &c.encoder;
-    try testing.expect(zstd.Compressor.memory(.{ .level = 6, .max_input = large.len }) <= 3 << 20);
+    try testing.expect(zstd.Compressor.memory(.{ .level = 6, .max_input = .fromRaw(large.len) }) <= 3 << 20);
     const output = try testing.allocator.alloc(u8, zstd.Compressor.bound(large.len));
     defer testing.allocator.free(output);
     const expected = try testing.allocator.alloc(u8, output.len);
     defer testing.allocator.free(expected);
     for ([_][]const u8{ large, small, large, small }) |input| {
-        var fresh = try zstd.Compressor.init(testing.allocator, .{ .level = 6, .max_input = input.len });
+        var fresh = try zstd.Compressor.init(testing.allocator, .{ .level = 6, .max_input = .fromRaw(input.len) });
         defer fresh.deinit();
         const n = try c.compress(input, output, .{});
         const m = try fresh.compress(input, expected, .{});

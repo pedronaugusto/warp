@@ -40,7 +40,7 @@ fn reader(gpa: std.mem.Allocator, stream: []const u8, data: []const u8) !void {
     defer gpa.free(out);
     var diagnostic: warp.Diagnostic = undefined;
     const result = decompressor.inflateReader(&input, out, .{ .accept = .gzip, .diagnostic = &diagnostic }) catch |err| {
-        std.log.err("{t} at bit {d}: {t}", .{ err, diagnostic.bit_offset, diagnostic.reason });
+        std.log.err("{t} at bit {d}: {t}", .{ err, diagnostic.bit_offset.raw(), diagnostic.reason });
         return err;
     };
     std.debug.assert(result.finished);

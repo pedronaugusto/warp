@@ -24,7 +24,7 @@ fn freeSamples(gpa: std.mem.Allocator, values: [][]const u8) void {
 }
 
 fn roundTrip(gpa: std.mem.Allocator, dictionary: *const zstd.Dictionary, values: []const []const u8) !usize {
-    var c = try zstd.Compressor.init(gpa, .{ .max_input = 1024, .dictionary = dictionary });
+    var c = try zstd.Compressor.init(gpa, .{ .max_input = .fromRaw(1024), .dictionary = dictionary });
     defer c.deinit();
     var d: zstd.Decompressor = .init;
     var out: [2048]u8 = undefined;
@@ -48,7 +48,7 @@ test "zstd training: both coverage algorithms search deterministically and impro
     var again: [2048]u8 = undefined;
     const d = try gpa.create(zstd.Dictionary);
     defer gpa.destroy(d);
-    var plain = try zstd.Compressor.init(gpa, .{ .max_input = 1024 });
+    var plain = try zstd.Compressor.init(gpa, .{ .max_input = .fromRaw(1024) });
     defer plain.deinit();
     var encoded: [2048]u8 = undefined;
     var baseline: usize = 0;

@@ -18,7 +18,7 @@ pub const Options = struct { level: u4 = 6, passes: ?u32 = null };
 pub const eof = [_]u8{ 31, 139, 8, 4, 0, 0, 0, 0, 0, 255, 6, 0, 66, 67, 2, 0, 27, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 pub fn memory(options: Options) usize {
-    return std.mem.alignForward(usize, Compressor.memory(.{ .level = options.level, .max_input = 65536, .passes = options.passes }), 64) + 65536 + Compressor.bound(65536, .{ .container = .gzip, .gzip = .{ .extra = "BC\x02\x00\x00\x00" } });
+    return std.mem.alignForward(usize, Compressor.memory(.{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes }), 64) + 65536 + Compressor.bound(65536, .{ .container = .gzip, .gzip = .{ .extra = "BC\x02\x00\x00\x00" } });
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bgzf {
@@ -33,7 +33,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bg
 pub fn initBuffer(buffer: []align(64) u8, options: Options) Bgzf {
     std.debug.assert(buffer.len >= memory(options));
     const owned = buffer[0..memory(options)];
-    const compressor_options: Compressor.Options = .{ .level = options.level, .max_input = 65536, .passes = options.passes };
+    const compressor_options: Compressor.Options = .{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes };
     const n = std.mem.alignForward(usize, Compressor.memory(compressor_options), 64);
     return .{
         .compressor = .initBuffer(owned[0..n], compressor_options),

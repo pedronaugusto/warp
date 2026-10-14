@@ -39,7 +39,7 @@ test "zstd indices: normalization preserves history and positional rings" {
         try testing.expectEqualSlices(u8, output[0..n], other[0..m]);
         _ = try d.decompress(other[0..m], decoded, .{});
         try testing.expectEqualSlices(u8, input, decoded);
-        const options: zstd.Compress.Options = .{ .tuning = tuning, .pledged_size = input.len };
+        const options: zstd.Compress.Options = .{ .tuning = tuning, .pledged_size = .fromRaw(input.len) };
         const a = try stream(gpa, input, output, options, false);
         const b = try stream(gpa, input, other, options, true);
         if (!std.mem.eql(u8, output[0..a], other[0..b])) std.debug.print("stream normalization strategy={t}\n", .{strategy});
@@ -56,7 +56,7 @@ test "zstd indices: row searches preserve history when normalizing shared match 
     const other = try gpa.alloc(u8, output.len);
     defer gpa.free(other);
     for ([_]i32{ 6, 9, 12 }) |level| {
-        var c = try Encoder.init(gpa, .{ .level = level, .max_input = input.len, .tuning = .{ .window_log = 17 } });
+        var c = try Encoder.init(gpa, .{ .level = level, .max_input = .fromRaw(input.len), .tuning = .{ .window_log = 17 } });
         defer c.deinit();
         const n = try c.compress(input, output, .{});
         const m = try c.compressLong(input, other, .{}, 1 << 19);
@@ -72,7 +72,7 @@ test "zstd indices: normalization follows the active strategy beyond a soft size
     defer gpa.free(output);
     const other = try gpa.alloc(u8, output.len);
     defer gpa.free(other);
-    var c = try Encoder.init(gpa, .{ .level = 13, .max_input = 37 });
+    var c = try Encoder.init(gpa, .{ .level = 13, .max_input = .fromRaw(37) });
     defer c.deinit();
     const n = try c.compress(input, output, .{});
     const m = try c.compressLong(input, other, .{}, 1 << 15);

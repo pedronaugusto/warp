@@ -12,7 +12,7 @@ test "gzip index round-trips and every checkpoint resumes the checksum and histo
     const gpa = testing.allocator;
     const in = try gen.alloc(gpa, .text, 123, 190000);
     defer gpa.free(in);
-    var p = try parallel.Compressor.init(gpa, .{ .chunk_len = 8192, .concurrency = 3 });
+    var p = try parallel.Compressor.init(gpa, .{ .chunk_len = .fromRaw(8192), .concurrency = 3 });
     defer p.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();

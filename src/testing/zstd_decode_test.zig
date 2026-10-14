@@ -90,7 +90,7 @@ test "every frame the reference wrote decodes to its input, with an exact output
         for ([_]usize{ in.len, in.len + decode.margin }) |out_len| {
             var diag: Diagnostic = .{};
             const result = d.decompress(z, out[0..out_len], .{ .dictionaries = dicts.get(r.fields[3]), .format = format(params), .diagnostic = &diag }) catch |err| {
-                std.debug.print("{s} | {s} | {s}: {t} ({t} at {d})\n", .{ params, r.fields[2], r.fields[3], err, diag.reason, diag.offset });
+                std.debug.print("{s} | {s} | {s}: {t} ({t} at {d})\n", .{ params, r.fields[2], r.fields[3], err, diag.reason, diag.offset.raw() });
                 return err;
             };
             try testing.expectEqual(in.len, result.out_len);
@@ -147,14 +147,14 @@ test "every frame the reference judged gets its judgment, for the same reason" {
         const out = try gpa.alloc(u8, capacity);
         defer gpa.free(out);
         var diag: Diagnostic = .{};
-        const got = d.decompress(z, out, .{ .dictionaries = dicts.get(r.fields[1]), .diagnostic = &diag, .max_window = std.math.maxInt(u64) });
+        const got = d.decompress(z, out, .{ .dictionaries = dicts.get(r.fields[1]), .diagnostic = &diag, .max_window = .fromRaw(std.math.maxInt(u64)) });
         count += 1;
         if (std.mem.startsWith(u8, verdict, "ok ")) {
             var parts = std.mem.splitScalar(u8, verdict[3..], ' ');
             const len = try std.fmt.parseInt(usize, parts.next().?, 10);
             const hash = try std.fmt.parseInt(u64, parts.next().?, 16);
             const result = got catch |err| {
-                std.debug.print("{s}: reference decodes {d} bytes, warp says {t} ({t} at {d})\n", .{ name, len, err, diag.reason, diag.offset });
+                std.debug.print("{s}: reference decodes {d} bytes, warp says {t} ({t} at {d})\n", .{ name, len, err, diag.reason, diag.offset.raw() });
                 failures += 1;
                 continue;
             };
@@ -177,7 +177,7 @@ test "every frame the reference judged gets its judgment, for the same reason" {
                 if (reason == diag.reason) break true;
             } else false;
             if (!err_ok or !reason_ok) {
-                std.debug.print("{s}: reference says {s}, warp says {t} ({t} at {d})\n", .{ name, verdict, err, diag.reason, diag.offset });
+                std.debug.print("{s}: reference says {s}, warp says {t} ({t} at {d})\n", .{ name, verdict, err, diag.reason, diag.offset.raw() });
                 failures += 1;
             }
         }
@@ -220,7 +220,7 @@ test "every prefix of a frame is Truncated, and frames measure themselves as the
                 return error.TestUnexpectedResult;
             } else |err| {
                 if (err != error.Truncated) {
-                    std.debug.print("{s} {s}: the first {d} of {d} bytes: {t} ({t} at {d})\n", .{ params, r.fields[2], n, z.len, err, diag.reason, diag.offset });
+                    std.debug.print("{s} {s}: the first {d} of {d} bytes: {t} ({t} at {d})\n", .{ params, r.fields[2], n, z.len, err, diag.reason, diag.offset.raw() });
                     return err;
                 }
             }
@@ -230,7 +230,7 @@ test "every prefix of a frame is Truncated, and frames measure themselves as the
 }
 
 test "zstd frame inspection: public helpers count concatenated and skippable frames" {
-    var c = try zstd.Compressor.init(testing.allocator, .{ .max_input = 1024 });
+    var c = try zstd.Compressor.init(testing.allocator, .{ .max_input = .fromRaw(1024) });
     defer c.deinit();
     var out: [256]u8 = undefined;
     const a = try c.compress("abcabcabcabc", &out, .{});
@@ -252,11 +252,11 @@ test "zstd decode: caller window limit is checked for memory and reader inputs" 
     d.* = .init;
     const in = [_]u8{ 0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x10, 0x01, 0x00, 0x00 };
     var diag: Diagnostic = .{};
-    try testing.expectError(error.WindowTooLarge, d.decompress(&in, &.{}, .{ .max_window = 1024, .diagnostic = &diag }));
+    try testing.expectError(error.WindowTooLarge, d.decompress(&in, &.{}, .{ .max_window = .fromRaw(1024), .diagnostic = &diag }));
     try testing.expectEqual(Diagnostic.Reason.window_too_large, diag.reason);
     var r: std.Io.Reader = .fixed(&in);
-    try testing.expectError(error.WindowTooLarge, d.decompressReader(&r, &.{}, .{ .max_window = 1024 }));
-    try testing.expect((try d.decompress(&in, &.{}, .{ .max_window = 4096 })).finished);
+    try testing.expectError(error.WindowTooLarge, d.decompressReader(&r, &.{}, .{ .max_window = .fromRaw(1024) }));
+    try testing.expect((try d.decompress(&in, &.{}, .{ .max_window = .fromRaw(4096) })).finished);
 }
 
 test "zstd partial decode: every output length ends at the right literal or match byte" {
@@ -266,7 +266,7 @@ test "zstd partial decode: every output length ends at the right literal or matc
     d.* = .init;
     const in = try gen.alloc(gpa, .json, 39, 2000);
     defer gpa.free(in);
-    var c = try zstd.Compressor.init(gpa, .{ .level = 6, .max_input = in.len });
+    var c = try zstd.Compressor.init(gpa, .{ .level = 6, .max_input = .fromRaw(in.len) });
     defer c.deinit();
     const compressed = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
     defer gpa.free(compressed);

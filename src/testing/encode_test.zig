@@ -144,7 +144,7 @@ test "std decodes what warp writes, at every level and strategy" {
 test "memory is what init takes, and a compression allocates nothing" {
     const gpa = testing.allocator;
     for (0..13) |level| for (strategies) |strategy| for ([_]?usize{ null, 37, 4096, 1 << 20 }) |max_input| {
-        const options: Compressor.Options = .{ .level = @intCast(level), .strategy = strategy, .max_input = max_input };
+        const options: Compressor.Options = .{ .level = @intCast(level), .strategy = strategy, .max_input = if (max_input) |n| .fromRaw(n) else null };
         var counting: std.testing.FailingAllocator = .init(gpa, .{});
         var c = try Compressor.init(counting.allocator(), options);
         defer c.deinit();
@@ -158,9 +158,9 @@ test "memory is what init takes, and a compression allocates nothing" {
 
 test "extra optimal passes preserve the best single-block size and round-trip" {
     const gpa = testing.allocator;
-    var normal = try Compressor.init(gpa, .{ .level = 12, .max_input = 20000 });
+    var normal = try Compressor.init(gpa, .{ .level = 12, .max_input = .fromRaw(20000) });
     defer normal.deinit();
-    var extra = try Compressor.init(gpa, .{ .level = 12, .max_input = 20000, .passes = 40 });
+    var extra = try Compressor.init(gpa, .{ .level = 12, .max_input = .fromRaw(20000), .passes = 40 });
     defer extra.deinit();
     var out: [24000]u8 = undefined;
     var back: [20000]u8 = undefined;

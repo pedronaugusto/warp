@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     const level = try std.fmt.parseInt(u4, args[4], 10);
     const in = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], init.gpa, .unlimited);
     defer init.gpa.free(in);
-    var c = try warp.Compressor.init(init.gpa, .{ .level = level, .max_input = in.len });
+    var c = try warp.Compressor.init(init.gpa, .{ .level = level, .max_input = .fromRaw(in.len) });
     defer c.deinit();
     const out = try init.gpa.alloc(u8, warp.Compressor.bound(in.len, .{ .container = kind }));
     defer init.gpa.free(out);

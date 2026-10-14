@@ -184,7 +184,7 @@ test "gzip members: all of them, empty ones between, one when asked, and what fo
     var diag: Diagnostic = undefined;
     try testing.expectError(error.InvalidStream, d.inflate(trailing, &out, .{ .accept = .gzip, .diagnostic = &diag }));
     try testing.expectEqual(Diagnostic.Reason.trailing_data, diag.reason);
-    try testing.expectEqual(@as(u64, 8 * a.len), diag.bit_offset);
+    try testing.expectEqual(@as(u64, 8 * a.len), diag.bit_offset.raw());
     const left = try d.inflate(trailing, &out, .{ .accept = .gzip, .members = .one });
     try testing.expectEqual(a.len, left.in_len);
 }

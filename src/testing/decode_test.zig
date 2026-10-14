@@ -37,7 +37,7 @@ test "every stream in the corpus decodes to its input, with an exact output and 
         for ([_]usize{ in.len, in.len + inflate.margin }) |out_len| {
             var diag: Diagnostic = .{};
             const result = d.inflate(stream, out[0..out_len], .{ .accept = accept(r.fields[4]), .dictionary = dictionary, .diagnostic = &diag }) catch |err| {
-                std.debug.print("{s} {s} {s} {s}: {t} ({t} at bit {d})\n", .{ producer, params, r.fields[2], r.fields[4], err, diag.reason, diag.bit_offset });
+                std.debug.print("{s} {s} {s} {s}: {t} ({t} at bit {d})\n", .{ producer, params, r.fields[2], r.fields[4], err, diag.reason, diag.bit_offset.raw() });
                 return err;
             };
             testing.expectEqual(in.len, result.out_len) catch |err| {
@@ -78,7 +78,7 @@ test "every invalid stream in the corpus gets zlib 1.3.1's verdict, for the same
         const result = d.inflate(stream, out, .{ .accept = accept(r.fields[1]), .dictionary = dictionary, .members = .one, .diagnostic = &diag });
         checkVerdict(verdict, kind, result, out, &diag) catch |err| {
             std.debug.print("{s} ({s}): zlib says \"{s}\", warp says ", .{ name, r.fields[1], verdict });
-            if (result) |ok| std.debug.print("{d} in, {d} out\n", .{ ok.in_len, ok.out_len }) else |e| std.debug.print("{t} ({t} at bit {d})\n", .{ e, diag.reason, diag.bit_offset });
+            if (result) |ok| std.debug.print("{d} in, {d} out\n", .{ ok.in_len, ok.out_len }) else |e| std.debug.print("{t} ({t} at bit {d})\n", .{ e, diag.reason, diag.bit_offset.raw() });
             return err;
         };
         count += 1;
@@ -139,7 +139,7 @@ test "every prefix of a valid stream is Truncated, and says where the input ende
                 std.debug.print("{s} {s} {s} cut at {d} of {d}\n", .{ r.fields[0], r.fields[1], r.fields[2], cut, stream.len });
                 return err;
             };
-            try testing.expectEqual(@as(u64, cut) * 8, diag.bit_offset);
+            try testing.expectEqual(@as(u64, cut) * 8, diag.bit_offset.raw());
         }
         streams += 1;
     }

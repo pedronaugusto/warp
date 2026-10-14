@@ -29,7 +29,7 @@ export fn warpChecksums(bytes: [*]const u8, len: usize) u32 {
 /// One stream of `in` into `out` at `level`, in `container` (0 raw, 1 zlib,
 /// 2 gzip) with a named gzip member; its length, or -1.
 export fn warpCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: u8, container: u8) isize {
-    const options: warp.Compressor.Options = .{ .level = @truncate(level), .max_input = in_len };
+    const options: warp.Compressor.Options = .{ .level = @truncate(level), .max_input = .fromRaw(in_len) };
     const size = warp.Compressor.memory(options);
     if (size > memory.len) return -1;
     var c: warp.Compressor = .initBuffer(memory[0..size], options);
@@ -90,7 +90,7 @@ export fn warpBlockedGzip(in: [*]const u8, in_len: usize, out: [*]u8, out_len: u
 /// All zstd strategies, frame options and caller-provided storage.
 export fn warpZstdCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32, dict: [*]const u8, dict_len: usize) isize {
     const dictionary = warp.zstd.Dictionary.parse(dict[0..dict_len]) catch return -1;
-    const options: warp.zstd.Compressor.Options = .{ .level = level, .max_input = in_len, .dictionary = &dictionary };
+    const options: warp.zstd.Compressor.Options = .{ .level = level, .max_input = .fromRaw(in_len), .dictionary = &dictionary };
     const size = warp.zstd.Compressor.memory(options);
     if (size > memory.len) return -1;
     var c: warp.zstd.Compressor = .initBuffer(memory[0..size], options);
@@ -112,7 +112,7 @@ export fn warpZstdTrain(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usi
 
 /// Seekable output, table indexing and frame/range reads.
 export fn warpZstdSeekable(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, decoded: [*]u8, decoded_len: usize) isize {
-    const options: warp.zstd.seekable.Writer.Options = .{ .frame_len = 1024, .max_frames = 128 };
+    const options: warp.zstd.seekable.Writer.Options = .{ .frame_len = .fromRaw(1024), .max_frames = 128 };
     const size = warp.zstd.seekable.Writer.memory(options);
     if (size > memory.len) return -1;
     var sink: std.Io.Writer = .fixed(out[0..out_len]);
@@ -149,7 +149,7 @@ export fn warpZstdDecompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len
 
 /// The streaming encoder and writer adapter, using the same caller storage.
 export fn warpZstdStreamCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32) isize {
-    const options: warp.zstd.Compress.Options = .{ .level = level, .target_block_size = 2048, .pledged_size = in_len };
+    const options: warp.zstd.Compress.Options = .{ .level = level, .target_block_size = .fromRaw(2048), .pledged_size = .fromRaw(in_len) };
     const size = warp.zstd.Compress.memory(options);
     if (size > memory.len) return -1;
     var s: warp.zstd.Compress = .initBuffer(memory[0..size], options);
@@ -185,7 +185,7 @@ export fn warpZstdStreamDecompress(in: [*]const u8, in_len: usize, out: [*]u8, o
 
 /// Parallel job storage and both inputs with an Io supplied by the caller.
 export fn warpZstdParallel(io: *const std.Io, in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, rsyncable: bool) isize {
-    const options: warp.zstd.parallel.Options = .{ .job_len = 1024, .concurrency = 1, .tuning = .{ .window_log = 10 }, .rsyncable = rsyncable };
+    const options: warp.zstd.parallel.Options = .{ .job_len = .fromRaw(1024), .concurrency = 1, .tuning = .{ .window_log = 10 }, .rsyncable = rsyncable };
     const size = warp.zstd.parallel.Compressor.memory(options);
     if (size > memory.len) return -1;
     var p = warp.zstd.parallel.Compressor.initBuffer(memory[0..size], options);

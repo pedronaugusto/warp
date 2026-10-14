@@ -51,7 +51,7 @@ test "zstd superblocks: all strategies, targets and generated kinds" {
         defer gpa.free(in);
         inline for (std.meta.tags(zstd.Strategy)) |strategy| {
             for ([_]u32{ 1340, 4096 }) |target| {
-                const options: zstd.Compress.Options = .{ .pledged_size = in.len, .target_block_size = target, .tuning = .{ .strategy = strategy, .window_log = 17 } };
+                const options: zstd.Compress.Options = .{ .pledged_size = .fromRaw(in.len), .target_block_size = .fromRaw(target), .tuning = .{ .strategy = strategy, .window_log = 17 } };
                 const compressed = try encode(in, options, 2259);
                 defer gpa.free(compressed);
                 try blockSizes(compressed, target);
@@ -72,7 +72,7 @@ test "zstd superblocks: long literal cuts, dictionaries and chunking invariance"
     defer gpa.free(in);
     @memcpy(in[100_000..][0..50_000], in[0..50_000]);
     const dict = zstd.Dictionary.raw(in[0..1024]);
-    const options: zstd.Compress.Options = .{ .pledged_size = in.len, .target_block_size = 1340, .dictionary = &dict, .tuning = .{ .strategy = .btopt, .window_log = 18 } };
+    const options: zstd.Compress.Options = .{ .pledged_size = .fromRaw(in.len), .target_block_size = .fromRaw(1340), .dictionary = &dict, .tuning = .{ .strategy = .btopt, .window_log = 18 } };
     const one = try encode(in, options, 1);
     defer gpa.free(one);
     const many = try encode(in, options, 16_000);
@@ -87,7 +87,7 @@ test "zstd superblocks: long literal cuts, dictionaries and chunking invariance"
 
 fn property(_: void, case: *shakedown.Case) anyerror!void {
     const input = try shakedown.gen.string(case.source, case.gpa, .{ .kind = .bytes, .min_len = 0, .max_len = 300_000, .average = 100_000 });
-    const options: zstd.Compress.Options = .{ .pledged_size = input.len, .target_block_size = @intCast(shakedown.gen.intRange(case.source, usize, 0, 20_000)), .level = @as(i32, @intCast(shakedown.gen.intRange(case.source, usize, 0, 29))) - 7, .tuning = .{ .window_log = @intCast(10 + shakedown.gen.intRange(case.source, usize, 0, 10)) } };
+    const options: zstd.Compress.Options = .{ .pledged_size = .fromRaw(input.len), .target_block_size = .fromRaw(@intCast(shakedown.gen.intRange(case.source, usize, 0, 20_000))), .level = @as(i32, @intCast(shakedown.gen.intRange(case.source, usize, 0, 29))) - 7, .tuning = .{ .window_log = @intCast(10 + shakedown.gen.intRange(case.source, usize, 0, 10)) } };
     const compressed = try encode(input, options, 1 + shakedown.gen.intRange(case.source, usize, 0, 8000));
     defer testing.allocator.free(compressed);
     const decoded = try case.gpa.alloc(u8, input.len);

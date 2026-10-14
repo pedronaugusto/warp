@@ -169,7 +169,7 @@ pub const Stream = struct {
     pub fn fail(s: *Stream, reason: Diagnostic.Reason) Error {
         const truncated = !s.whole();
         if (s.diagnostic) |d| d.* = .{
-            .bit_offset = if (truncated) (s.in_base + s.ip - s.virtual) * 8 else s.bitOffset(),
+            .bit_offset = .fromRaw(if (truncated) (s.in_base + s.ip - s.virtual) * 8 else s.bitOffset()),
             .reason = if (truncated) .truncated else reason,
         };
         return if (truncated) error.Truncated else error.InvalidStream;

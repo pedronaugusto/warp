@@ -130,7 +130,7 @@ fn next(s: *Decompress, phase: Phase, wanted: usize) void {
 fn fail(s: *Decompress, err: Error, at: u64, reason: Diagnostic.Reason) Error {
     s.phase = .failed;
     s.failure = err;
-    if (s.options.diagnostic) |d| d.* = .{ .offset = at, .reason = reason };
+    if (s.options.diagnostic) |d| d.* = .{ .offset = .fromRaw(at), .reason = reason };
     return err;
 }
 

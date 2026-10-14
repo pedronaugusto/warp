@@ -1,6 +1,7 @@
 //! Ordered compression jobs in one frame. Each worker owns its match and
 //! entropy state; job boundaries and overlap do not depend on concurrency.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Encoder = @import("Encoder.zig");
 const Dictionary = @import("Dictionary.zig");
@@ -15,7 +16,8 @@ pub const Options = struct {
     tuning: Encoder.Tuning = .{},
     dictionary: ?*const Dictionary = null,
     frame: Encoder.Frame = .{},
-    job_len: ?u32 = null,
+    /// One job's input; null sizes it from the window.
+    job_len: ?aegis.units.Bytes(u32) = null,
     overlap_log: u4 = 0,
     rsyncable: bool = false,
     concurrency: u16 = 8,
@@ -35,7 +37,7 @@ fn config(options: Options) error{InvalidOptions}!Config {
     const p = Encoder.resolve(encoder, null);
     const job_log = @max(20, @as(u6, p.window_log) + 2);
     const max_job_log: u6 = if (@bitSizeOf(usize) == 32) 29 else 30;
-    const job: usize = options.job_len orelse (@as(u32, 1) << @intCast(@min(job_log, max_job_log)));
+    const job: usize = if (options.job_len) |n| n.raw() else (@as(u32, 1) << @intCast(@min(job_log, max_job_log)));
     const default_overlap: u4 = switch (p.strategy) {
         .btultra2 => 9,
         .btultra, .btopt => 8,
@@ -265,9 +267,10 @@ pub const Compressor = struct {
     }
 
     /// Write independent frames and their seek table, reusing these workers.
-    /// `frame_len` is at most the configured job length; `records` holds every
+    /// `frame_size` is at most the configured job length; `records` holds every
     /// frame (including one empty frame for empty input). Returns their count.
-    pub fn writeSeekable(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer, records: []seekable.Record, frame_len: u32, checksum: bool) (Error || error{TooManyFrames})!usize {
+    pub fn writeSeekable(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer, records: []seekable.Record, frame_size: aegis.units.Bytes(u32), checksum: bool) (Error || error{TooManyFrames})!usize {
+        const frame_len: usize = frame_size.raw();
         if (frame_len == 0 or frame_len > p.cfg.job_len) return error.InvalidOptions;
         const total = @max(1, std.math.divCeil(usize, in.len, frame_len) catch unreachable); // unreachable: frame_len is nonzero
         if (total > records.len or total > (std.math.maxInt(u32) - 9) / 12) return error.TooManyFrames;
@@ -299,7 +302,8 @@ pub const Compressor = struct {
 
     /// Stream independent frames and a seek table into `out`, using bounded
     /// worker input buffers. Returns the number of records written.
-    pub fn writeSeekableReader(p: *Compressor, io: Io, in: *Io.Reader, out: *Io.Writer, records: []seekable.Record, frame_len: u32, checksum: bool) (Error || error{ TooManyFrames, ReadFailed })!usize {
+    pub fn writeSeekableReader(p: *Compressor, io: Io, in: *Io.Reader, out: *Io.Writer, records: []seekable.Record, frame_size: aegis.units.Bytes(u32), checksum: bool) (Error || error{ TooManyFrames, ReadFailed })!usize {
+        const frame_len: usize = frame_size.raw();
         if (frame_len == 0 or frame_len > p.cfg.job_len) return error.InvalidOptions;
         var group: Io.Group = .init;
         defer group.cancel(io);

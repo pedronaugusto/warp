@@ -8,7 +8,7 @@ const gen = @import("gen");
 fn encode(gpa: std.mem.Allocator, in: []const u8, checksum: bool, chunk: usize) ![]u8 {
     var sink: std.Io.Writer.Allocating = .init(gpa);
     defer sink.deinit();
-    var writer = try zstd.seekable.Writer.init(gpa, &sink.writer, .{ .frame_len = 1024, .max_frames = 24, .checksum = checksum });
+    var writer = try zstd.seekable.Writer.init(gpa, &sink.writer, .{ .frame_len = .fromRaw(1024), .max_frames = 24, .checksum = checksum });
     defer writer.deinit();
     var at: usize = 0;
     while (at < in.len) {
@@ -87,7 +87,7 @@ test "zstd seekable: every missing footer byte, altered sizes and checksum failu
 fn allocation(gpa: std.mem.Allocator) !void {
     var output: [256]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&output);
-    var writer = try zstd.seekable.Writer.init(gpa, &sink, .{ .frame_len = 64, .max_frames = 2 });
+    var writer = try zstd.seekable.Writer.init(gpa, &sink, .{ .frame_len = .fromRaw(64), .max_frames = 2 });
     defer writer.deinit();
     try writer.interface.writeAll("dictionary-free seekable frames");
     try writer.finish();
@@ -98,7 +98,7 @@ fn allocation(gpa: std.mem.Allocator) !void {
 test "zstd seekable: exact allocation, failures and caller entries" {
     var allocator: shakedown.alloc.NoResize = .init(testing.allocator);
     try testing.checkAllAllocationFailures(allocator.allocator(), allocation, .{});
-    const options: zstd.seekable.Writer.Options = .{ .frame_len = 64, .max_frames = 2 };
+    const options: zstd.seekable.Writer.Options = .{ .frame_len = .fromRaw(64), .max_frames = 2 };
     var counter: testing.FailingAllocator = .init(testing.allocator, .{});
     var output: [256]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&output);
@@ -120,7 +120,7 @@ test "zstd seekable: output and frame-capacity failures are sticky" {
     const gpa = testing.allocator;
     var output: [2]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&output);
-    var writer = try zstd.seekable.Writer.init(gpa, &sink, .{ .frame_len = 64, .max_frames = 1 });
+    var writer = try zstd.seekable.Writer.init(gpa, &sink, .{ .frame_len = .fromRaw(64), .max_frames = 1 });
     defer writer.deinit();
     try writer.interface.writeAll("hello");
     try testing.expectError(error.WriteFailed, writer.finish());
@@ -128,7 +128,7 @@ test "zstd seekable: output and frame-capacity failures are sticky" {
     try testing.expectError(error.WriteFailed, writer.finish());
     var large: [256]u8 = undefined;
     var enough: std.Io.Writer = .fixed(&large);
-    var capped = try zstd.seekable.Writer.init(gpa, &enough, .{ .frame_len = 1, .max_frames = 1 });
+    var capped = try zstd.seekable.Writer.init(gpa, &enough, .{ .frame_len = .fromRaw(1), .max_frames = 1 });
     defer capped.deinit();
     try testing.expectError(error.WriteFailed, capped.interface.writeAll("three"));
     try testing.expectEqual(error.TooManyFrames, capped.err().?);

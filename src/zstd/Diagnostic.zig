@@ -1,10 +1,12 @@
 //! Where a zstd frame was refused, and why.
 
+const aegis = @import("aegis");
+
 const Diagnostic = @This();
 
 /// The byte of the input at which the refused structure starts (a frame
 /// header, a block, a literals or sequences section).
-offset: u64 = 0,
+offset: aegis.units.Bytes(u64) = .fromRaw(0),
 reason: Reason = .truncated,
 
 pub const Reason = enum {

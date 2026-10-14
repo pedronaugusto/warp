@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(b.addLibrary(.{ .name = "warp", .root_module = module }));
     if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
         const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
-        addKernelModules(b, c_module, target, optimize);
+        addSourceImports(b, c_module, target, optimize);
         b.installArtifact(b.addLibrary(.{ .name = "z", .root_module = c_module }));
     }
 }
@@ -48,7 +48,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         .target = target,
         .optimize = optimize,
     });
-    addKernelModules(p, test_module, target, optimize);
+    addSourceImports(p, test_module, target, optimize);
     // The differential corpus, captured once from other implementations
     // (pedronaugusto/trials, warp/), and the inputs it names.
     for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
@@ -152,7 +152,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     };
     for (abi_targets, 0..) |abi_target, i| {
         const abi_module = b.createModule(.{ .root_source_file = p.path("src/c.zig"), .target = abi_target, .optimize = .small });
-        addKernelModules(p, abi_module, abi_target, .small);
+        addSourceImports(p, abi_module, abi_target, .small);
         const object = b.addObject(.{ .name = b.fmt("check-c-abi-{d}", .{i}), .root_module = abi_module });
         abi_check.dependOn(&object.step);
     }
@@ -160,8 +160,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     b.getInstallStep().dependOn(&tests.step);
     b.getInstallStep().dependOn(&example.step);
 
-    // The test doubles are shakedown's. warp links no aegis of its own, so
-    // shakedown's is the one in the binary.
+    // The test doubles are shakedown's.
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
     test_module.addImport("shakedown", shakedown.module("shakedown"));
 
@@ -194,25 +193,27 @@ pub fn dev(b: *std.Build, tools: type) void {
             .optimize = optimize,
         },
     });
-    // A project that depends on warp by path, with no packages to
-    // fetch: the build a consumer gets.
-    tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig") });
+    // A project that depends on warp by path, with aegis alone to fetch:
+    // the build a consumer gets.
+    tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig"), .packages = &.{p.dependency("aegis", .{ .target = target, .optimize = optimize })} });
 }
 
 /// warp's one module. The checksum kernels that need instructions beyond the
 /// target's baseline are modules of their own beneath it (`addKernelModules`).
 fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     const root = b.createModule(.{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
-    addKernelModules(b, root, target, optimize);
+    addSourceImports(b, root, target, optimize);
     return root;
 }
 
-/// The checksum kernels that need instructions beyond the target's
-/// baseline, each a module of its own built with those instructions
-/// enabled; warp calls one only where the CPU has them (src/cpu.zig).
-/// Zig sets CPU features per module, so these are the only modules that
-/// may use them: nothing else in warp can be compiled into them.
-fn addKernelModules(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+/// What warp's sources import: aegis, and the checksum kernels that need
+/// instructions beyond the target's baseline, each a module of its own
+/// built with those instructions enabled; warp calls one only where the CPU
+/// has them (src/cpu.zig). Zig sets CPU features per module, so these are
+/// the only modules that may use them: nothing else in warp can be compiled
+/// into them.
+fn addSourceImports(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    module.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
     const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize });
     const Kernel = struct { name: []const u8, source: []const u8, features: []const []const u8 };
     const kernels: []const Kernel = switch (target.result.cpu.arch) {

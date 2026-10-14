@@ -8,6 +8,7 @@
 const Encoder = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const params_ = @import("params.zig");
 const encode = @import("encode.zig");
@@ -81,9 +82,19 @@ pub const Options = struct {
     tuning: Tuning = .{},
     /// The largest input `compress` will see: it sizes the tables. A larger
     /// input still compresses, with tables of this size. null: any input.
-    max_input: ?usize = null,
+    max_input: ?aegis.units.Bytes(usize) = null,
     /// Borrowed and indexed once; must outlive the compressor.
     dictionary: ?*const Dictionary = null,
+
+    /// `max_input`, as the tables are sized by.
+    fn maxInput(o: Options) ?usize {
+        return if (o.max_input) |n| n.raw() else null;
+    }
+
+    /// `max_input`, as the level's parameters are chosen by.
+    fn sizeHint(o: Options) ?u64 {
+        return if (o.max_input) |n| n.raw() else null;
+    }
 };
 
 /// What surrounds the compressed data.
@@ -170,13 +181,13 @@ const Layout = struct {
     }
 
     fn of(options: Options) Layout {
-        var l = fromParams(resolve(options, if (options.max_input) |n| n else null), options.max_input);
+        var l = fromParams(resolve(options, options.sizeHint()), options.maxInput());
         // Smaller size classes can select another strategy at the same
         // level. Reserve all tables those calls may use, not only the
         // strategy selected for the largest input.
         for ([_]usize{ 0, 16 << 10, 128 << 10, 256 << 10 }) |n| {
-            if (options.max_input) |max| if (n > max) continue;
-            var small = fromParams(resolve(options, n), options.max_input);
+            if (options.maxInput()) |max| if (n > max) continue;
+            var small = fromParams(resolve(options, n), options.maxInput());
             // Hashing smaller inputs uses at most the largest input's
             // table. Other roles must exist when a size class changes
             // strategy, but do not need a larger hash table.
@@ -198,7 +209,7 @@ const Layout = struct {
             l.dict_sequences = l.seqs;
         }
         if (options.tuning.long_distance) {
-            const p = resolve(options, if (options.max_input) |n| n else null);
+            const p = resolve(options, options.sizeHint());
             l.long_entries = @as(usize, 1) << long_match.State.hashLog(p);
             l.long_heads = l.long_entries >> 4;
             l.long_matches = (l.lits - 32) / 64 + 1;
@@ -232,7 +243,7 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
 /// A compressor in caller memory: `buffer.len >= memory(options)`; `deinit`
 /// then frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
-    const p = resolve(options, if (options.max_input) |n| n else null);
+    const p = resolve(options, options.sizeHint());
     const l = Layout.of(options);
     std.debug.assert(buffer.len >= l.bytes());
     var at: usize = 0;

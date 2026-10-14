@@ -9,6 +9,7 @@
 const Decompressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const decode = @import("decode.zig");
 const frame = @import("frame.zig");
@@ -43,7 +44,7 @@ pub const Options = struct {
     /// Check content checksums where frames carry them.
     verify_checksum: bool = true,
     /// Largest accepted frame window.
-    max_window: u64 = 1 << 27,
+    max_window: aegis.units.Bytes(u64) = .literal("128MiB"),
     format: frame.Format = .standard,
     diagnostic: ?*Diagnostic = null,
 };
@@ -185,7 +186,7 @@ const ReaderSource = struct {
 };
 
 fn fail(options: Options, err: Error, offset: usize, reason: Diagnostic.Reason) Error {
-    if (options.diagnostic) |diag| diag.* = .{ .offset = offset, .reason = reason };
+    if (options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(offset), .reason = reason };
     return err;
 }
 
@@ -227,7 +228,7 @@ fn run(d: *Decompressor, source: anytype, out: []u8, options: Options) Error!Res
                 continue;
             },
             .zstd => |header| {
-                if (header.window_size > options.max_window) return fail(options, error.WindowTooLarge, at, .window_too_large);
+                if (aegis.units.Bytes(u64).fromRaw(header.window_size).compare(options.max_window) == .gt) return fail(options, error.WindowTooLarge, at, .window_too_large);
                 source.advance(header.header_len);
                 const status = try d.decodeFrame(source, header, out, &op, options, at);
                 frames += 1;

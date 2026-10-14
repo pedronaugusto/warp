@@ -59,7 +59,7 @@ test "zstd streaming decode: single-byte chunks and sliding history" {
     const gpa = testing.allocator;
     const in = try gen.alloc(gpa, .json, 81, 20_000);
     defer gpa.free(in);
-    var c = try zstd.Compressor.init(gpa, .{ .level = 6, .tuning = .{ .window_log = 10 }, .max_input = in.len });
+    var c = try zstd.Compressor.init(gpa, .{ .level = 6, .tuning = .{ .window_log = 10 }, .max_input = .fromRaw(in.len) });
     defer c.deinit();
     const encoded = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
     defer gpa.free(encoded);
@@ -72,7 +72,7 @@ test "zstd streaming decode: single-byte chunks and sliding history" {
 test "zstd streaming decode: every prefix is truncated, reset clears errors" {
     const gpa = testing.allocator;
     const in = "truncation checks include header, block and checksum";
-    var c = try zstd.Compressor.init(gpa, .{ .max_input = in.len });
+    var c = try zstd.Compressor.init(gpa, .{ .max_input = .fromRaw(in.len) });
     defer c.deinit();
     var encoded: [128]u8 = undefined;
     const n = try c.compress(in, &encoded, .{});
@@ -98,7 +98,7 @@ test "zstd streaming reader: buffered reads and codec errors" {
     const gpa = testing.allocator;
     const in = try gen.alloc(gpa, .text, 16, 200_000);
     defer gpa.free(in);
-    var c = try zstd.Compressor.init(gpa, .{ .level = 3, .max_input = in.len });
+    var c = try zstd.Compressor.init(gpa, .{ .level = 3, .max_input = .fromRaw(in.len) });
     defer c.deinit();
     const encoded = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
     defer gpa.free(encoded);
@@ -124,13 +124,13 @@ test "zstd streaming reader: buffered reads and codec errors" {
 fn property(_: void, case: *shakedown.Case) anyerror!void {
     const in = try shakedown.gen.string(case.source, case.gpa, .{ .kind = .bytes, .min_len = 0, .max_len = 4096, .average = 512 });
     defer case.gpa.free(in);
-    var c = try zstd.Compressor.init(case.gpa, .{ .max_input = in.len });
+    var c = try zstd.Compressor.init(case.gpa, .{ .max_input = .fromRaw(in.len) });
     defer c.deinit();
     const encoded = try case.gpa.alloc(u8, zstd.Compressor.bound(in.len));
     defer case.gpa.free(encoded);
     const n = try c.compress(in, encoded, .{});
     try chunked(case.gpa, encoded[0..n], in, .{}, shakedown.gen.intRange(case.source, usize, 1, 257), shakedown.gen.intRange(case.source, usize, 1, 257));
-    const stream = try streamEncode(case.gpa, in, .{ .pledged_size = in.len }, shakedown.gen.intRange(case.source, usize, 1, 257), shakedown.gen.intRange(case.source, usize, 1, 257));
+    const stream = try streamEncode(case.gpa, in, .{ .pledged_size = .fromRaw(in.len) }, shakedown.gen.intRange(case.source, usize, 1, 257), shakedown.gen.intRange(case.source, usize, 1, 257));
     defer case.gpa.free(stream);
     try testing.expectEqualSlices(u8, encoded[0..n], stream);
 }
@@ -168,8 +168,8 @@ test "zstd streaming encode: chunking and whole-buffer engines agree" {
     const out = try gpa.alloc(u8, zstd.Compressor.bound(in.len));
     defer gpa.free(out);
     for ([_]i32{ -5, 1, 3, 6, 9, 13, 16, 19, 22 }) |level| {
-        const options: zstd.Compress.Options = .{ .level = level, .pledged_size = in.len };
-        var c = try zstd.Compressor.init(gpa, .{ .level = level, .max_input = in.len });
+        const options: zstd.Compress.Options = .{ .level = level, .pledged_size = .fromRaw(in.len) };
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .max_input = .fromRaw(in.len) });
         defer c.deinit();
         const n = try c.compress(in, out, .{});
         for ([_]usize{ 1, 257, 8192, in.len }) |chunk| {
@@ -225,10 +225,10 @@ test "zstd streaming encode: attached dictionaries preserve whole-buffer parity 
     const choices = [_]*const zstd.Dictionary{ &raw, dictionaries.values[0] };
     for (choices) |dictionary| for ([_]i32{ 1, 3, 9, 19 }) |level| {
         const tuning: zstd.Tuning = .{ .window_log = 10 };
-        var c = try zstd.Compressor.init(gpa, .{ .level = level, .tuning = tuning, .dictionary = dictionary, .max_input = in.len });
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .tuning = tuning, .dictionary = dictionary, .max_input = .fromRaw(in.len) });
         defer c.deinit();
         const n = try c.compress(in, &out, .{});
-        const encoded = try streamEncode(gpa, in, .{ .level = level, .tuning = tuning, .dictionary = dictionary, .pledged_size = in.len }, 7, 13);
+        const encoded = try streamEncode(gpa, in, .{ .level = level, .tuning = tuning, .dictionary = dictionary, .pledged_size = .fromRaw(in.len) }, 7, 13);
         defer gpa.free(encoded);
         try testing.expectEqualSlices(u8, out[0..n], encoded);
         try chunked(gpa, encoded, in, .{ .dictionaries = &.{dictionary} }, 1, 1);
@@ -244,10 +244,10 @@ test "zstd streaming encode: long-distance state survives chunking and window co
     defer gpa.free(out);
     for ([_]i32{ 1, 19 }) |level| {
         const tuning: zstd.Tuning = .{ .long_distance = true, .window_log = 19 };
-        var c = try zstd.Compressor.init(gpa, .{ .level = level, .tuning = tuning, .max_input = in.len });
+        var c = try zstd.Compressor.init(gpa, .{ .level = level, .tuning = tuning, .max_input = .fromRaw(in.len) });
         defer c.deinit();
         const n = try c.compress(in, out, .{});
-        const encoded = try streamEncode(gpa, in, .{ .level = level, .tuning = tuning, .pledged_size = in.len }, 307, 257);
+        const encoded = try streamEncode(gpa, in, .{ .level = level, .tuning = tuning, .pledged_size = .fromRaw(in.len) }, 307, 257);
         defer gpa.free(encoded);
         try testing.expectEqualSlices(u8, out[0..n], encoded);
         try chunked(gpa, encoded, in, .{}, 509, 1024);
@@ -256,13 +256,13 @@ test "zstd streaming encode: long-distance state survives chunking and window co
 
 test "zstd streaming encode: pledge mismatch and single-byte finish" {
     const gpa = testing.allocator;
-    var s = try zstd.Compress.init(gpa, .{ .pledged_size = 3 });
+    var s = try zstd.Compress.init(gpa, .{ .pledged_size = .fromRaw(3) });
     defer s.deinit();
     var output: [128]u8 = undefined;
     _ = try s.write("ab", &output);
     try testing.expectError(error.SizeMismatch, s.finish(&output));
     s.reset();
-    const encoded = try streamEncode(gpa, "abc", .{ .pledged_size = 3 }, 1, 1);
+    const encoded = try streamEncode(gpa, "abc", .{ .pledged_size = .fromRaw(3) }, 1, 1);
     defer gpa.free(encoded);
     try chunked(gpa, encoded, "abc", .{}, 1, 1);
 }
@@ -270,7 +270,7 @@ test "zstd streaming encode: pledge mismatch and single-byte finish" {
 test "zstd streaming writer: buffered, unbuffered and splatted input" {
     const gpa = testing.allocator;
     for ([_]usize{ 0, 13, 4096 }) |buffer_len| {
-        var s = try zstd.Compress.init(gpa, .{ .pledged_size = 13 });
+        var s = try zstd.Compress.init(gpa, .{ .pledged_size = .fromRaw(13) });
         defer s.deinit();
         var sink: std.Io.Writer.Allocating = .init(gpa);
         defer sink.deinit();
@@ -285,7 +285,7 @@ test "zstd streaming writer: buffered, unbuffered and splatted input" {
 
 fn initStream(gpa: std.mem.Allocator) !void {
     var no_resize = shakedown.alloc.NoResize.init(gpa);
-    var s = try zstd.Compress.init(no_resize.allocator(), .{ .level = 6, .pledged_size = 2000 });
+    var s = try zstd.Compress.init(no_resize.allocator(), .{ .level = 6, .pledged_size = .fromRaw(2000) });
     defer s.deinit();
     var in: [2000]u8 = @splat('a');
     var out: [32]u8 = undefined;
@@ -295,7 +295,7 @@ fn initStream(gpa: std.mem.Allocator) !void {
 
 test "zstd streaming encode: allocation failures and caller storage" {
     try testing.checkAllAllocationFailures(testing.allocator, initStream, .{});
-    const options: zstd.Compress.Options = .{ .level = 6, .pledged_size = 37 };
+    const options: zstd.Compress.Options = .{ .level = 6, .pledged_size = .fromRaw(37) };
     const buffer = try testing.allocator.alignedAlloc(u8, .@"64", zstd.Compress.memory(options));
     defer testing.allocator.free(buffer);
     var s: zstd.Compress = .initBuffer(buffer, options);

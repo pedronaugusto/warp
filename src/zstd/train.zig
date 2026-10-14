@@ -79,7 +79,7 @@ fn compressedSize(gpa: Allocator, bytes: []const u8, samples: []const []const u8
     dictionary.* = Dictionary.parse(bytes) catch return error.InvalidParameters;
     var largest: usize = 0;
     for (samples) |sample| largest = @max(largest, sample.len);
-    var encoder = try Encoder.init(gpa, .{ .dictionary = dictionary, .level = level, .max_input = largest });
+    var encoder = try Encoder.init(gpa, .{ .dictionary = dictionary, .level = level, .max_input = .fromRaw(largest) });
     defer encoder.deinit();
     const out = try gpa.alloc(u8, Encoder.bound(largest));
     defer gpa.free(out);
@@ -158,7 +158,7 @@ pub fn finalize(gpa: Allocator, content: []const u8, samples: []const []const u8
     try validate(samples, out, options);
     if (content.len == 0) return error.InvalidParameters;
     const raw = Dictionary.raw(content);
-    var encoder = try Encoder.init(gpa, .{ .dictionary = &raw, .level = options.level, .max_input = 128 << 10 });
+    var encoder = try Encoder.init(gpa, .{ .dictionary = &raw, .level = options.level, .max_input = .literal("128KiB") });
     defer encoder.deinit();
     var stats: Stats = .{};
     try stats.collect(gpa, &encoder, samples);

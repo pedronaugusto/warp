@@ -3,6 +3,7 @@
 //! reached from the real stream header. No index or checksum guess establishes it.
 const Speculative = @This();
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const engine = @import("../inflate.zig");
 const marked = @import("../marked.zig");
@@ -26,15 +27,23 @@ pub const Statistics = struct {
 
 pub const Options = struct {
     /// Maximum decoded bytes retained per worker, in two-byte marker form.
-    chunk_len: u32 = 4 << 20,
+    chunk_len: aegis.units.Bytes(u32) = .literal("4MiB"),
     /// Compressed bytes per search partition. Large ratios may need a
     /// larger chunk_len or smaller search_len; exhausted jobs fall back.
-    search_len: u32 = 256 << 10,
+    search_len: aegis.units.Bytes(u32) = .literal("256KiB"),
     /// Work on false candidates is bounded by this multiple of chunk_len.
     work_limit: u8 = 4,
     /// Maximum block descriptors per worker, including empty blocks.
     max_blocks: u16 = 1024,
     statistics: ?*Statistics = null,
+
+    /// The lengths, as the decoder's are kept.
+    fn chunkLen(o: Options) usize {
+        return o.chunk_len.raw();
+    }
+    fn searchLen(o: Options) usize {
+        return o.search_len.raw();
+    }
 };
 
 const Candidate = struct { count: usize };
@@ -63,12 +72,12 @@ const Worker = struct {
 
 pub fn memory(concurrency: u16, options: Options) usize {
     std.debug.assert(concurrency > 0);
-    std.debug.assert(options.chunk_len > 0);
-    std.debug.assert(options.search_len > 0);
+    std.debug.assert(options.chunkLen() > 0);
+    std.debug.assert(options.searchLen() > 0);
     std.debug.assert(options.work_limit > 0);
     std.debug.assert(options.max_blocks > 0);
     return std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64) +
-        (std.mem.alignForward(usize, @as(usize, options.chunk_len) * @sizeOf(u16), 64) +
+        (std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64) +
             std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64)) * concurrency;
 }
 
@@ -77,8 +86,8 @@ pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) Sp
     const workers = @as([*]Worker, @ptrCast(buffer.ptr))[0..concurrency]; // safe: aligned memory reserves all worker records
     var at = std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64);
     for (workers) |*w| {
-        const tokens = @as([*]u16, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.chunk_len]; // safe: padded, aligned token regions are reserved by memory
-        at += std.mem.alignForward(usize, @as(usize, options.chunk_len) * @sizeOf(u16), 64);
+        const tokens = @as([*]u16, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.chunkLen()]; // safe: padded, aligned token regions are reserved by memory
+        at += std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64);
         const blocks = @as([*]Block, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.max_blocks]; // safe: padded, aligned descriptor regions are reserved by memory
         at += std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64);
         w.* = .{ .tokens = tokens, .blocks = blocks };
@@ -90,7 +99,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     if (p.options.statistics) |stats| stats.* = .{};
     // Partial requests and small inputs retain the native decoder's exact
     // progress and diagnostics without launching speculative work.
-    if (options.partial or input.len <= p.options.search_len or input.len > std.math.maxInt(usize) / 8) {
+    if (options.partial or input.len <= p.options.searchLen() or input.len > std.math.maxInt(usize) / 8) {
         var native: Native = .init;
         const result = try native.inflate(input, output, options);
         try io.checkCancel();
@@ -109,14 +118,14 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
         try io.checkCancel();
         return finish(&stream);
     }
-    var next: usize = p.options.search_len;
+    var next: usize = p.options.searchLen();
     for (p.workers) |*w| {
         w.fixed_first = state.engine.fixed;
         p.submit(io, w, input, &next);
     }
     defer for (p.workers) |*w| w.group.cancel(io);
     var slot: usize = 0;
-    var active = @min(p.workers.len, (input.len - 1) / p.options.search_len);
+    var active = @min(p.workers.len, (input.len - 1) / p.options.searchLen());
     while (true) {
         try io.checkCancel();
         const bit: usize = @intCast(stream.bitOffset()); // safe: consumed bits are within this addressable input
@@ -228,7 +237,7 @@ fn submit(p: *Speculative, io: Io, w: *Worker, input: []const u8, next: *usize) 
     }
     w.input = input;
     w.from = next.* * 8;
-    next.* += @min(p.options.search_len, input.len - next.*);
+    next.* += @min(p.options.searchLen(), input.len - next.*);
     w.until = next.* * 8;
     w.group.async(io, search, .{ w, io, p.options });
 }
@@ -256,7 +265,7 @@ fn search(w: *Worker, io: Io, options: Options) void {
 }
 
 fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
-    var budget: usize = @as(usize, options.chunk_len) * options.work_limit;
+    var budget: usize = options.chunkLen() * options.work_limit;
     for ([_]bool{ w.fixed_first, !w.fixed_first }) |fixed| {
         var bit = w.from;
         while (bit < w.until and budget > 0) : (bit += 1) {

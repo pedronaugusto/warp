@@ -2,6 +2,7 @@
 //! The index borrows compressed bytes; readers decode frames by index or
 //! uncompressed offset without allocating per read.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Compressor = @import("Compressor.zig");
@@ -200,26 +201,31 @@ pub const Writer = struct {
         level: i32 = 3,
         tuning: Compressor.Tuning = .{},
         dictionary: ?*const Dictionary = null,
-        frame_len: u32 = 1 << 20,
+        frame_len: aegis.units.Bytes(u32) = .literal("1MiB"),
         max_frames: u32 = 65536,
         checksum: bool = true,
         frame_checksum: bool = true,
+
+        /// A frame's input length, at least a byte.
+        fn frameLen(o: Options) usize {
+            return @max(1, o.frame_len.raw());
+        }
     };
     pub const WriteError = error{ TooManyFrames, Finished, OutputFailed };
 
     fn encoderOptions(options: Options) Compressor.Options {
-        return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = @max(1, options.frame_len) };
+        return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = .fromRaw(options.frameLen()) };
     }
 
     pub fn memory(options: Options) usize {
-        const len: usize = @max(1, options.frame_len);
+        const len = options.frameLen();
         const size = Compressor.memory(encoderOptions(options)) +| (@as(usize, options.max_frames) *| @sizeOf(Record)) +| len +| Compressor.bound(len);
         if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
         return std.mem.alignForward(usize, size, 64);
     }
 
     pub fn init(gpa: Allocator, output: *Io.Writer, options: Options) (Allocator.Error || error{InvalidOptions})!Writer {
-        if (options.frame_len == 0 or options.frame_len > 1 << 30 or options.max_frames > (std.math.maxInt(u32) - 9) / 12) return error.InvalidOptions;
+        if (options.frame_len.eql(.fromRaw(0)) or options.frame_len.compare(.literal("1GiB")) == .gt or options.max_frames > (std.math.maxInt(u32) - 9) / 12) return error.InvalidOptions;
         const size = memory(options);
         if (size == std.math.maxInt(usize)) return error.OutOfMemory;
         const buffer = try gpa.alignedAlloc(u8, .@"64", size);
@@ -233,7 +239,7 @@ pub const Writer = struct {
         std.debug.assert(buffer.len >= memory(options));
         const size = Compressor.memory(encoderOptions(options));
         const records_size = @as(usize, options.max_frames) * @sizeOf(Record);
-        const len: usize = @max(1, options.frame_len);
+        const len = options.frameLen();
         return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = .initBuffer(buffer[0..size], encoderOptions(options)), .entries = @alignCast(std.mem.bytesAsSlice(Record, buffer[size..][0..records_size])), .input = buffer[size + records_size ..][0..len], .encoded = buffer[size + records_size + len ..][0..Compressor.bound(len)], .checksum = options.checksum, .frame_checksum = options.frame_checksum }; // safe: Record has four-byte alignment and compressor storage is a multiple of 64
     }
 

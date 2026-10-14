@@ -1,10 +1,12 @@
 //! Where a stream was refused, and why.
 
+const aegis = @import("aegis");
+
 const Diagnostic = @This();
 
 /// The bit of the input at which the stream was refused, counted from the
 /// first bit of the input given (least significant bit first in each byte).
-bit_offset: u64 = 0,
+bit_offset: aegis.units.Bits(u64) = .fromRaw(0),
 reason: Reason = .truncated,
 
 pub const Reason = enum {

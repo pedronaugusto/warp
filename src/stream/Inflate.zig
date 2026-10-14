@@ -492,7 +492,7 @@ pub const Reader = struct {
                                 return;
                             }
                             r.err_ = error.Truncated;
-                            if (r.inflate.options.diagnostic) |d| d.* = .{ .bit_offset = r.inflate.in_total * 8, .reason = .truncated };
+                            if (r.inflate.options.diagnostic) |d| d.* = .{ .bit_offset = .fromRaw(r.inflate.in_total * 8), .reason = .truncated };
                             return error.ReadFailed;
                         },
                     };

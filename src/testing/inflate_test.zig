@@ -121,7 +121,7 @@ test "every invalid stream gets the same verdict streamed, whole and a byte at a
             defer gpa.free(got.out);
             checkVerdict(gpa, verdict, kind, stream, options, got, &diag) catch |err| {
                 std.debug.print("{s} ({s}, window {d}, {s}): zlib says \"{s}\", streaming says ", .{ r.fields[0], r.fields[1], bits, if (bytewise) "bytewise" else "whole", verdict });
-                if (got.result) |ok| std.debug.print("{t} after {d} in, {d} out\n", .{ ok, got.in_len, got.out.len }) else |e| std.debug.print("{t} ({t} at bit {d})\n", .{ e, diag.reason, diag.bit_offset });
+                if (got.result) |ok| std.debug.print("{t} after {d} in, {d} out\n", .{ ok, got.in_len, got.out.len }) else |e| std.debug.print("{t} ({t} at bit {d})\n", .{ e, diag.reason, diag.bit_offset.raw() });
                 return err;
             };
         }
@@ -346,7 +346,7 @@ test "gzip: members one by one, member_end between them, and the first header's 
     _ = try z.decode(a[0..a_len], &out);
     try testing.expectError(error.InvalidStream, z.decode("j", &out));
     try testing.expectEqual(Diagnostic.Reason.trailing_data, diag.reason);
-    try testing.expectEqual(@as(u64, 8 * a_len), diag.bit_offset);
+    try testing.expectEqual(@as(u64, 8 * a_len), diag.bit_offset.raw());
     // A refused stream stays refused.
     try testing.expectError(error.InvalidStream, z.decode(b[0..b_len], &out));
 }

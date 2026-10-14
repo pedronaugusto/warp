@@ -8,6 +8,7 @@
 const Compressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const bits = @import("bits.zig");
 const deflate = @import("deflate.zig");
@@ -35,14 +36,19 @@ pub const Options = struct {
     /// The largest input `compress` will see: it sizes the tables. A larger
     /// input still compresses, with tables sized for this one. null sizes
     /// them for any input.
-    max_input: ?usize = null,
+    max_input: ?aegis.units.Bytes(usize) = null,
     /// Cost-model passes at levels 10-12; null uses the level default.
     passes: ?u32 = null,
+
+    /// `max_input`, as the tables are sized by.
+    fn maxInput(o: Options) ?usize {
+        return if (o.max_input) |n| n.raw() else null;
+    }
 };
 
 /// The bytes `initBuffer` needs for `options`.
 pub fn memory(options: Options) usize {
-    return deflate.Sizes.of(options.level, options.strategy, options.max_input).memory();
+    return deflate.Sizes.of(options.level, options.strategy, options.maxInput()).memory();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
@@ -56,7 +62,7 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
 /// A compressor in caller memory: `buffer.len >= memory(options)`; `deinit`
 /// then frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-    const sizes = deflate.Sizes.of(options.level, options.strategy, options.max_input);
+    const sizes = deflate.Sizes.of(options.level, options.strategy, options.maxInput());
     std.debug.assert(buffer.len >= sizes.memory());
     return .{ .engine = .init(buffer, sizes), .options = options, .owned = &.{}, .gpa = undefined };
 }

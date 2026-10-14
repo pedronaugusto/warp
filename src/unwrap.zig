@@ -240,7 +240,7 @@ fn dictionaryId(st: *State, s: *inflate.Stream, source: anytype, options: Option
     const id = @byteSwap(try s.take(source, 32));
     if (options.dictionary.len == 0) return s.fail(.dictionary_required);
     if (checksum.adler32(1, options.dictionary) != id) {
-        if (s.diagnostic) |diag| diag.* = .{ .bit_offset = s.bitOffset(), .reason = .dictionary_mismatch };
+        if (s.diagnostic) |diag| diag.* = .{ .bit_offset = .fromRaw(s.bitOffset()), .reason = .dictionary_mismatch };
         return error.DictionaryMismatch;
     }
     replaceHistory(st, s, options.dictionary);
@@ -307,7 +307,7 @@ fn headerDone(st: *State, s: *inflate.Stream, fields: ?*gzip.Fields, keep: bool)
 /// data, refused where it starts.
 fn refuse(st: *State, s: *inflate.Stream, reason: Diagnostic.Reason) Error {
     if (st.members > 0 and st.header.part == .fixed and st.header.at <= 2 and reason == .bad_gzip_header) {
-        if (s.diagnostic) |diag| diag.* = .{ .bit_offset = st.member_offset, .reason = .trailing_data };
+        if (s.diagnostic) |diag| diag.* = .{ .bit_offset = .fromRaw(st.member_offset), .reason = .trailing_data };
         return error.InvalidStream;
     }
     if (reason == .header_crc) return mismatch(s, .header_crc);
@@ -315,7 +315,7 @@ fn refuse(st: *State, s: *inflate.Stream, reason: Diagnostic.Reason) Error {
 }
 
 fn mismatch(s: *inflate.Stream, reason: Diagnostic.Reason) Error {
-    if (s.diagnostic) |diag| diag.* = .{ .bit_offset = s.bitOffset(), .reason = reason };
+    if (s.diagnostic) |diag| diag.* = .{ .bit_offset = .fromRaw(s.bitOffset()), .reason = reason };
     return error.ChecksumMismatch;
 }
 

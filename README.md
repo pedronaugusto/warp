@@ -60,7 +60,7 @@ const out = try gpa.alloc(u8, data.len);
 defer gpa.free(out);
 var diagnostic: warp.Diagnostic = undefined;
 const result = decompressor.inflateReader(&input, out, .{ .accept = .gzip, .diagnostic = &diagnostic }) catch |err| {
-    std.log.err("{t} at bit {d}: {t}", .{ err, diagnostic.bit_offset, diagnostic.reason });
+    std.log.err("{t} at bit {d}: {t}", .{ err, diagnostic.bit_offset.raw(), diagnostic.reason });
     return err;
 };
 std.debug.assert(result.finished);
@@ -174,6 +174,11 @@ the second length.
 Errors are named sets: `InvalidStream`, `ChecksumMismatch`, `DictionaryMismatch`,
 `Truncated` and `OutputTooSmall` for decoding, `OutputTooSmall` for encoding, and
 `ReadFailed` from a reader.
+
+Sizes and limits in options are [aegis](https://github.com/pedronaugusto/aegis)
+sizes, written as text where they are constants (`.chunk_len = .literal("256KiB")`,
+`.max_window = .literal("64MiB")`), and a `Diagnostic` says where a stream was refused
+as an aegis count of bits (DEFLATE) or bytes (zstd).
 
 ### Streaming and parallel calls
 
@@ -323,6 +328,8 @@ behave the same.
 ## Built with
 
 - [Zig](https://ziglang.org) 0.17.0 and its standard library; nothing is linked.
+- [aegis](https://github.com/pedronaugusto/aegis): the sizes and offsets the API takes
+  and gives.
 - [bay](https://github.com/pedronaugusto/bay) runs warp's development.
   [preflight](https://github.com/pedronaugusto/preflight) (the source checks, the
   tests and CI) and [shakedown](https://github.com/pedronaugusto/shakedown) (the

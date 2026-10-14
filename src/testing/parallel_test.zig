@@ -26,7 +26,7 @@ test "parallel compression round-trips with identical bytes at any concurrency" 
     var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     for ([_]u4{ 0, 1, 6, 10, 12 }) |level| for (std.enums.values(container.Container)) |kind| for ([_]bool{ false, true }) |independent| {
-        var options: parallel.Options = .{ .level = level, .container = kind, .chunk_len = 16384, .concurrency = 1, .independent = independent };
+        var options: parallel.Options = .{ .level = level, .container = kind, .chunk_len = .fromRaw(16384), .concurrency = 1, .independent = independent };
         const serial = try encode(gpa, testing.io, in, options);
         defer gpa.free(serial);
         options.concurrency = 4;
@@ -53,8 +53,8 @@ test "parallel codecs finish with more workers than threads, with the same bytes
     defer gpa.free(in);
     const decoded = try gpa.alloc(u8, in.len);
     defer gpa.free(decoded);
-    const options: parallel.Options = .{ .level = 6, .chunk_len = 8192, .concurrency = 16 };
-    const serial = try encode(gpa, testing.io, in, .{ .level = 6, .chunk_len = 8192, .concurrency = 1 });
+    const options: parallel.Options = .{ .level = 6, .chunk_len = .fromRaw(8192), .concurrency = 16 };
+    const serial = try encode(gpa, testing.io, in, .{ .level = 6, .chunk_len = .fromRaw(8192), .concurrency = 1 });
     defer gpa.free(serial);
     for ([_]std.Io.Limit{ .nothing, .limited(1), .limited(2) }) |limit| {
         var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = limit });
@@ -70,7 +70,7 @@ test "parallel codecs finish with more workers than threads, with the same bytes
         _ = try indexed.decompress(io, many, decoded, &index);
         try testing.expectEqualSlices(u8, in, decoded);
         @memset(decoded, 0);
-        var speculative = try parallel.Decompressor.init(gpa, .{ .concurrency = 16, .speculative = .{ .chunk_len = 16384, .search_len = 1024 } });
+        var speculative = try parallel.Decompressor.init(gpa, .{ .concurrency = 16, .speculative = .{ .chunk_len = .fromRaw(16384), .search_len = .fromRaw(1024) } });
         defer speculative.deinit();
         const r = try speculative.inflate(io, many, decoded, .{ .accept = .gzip });
         try testing.expectEqualSlices(u8, in, decoded[0..r.out_len]);
@@ -79,7 +79,7 @@ test "parallel codecs finish with more workers than threads, with the same bytes
 
 test "parallel compression reuses its exact allocation, including empty input" {
     var counting: shakedown.alloc.Counting = .init(testing.allocator);
-    const options: parallel.Options = .{ .chunk_len = 100, .concurrency = 3 };
+    const options: parallel.Options = .{ .chunk_len = .fromRaw(100), .concurrency = 3 };
     var p = try parallel.Compressor.init(counting.allocator(), options);
     defer p.deinit();
     try testing.expectEqual(parallel.Compressor.memory(options), counting.live_bytes);
@@ -103,7 +103,7 @@ test "parallel compressor caller memory survives a failed sink and reuse" {
     defer threaded.deinit();
     const input = try gen.alloc(testing.allocator, .noise, 47, 100000);
     defer testing.allocator.free(input);
-    const options: parallel.Options = .{ .chunk_len = 8192, .concurrency = 2 };
+    const options: parallel.Options = .{ .chunk_len = .fromRaw(8192), .concurrency = 2 };
     const memory = try testing.allocator.alignedAlloc(u8, .@"64", parallel.Compressor.memory(options));
     defer testing.allocator.free(memory);
     var p = parallel.Compressor.initBuffer(memory, options);

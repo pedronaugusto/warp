@@ -121,7 +121,7 @@ fn family(arguments: Arguments) []const u8 {
 }
 
 fn decodeFrame(io: Io, d: *zstd.Decompressor, pipeline: ?*zstd.parallel.Decompressor, input: []const u8, output: []u8, dictionaries: []const *const zstd.Dictionary) Error!zstd.Decompressor.Result {
-    const options: zstd.Decompressor.Options = .{ .max_window = std.math.maxInt(u64), .dictionaries = dictionaries };
+    const options: zstd.Decompressor.Options = .{ .max_window = .fromRaw(std.math.maxInt(u64)), .dictionaries = dictionaries };
     if (pipeline) |p| return p.decompress(io, input, output, options);
     return d.decompress(input, output, options);
 }
@@ -151,7 +151,7 @@ pub const Whole = struct {
         c.d.* = .init;
         if (s.decode_threads != 0) c.pipeline = try .init(s.session.gpa, .{ .concurrency = s.decode_threads });
         errdefer if (c.pipeline) |*p| p.deinit();
-        c.c = try .init(s.session.gpa, .{ .level = c.level, .max_input = c.input.len, .tuning = .{ .long_distance = s.long }, .dictionary = s.dictionary });
+        c.c = try .init(s.session.gpa, .{ .level = c.level, .max_input = .fromRaw(c.input.len), .tuning = .{ .long_distance = s.long }, .dictionary = s.dictionary });
         errdefer c.c.deinit();
         c.n = try c.c.compress(c.input, c.out, .{ .checksum = s.checksum });
         _ = try c.decode();
@@ -202,7 +202,7 @@ pub const Parallel = struct {
         const back = try a.alloc(u8, c.input.len);
         const d = try a.create(zstd.Decompressor);
         d.* = .init;
-        _ = try d.decompress(sink.buffered(), back, .{ .max_window = std.math.maxInt(u64), .dictionaries = s.dictionaries() });
+        _ = try d.decompress(sink.buffered(), back, .{ .max_window = .fromRaw(std.math.maxInt(u64)), .dictionaries = s.dictionaries() });
         if (!std.mem.eql(u8, c.input, back)) return error.WrongOutput;
     }
 
@@ -241,13 +241,13 @@ pub const Target = struct {
         errdefer c.arena.deinit();
         const a = c.arena.allocator();
         c.out = try a.alloc(u8, c.input.len + c.input.len / 32 + 4096);
-        c.s = try .init(s.session.gpa, .{ .level = c.level, .pledged_size = c.input.len, .dictionary = s.dictionary, .frame = .{ .checksum = s.checksum }, .target_block_size = c.target });
+        c.s = try .init(s.session.gpa, .{ .level = c.level, .pledged_size = .fromRaw(c.input.len), .dictionary = s.dictionary, .frame = .{ .checksum = s.checksum }, .target_block_size = .fromRaw(c.target) });
         errdefer c.s.deinit();
         const n = try c.pass();
         const back = try a.alloc(u8, c.input.len);
         const d = try a.create(zstd.Decompressor);
         d.* = .init;
-        _ = try d.decompress(c.out[0..n], back, .{ .max_window = std.math.maxInt(u64), .dictionaries = s.dictionaries() });
+        _ = try d.decompress(c.out[0..n], back, .{ .max_window = .fromRaw(std.math.maxInt(u64)), .dictionaries = s.dictionaries() });
         if (!std.mem.eql(u8, c.input, back)) return error.WrongOutput;
     }
 
@@ -288,7 +288,7 @@ pub const Frame = struct {
         errdefer c.arena.deinit();
         c.d = try c.arena.allocator().create(zstd.Decompressor);
         c.d.* = .init;
-        c.c = try .init(c.session.gpa, .{ .level = c.level, .max_input = c.input.len });
+        c.c = try .init(c.session.gpa, .{ .level = c.level, .max_input = .fromRaw(c.input.len) });
         errdefer c.c.deinit();
         c.n = try c.c.compress(c.input, &c.out, .{});
     }

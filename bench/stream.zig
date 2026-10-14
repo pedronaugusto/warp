@@ -235,7 +235,7 @@ pub const WebSocket = struct {
         x.out = try a.alloc(u8, 32 << 10);
         x.back = try a.alloc(u8, 32 << 10);
         x.c = try a.create(warp.Compressor);
-        x.c.* = try .init(a, .{ .level = 1, .max_input = 32 << 10 });
+        x.c.* = try .init(a, .{ .level = 1, .max_input = .fromRaw(32 << 10) });
         x.dc = try a.create(warp.Decompressor);
         x.dc.* = .init;
         if (x.bits != 0) {

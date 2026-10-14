@@ -1,6 +1,7 @@
 //! Chunked compression into one standard stream. Workers have disjoint
 //! engines and buffers; only the caller writes the chunks, in input order.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const deflate = @import("deflate.zig");
 const bits = @import("bits.zig");
@@ -15,7 +16,7 @@ pub const Options = struct {
     strategy: deflate.Strategy = .default,
     container: container.Container = .gzip,
     gzip: gzip.Header = .{},
-    chunk_len: u32 = 128 << 10,
+    chunk_len: aegis.units.Bytes(u32) = .literal("128KiB"),
     independent: bool = false,
     concurrency: u16 = 8,
     /// Extra optimization passes at levels 10-12.
@@ -44,17 +45,22 @@ pub const Compressor = struct {
     gpa: std.mem.Allocator,
 
     pub fn memory(options: Options) usize {
-        std.debug.assert(options.chunk_len > 0);
+        std.debug.assert(chunkLen(options) > 0);
         std.debug.assert(options.concurrency > 0);
-        const sizes = deflate.Sizes.of(options.level, options.strategy, options.chunk_len);
+        const sizes = deflate.Sizes.of(options.level, options.strategy, chunkLen(options));
         return stride(options, sizes) * options.concurrency + 32768;
+    }
+
+    /// The chunk length, as the engine's lengths are kept.
+    fn chunkLen(options: Options) usize {
+        return options.chunk_len.raw();
     }
 
     fn stride(options: Options, sizes: deflate.Sizes) usize {
         return std.mem.alignForward(usize, @sizeOf(Worker), 64) +
             std.mem.alignForward(usize, sizes.memory(), 64) + 32768 +
-            std.mem.alignForward(usize, options.chunk_len, 64) +
-            std.mem.alignForward(usize, FrameCompressor.bound(options.chunk_len, .{ .container = .raw }) + 8, 64);
+            std.mem.alignForward(usize, chunkLen(options), 64) +
+            std.mem.alignForward(usize, FrameCompressor.bound(chunkLen(options), .{ .container = .raw }) + 8, 64);
     }
 
     pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compressor {
@@ -69,7 +75,7 @@ pub const Compressor = struct {
     pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
         std.debug.assert(buffer.len >= memory(options));
         const owned = buffer[0..memory(options)];
-        const sizes = deflate.Sizes.of(options.level, options.strategy, options.chunk_len);
+        const sizes = deflate.Sizes.of(options.level, options.strategy, chunkLen(options));
         const step = stride(options, sizes);
         // Worker records are kept contiguously at the front. All engine
         // regions start after the records, at a 64-byte boundary.
@@ -82,9 +88,9 @@ pub const Compressor = struct {
             at += engine_len;
             const dictionary = owned[at..][0..32768];
             at += 32768;
-            const input = owned[at..][0..options.chunk_len];
-            at += std.mem.alignForward(usize, options.chunk_len, 64);
-            const output_len = std.mem.alignForward(usize, FrameCompressor.bound(options.chunk_len, .{ .container = .raw }) + 8, 64);
+            const input = owned[at..][0..chunkLen(options)];
+            at += std.mem.alignForward(usize, chunkLen(options), 64);
+            const output_len = std.mem.alignForward(usize, FrameCompressor.bound(chunkLen(options), .{ .container = .raw }) + 8, 64);
             worker.* = .{ .engine = .init(engine_buffer, sizes), .input = input, .dictionary = dictionary, .output = owned[at..][0..output_len] };
             at += output_len;
         }
