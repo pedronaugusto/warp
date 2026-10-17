@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The AVX2 checksum kernels (Adler-32, and CRC-32 and CRC-32C folded with VPCLMULQDQ) faulted in a Debug build on x86-64 Linux: Zig's own x86-64 backend, Debug's default there, keeps 32-byte vectors on a stack it assumes 32-byte aligned and does not realign it, and a kernel picked at run time is entered from code built for the baseline, which aligns it to 16. Under that backend the kernels run only where the target guarantees AVX2; under LLVM, as before, wherever the CPU has it.
+
 ## [0.4.0] - 2026-10-14
 
 ### Breaking

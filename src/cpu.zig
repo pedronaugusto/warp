@@ -67,7 +67,7 @@ pub fn has(comptime feature: Feature) bool {
     return features().contains(feature);
 }
 
-/// Every feature this CPU has.
+/// Every feature this CPU has that warp can use.
 pub fn features() Set {
     var word = detected.load(.monotonic);
     if (word & done == 0) {
@@ -80,7 +80,8 @@ pub fn features() Set {
     return set;
 }
 
-/// Whether `feature` can be found at run time on this target.
+/// Whether `feature` can be found at run time on this target, and a kernel
+/// that needs it entered from code built without it.
 fn detectable(feature: Feature) bool {
     return switch (builtin.cpu.arch) {
         .aarch64 => switch (feature) {
@@ -91,7 +92,17 @@ fn detectable(feature: Feature) bool {
             else => false,
         },
         .x86_64 => switch (feature) {
-            .x86_sse42, .x86_pclmul, .x86_avx2, .x86_vpclmul => true,
+            .x86_sse42, .x86_pclmul => true,
+            // A 256-bit kernel keeps 32-byte vectors on its stack, which
+            // the x86-64 ABI aligns only to 16 bytes. LLVM realigns the
+            // frame of a function that needs more; Zig's own x86-64
+            // backend (Debug's default on Linux) does not, and assumes
+            // its caller left the stack as aligned as the kernel needs,
+            // which code built for the baseline does not: an aligned
+            // store then faults. Under that backend these kernels run
+            // only where the target guarantees AVX2, so every caller is
+            // built with it too.
+            .x86_avx2, .x86_vpclmul => builtin.zig_backend == .stage2_llvm,
             else => false,
         },
         else => false,
@@ -104,6 +115,11 @@ fn detect() Set {
         .aarch64 => detectArm(&set),
         .x86_64 => detectX86(&set),
         else => {},
+    }
+    // A feature the kernels cannot use beyond the target's guarantees is
+    // not one warp has.
+    inline for (comptime std.enums.values(Feature)) |f| {
+        if (comptime !guaranteed.contains(f) and !detectable(f)) set.remove(f);
     }
     return set;
 }
