@@ -9,6 +9,7 @@ All notable changes to warp are documented here. The format follows
 
 - Development: the suite runs under the release tier's hardened profile (`bay hardened`, `bay hardened-fuzz`, `bay hardened-tsan`). shakedown 0.4.12 for development: 0.4.1's simulation watchdog asked for a 64 KiB thread stack, below what libc takes on aarch64 Linux under ThreadSanitizer (`pthread_attr_setstacksize` refused it, an assertion in std), which aborted the parallel zstd tests there.
 - Pins aegis 0.1.12, the line's version shakedown 0.4.12 takes.
+- Development: the speculative and parallel zstd properties start their decoders' work on the case's own `Io` (shakedown 0.4.13's `Case.io`). Under the fuzzer, `std.testing.io` outlives each input's `std.testing.allocator`, and a group's task freed after its group's await reached the next input's allocator ("corrupted footer metadata"); the decoders were right.
 
 ## [0.4.1] - 2026-10-17
 

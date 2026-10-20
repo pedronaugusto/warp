@@ -172,7 +172,7 @@ fn arbitrary(_: void, case: *shakedown.Case) !void {
     const right = try case.gpa.alloc(u8, output_len);
     var decoder = try parallel.Decompressor.init(case.gpa, .{ .concurrency = 2, .speculative = .{ .chunk_len = .fromRaw(4096), .search_len = .fromRaw(8), .work_limit = 1 } });
     defer decoder.deinit();
-    try compare(testing.io, &decoder, bytes, left, right, .{ .accept = shakedown.gen.enumValue(case.source, container.Accept) });
+    try compare(case.io(), &decoder, bytes, left, right, .{ .accept = shakedown.gen.enumValue(case.source, container.Accept) });
 }
 
 test "speculative fuzz: arbitrary bytes retain the native reference verdict" {
@@ -255,11 +255,11 @@ fn validAndMutated(_: void, case: *shakedown.Case) !void {
     const right = try case.gpa.alloc(u8, input.len);
     var decoder = try parallel.Decompressor.init(case.gpa, .{ .concurrency = 3, .speculative = .{ .chunk_len = .fromRaw(32768), .search_len = .fromRaw(256), .work_limit = 1 } });
     defer decoder.deinit();
-    try compare(testing.io, &decoder, stream, left, right, .{ .accept = accept(kind) });
+    try compare(case.io(), &decoder, stream, left, right, .{ .accept = accept(kind) });
     if (stream.len > 0) {
         const at = shakedown.gen.intRange(s, usize, 0, stream.len - 1);
         stream[at] ^= @as(u8, 1) << shakedown.gen.int(s, u3);
-        try compare(testing.io, &decoder, stream, left, right, .{ .accept = accept(kind) });
+        try compare(case.io(), &decoder, stream, left, right, .{ .accept = accept(kind) });
     }
 }
 
