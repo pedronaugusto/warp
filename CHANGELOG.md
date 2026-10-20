@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Development: the suite runs under the release tier's hardened profile (`bay hardened`, `bay hardened-fuzz`, `bay hardened-tsan`).
+
 ## [0.4.1] - 2026-10-17
 
 ### Fixed

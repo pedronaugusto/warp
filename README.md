@@ -348,7 +348,11 @@ Every checksum kernel the CPU has is checked against a
 bitwise reference at every length to 4 KiB and every alignment, and combining to
 2^33 bytes. Fuzzing feeds arbitrary bytes to every decoder entry and arbitrary
 inputs through every level; compression allocates nothing after `init`, and
-`init` survives every allocation failure.
+`init` survives every allocation failure. The release tier runs the hardened
+profile: `bay hardened` (the suite with safety on and `std.testing.allocator`
+on shakedown's quarantine), `bay hardened-fuzz` (the properties under Zig's
+fuzzer) and, on x86_64 or aarch64 Linux, `bay hardened-tsan` (the suite under
+ThreadSanitizer).
 
 `bay check-sizes` verifies the fixed standard input snapshots and checks
 all levels against the captured size limits, summed separately for each corpus.

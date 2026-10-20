@@ -183,6 +183,10 @@ pub fn dev(b: *std.Build, tools: type) void {
     tools.preflight.addCi(b, p, .{
         .tests = test_step,
         .portable_tests = true,
+        // The release tier fuzzes every decoder entry and runs the suite
+        // under ThreadSanitizer, where parallel compression and decoding
+        // share their work between threads.
+        .hardened = .{ .fuzz_step = "test", .tsan_step = "test" },
         .bench = .{
             .programs = &.{
                 .{ .name = "bench", .source = "bench/main.zig" },

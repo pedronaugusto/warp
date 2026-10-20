@@ -15,6 +15,7 @@
     "powerpc64-linux-musl"
   ],
   "compile_once": true,
+  "hardened": true,
   "jobs": [
     {
       "name": "sizes",
