@@ -5,6 +5,8 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-20
+
 ### Changed
 
 - Development: the suite runs under the release tier's hardened profile (`bay hardened`, `bay hardened-fuzz`, `bay hardened-tsan`). shakedown 0.4.12 for development: 0.4.1's simulation watchdog asked for a 64 KiB thread stack, below what libc takes on aarch64 Linux under ThreadSanitizer (`pthread_attr_setstacksize` refused it, an assertion in std), which aborted the parallel zstd tests there.
