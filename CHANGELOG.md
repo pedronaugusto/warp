@@ -5,6 +5,8 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-21
+
 ### Fixed
 
 - zstd's parallel decoder refused a block wrong in both its literals and its sequences header for its sequences, where the core refuses it for its literals, which come first: the parallel side read the sequences header before its worker decoded the literals. It now decodes them first where that header is refused, with the table the core decodes them with. Found by the release tier's fuzzing (the 2026-10-21 nightly's campaign, run to its end); both inputs are regressions of the property.
