@@ -2,8 +2,6 @@
 
 const aegis = @import("aegis");
 
-const Diagnostic = @This();
-
 /// The byte of the input at which the refused structure starts (a frame
 /// header, a block, a literals or sequences section).
 offset: aegis.units.Bytes(u64) = .fromRaw(0),

@@ -23,7 +23,6 @@ const speculative = @import("speculative.zig");
 
 const Session = support.Session;
 const Error = support.Error;
-const Workload = support.Workload;
 
 /// The bench's own arguments, read by ensign.
 const Arguments = struct {

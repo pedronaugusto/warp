@@ -175,13 +175,6 @@ pub const Stream = struct {
         return if (truncated) error.Truncated else error.InvalidStream;
     }
 
-    /// `fail` from inside the fast loop, whose position lives in locals.
-    fn failAt(s: *Stream, reason: Diagnostic.Reason, ip: usize, bitsleft: u32) Error {
-        s.ip = ip;
-        s.bitsleft = bitsleft;
-        return s.fail(reason);
-    }
-
     /// `Truncated` if the stream consumed bits past the end of the input.
     pub fn checkWhole(s: *Stream) Error!void {
         if (!s.whole()) return s.fail(.truncated);

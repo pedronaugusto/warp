@@ -2,8 +2,6 @@
 
 const aegis = @import("aegis");
 
-const Diagnostic = @This();
-
 /// The bit of the input at which the stream was refused, counted from the
 /// first bit of the input given (least significant bit first in each byte).
 bit_offset: aegis.units.Bits(u64) = .fromRaw(0),
