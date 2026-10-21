@@ -5,6 +5,14 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- zstd's parallel decoder refused a block wrong in both its literals and its sequences header for its sequences, where the core refuses it for its literals, which come first: the parallel side read the sequences header before its worker decoded the literals. It now decodes them first where that header is refused, with the table the core decodes them with. Found by the release tier's fuzzing (the 2026-10-21 nightly's campaign, run to its end); both inputs are regressions of the property.
+
+### Changed
+
+- The release tier's ThreadSanitizer run takes `concurrent`, the tests whose work is shared between threads (a root of their own, `src/concurrent_test.zig`; `test` runs both roots), and its fuzz campaign 3,000 inputs a target: with the whole suite and 10,000 they ran past the hosted job's twenty minutes every night since 2026-10-18. The riscv64 leg runs in four shards. The 64 KiB stack test skips under ThreadSanitizer, whose frames are larger.
+
 ## [0.4.2] - 2026-10-20
 
 ### Changed

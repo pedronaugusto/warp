@@ -1,4 +1,5 @@
-//! Every test in warp, from one root.
+//! Every test in warp but those whose work is shared between threads,
+//! which `concurrent_test.zig` holds; the `test` step runs both roots.
 
 test {
     _ = @import("checksum.zig");
@@ -14,12 +15,8 @@ test {
     _ = @import("deflate/split.zig");
     _ = @import("testing/decode_test.zig");
     _ = @import("testing/encode_test.zig");
-    _ = @import("testing/api_test.zig");
     _ = @import("testing/inflate_test.zig");
     _ = @import("testing/deflate_test.zig");
-    _ = @import("testing/parallel_test.zig");
-    _ = @import("testing/speculative_test.zig");
-    _ = @import("testing/index_test.zig");
     _ = @import("testing/deflate64_test.zig");
     _ = @import("testing/c_test.zig");
     _ = @import("zstd.zig");
@@ -28,7 +25,6 @@ test {
     _ = @import("testing/zstd_stream_test.zig");
     _ = @import("testing/zstd_train_test.zig");
     _ = @import("testing/zstd_seekable_test.zig");
-    _ = @import("testing/zstd_parallel_test.zig");
     _ = @import("testing/zstd_super_test.zig");
     _ = @import("testing/zstd_index_test.zig");
 }

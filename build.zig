@@ -49,15 +49,24 @@ pub fn dev(b: *std.Build, tools: type) void {
         .optimize = optimize,
     });
     addSourceImports(p, test_module, target, optimize);
-    // The differential corpus, captured once from other implementations
-    // (pedronaugusto/trials, warp/), and the inputs it names.
-    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
-        test_module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = p.path(b.fmt("testdata/{s}.corpus", .{name})) });
-    }
-    test_module.addAnonymousImport("gen", .{ .root_source_file = p.path("bench/gen.zig") });
+    addTestImports(b, p, test_module);
     const tests = b.addTest(.{ .name = "warp-tests", .filters = filters, .root_module = test_module });
     const test_step = b.step("test", "Run the tests and example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+    // The tests whose work is shared between threads, from a root of their
+    // own: what ThreadSanitizer runs, where the codecs' exhaustive single
+    // threaded loops would cost its job its time and find nothing.
+    const concurrent_module = b.createModule(.{
+        .root_source_file = p.path("src/concurrent_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addSourceImports(p, concurrent_module, target, optimize);
+    addTestImports(b, p, concurrent_module);
+    const concurrent_tests = b.addTest(.{ .name = "warp-concurrent-tests", .filters = filters, .root_module = concurrent_module });
+    const concurrent_run = b.addRunArtifact(concurrent_tests);
+    b.step("concurrent", "Run the tests whose work is shared between threads").dependOn(&concurrent_run.step);
+    test_step.dependOn(&concurrent_run.step);
     // The benchmarks' input generator and the code warp replaces carry tests
     // of their own; a test runs only from its module's root, so each is one.
     for ([_][]const u8{"bench/gen.zig"}) |source| {
@@ -69,6 +78,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     }
     const check = b.step("check", "Compile the tests, library, example and benchmarks without running them");
     check.dependOn(&tests.step);
+    check.dependOn(&concurrent_tests.step);
     check.dependOn(&library.step);
     if (c_abi) check.dependOn(&package.artifact("z").step);
 
@@ -163,6 +173,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     // The test doubles are shakedown's.
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
     test_module.addImport("shakedown", shakedown.module("shakedown"));
+    concurrent_module.addImport("shakedown", shakedown.module("shakedown"));
 
     const size_module = b.createModule(.{
         .root_source_file = p.path("ci/sizes.zig"),
@@ -183,10 +194,11 @@ pub fn dev(b: *std.Build, tools: type) void {
     tools.preflight.addCi(b, p, .{
         .tests = test_step,
         .portable_tests = true,
-        // The release tier fuzzes every decoder entry and runs the suite
-        // under ThreadSanitizer, where parallel compression and decoding
-        // share their work between threads.
-        .hardened = .{ .fuzz_step = "test", .tsan_step = "test" },
+        // The release tier fuzzes every decoder entry, a campaign sized to
+        // its job (ten thousand inputs a target outran twenty minutes),
+        // and runs under ThreadSanitizer the tests whose work parallel
+        // compression and decoding share between threads.
+        .hardened = .{ .fuzz_step = "test", .tsan_step = "concurrent", .fuzz_iterations = 3000 },
         .bench = .{
             .programs = &.{
                 .{ .name = "bench", .source = "bench/main.zig" },
@@ -216,6 +228,16 @@ fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lan
 /// has them (src/cpu.zig). Zig sets CPU features per module, so these are
 /// the only modules that may use them: nothing else in warp can be compiled
 /// into them.
+/// What the tests read beside warp's sources: the differential corpus,
+/// captured once from other implementations (pedronaugusto/trials, warp/),
+/// the inputs it names, and the benchmarks' input generator.
+fn addTestImports(b: *std.Build, p: *std.Build, module: *std.Build.Module) void {
+    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries" }) |name| {
+        module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = p.path(b.fmt("testdata/{s}.corpus", .{name})) });
+    }
+    module.addAnonymousImport("gen", .{ .root_source_file = p.path("bench/gen.zig") });
+}
+
 fn addSourceImports(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     module.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
     const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize });

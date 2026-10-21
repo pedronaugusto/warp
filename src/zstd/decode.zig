@@ -383,13 +383,7 @@ pub const Frame = struct {
         prepared.literal_len = section.len;
         prepared.literal_at = metadata.bytes;
         prepared.sequence_at = section.bytes;
-        const header = try f.sequenceHeader(in, section.bytes);
-        prepared.count = header.count;
-        prepared.stream = in[header.ip..];
-        prepared.at = header.ip;
-        prepared.tables.ll = f.entropy.ll.*;
-        prepared.tables.ml = f.entropy.ml.*;
-        prepared.tables.of = f.entropy.of.*;
+        // The literals' table, as the core decodes them with it.
         switch (prepared.cursor) {
             .huffman => |*symbols| {
                 if (symbols.table == &f.tables.huffman and symbols.table.kind == .single and huffman.chooseDouble(section.len, symbols.source.len)) f.tables.huffman.buildDouble(&f.tables.weights);
@@ -398,6 +392,19 @@ pub const Frame = struct {
             },
             else => {},
         }
+        const header = f.sequenceHeader(in, section.bytes) catch |err| {
+            // The core decodes a block's literals before it reads its
+            // sequences header: a block wrong in both is refused for its
+            // literals, which come first.
+            prepared.decodeLiterals() catch |literal_err| return f.fail(literal_err, metadata.bytes, .literals_size);
+            return err;
+        };
+        prepared.count = header.count;
+        prepared.stream = in[header.ip..];
+        prepared.at = header.ip;
+        prepared.tables.ll = f.entropy.ll.*;
+        prepared.tables.ml = f.entropy.ml.*;
+        prepared.tables.of = f.entropy.of.*;
     }
 
     /// Execute an entropy-decoded block in order against the frame's history.
@@ -762,8 +769,8 @@ pub const Prepared = struct {
     literals: []u8,
     seqs: []PreparedSequence,
 
-    pub fn decode(prepared: *Prepared) Error!void {
-        prepared.failure = .literals_size;
+    /// The block's literals, decoded into `literals`.
+    pub fn decodeLiterals(prepared: *const Prepared) Error!void {
         switch (prepared.cursor) {
             .raw => |bytes| @memcpy(prepared.literals[0..prepared.literal_len], bytes),
             .rle => |byte| @memset(prepared.literals[0..prepared.literal_len], byte),
@@ -773,6 +780,11 @@ pub const Prepared = struct {
                 } else try huffman.decode4(symbols.table, symbols.source, prepared.literals[0..prepared.literal_len]);
             },
         }
+    }
+
+    pub fn decode(prepared: *Prepared) Error!void {
+        prepared.failure = .literals_size;
+        try prepared.decodeLiterals();
         prepared.failure = .bitstream_left;
         prepared.complete = true;
         if (prepared.count == 0) return;

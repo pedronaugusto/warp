@@ -252,7 +252,7 @@ fn decodeProperty(_: void, case: *shakedown.Case) anyerror!void {
 }
 
 test "zstd parallel decode: mutations and capacity errors agree with the core" {
-    try shakedown.check(testing.allocator, {}, decodeProperty, .{ .cases = 100, .seed = 0x713032, .regressions = &.{"0:0:1:8ab"} });
+    try shakedown.check(testing.allocator, {}, decodeProperty, .{ .cases = 100, .seed = 0x713032, .regressions = &.{ "0:0:1:8ab", "0:0:1:e:2:3", "0:37f:1:e:2:3" } });
 }
 
 fn decodeAllocationFailures(gpa: std.mem.Allocator) !void {

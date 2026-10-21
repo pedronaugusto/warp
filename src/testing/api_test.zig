@@ -259,6 +259,9 @@ test "degenerate inputs compress and come back at every level: zeros, period two
 
 test "whole-buffer decoding runs on a 64 KiB thread stack, the Decompressor on it" {
     if (builtin.single_threaded) return error.SkipZigTest;
+    // The bound is the frames of an ordinary build: ThreadSanitizer's
+    // instrumentation makes every frame larger, and the stack with them.
+    if (builtin.sanitize_thread) return error.SkipZigTest;
     const gpa = testing.allocator;
     const in = try gen.alloc(gpa, .json, 8, 200_000);
     defer gpa.free(in);
