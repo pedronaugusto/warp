@@ -53,20 +53,25 @@ pub fn dev(b: *std.Build, tools: type) void {
     const tests = b.addTest(.{ .name = "warp-tests", .filters = filters, .root_module = test_module });
     const test_step = b.step("test", "Run the tests and example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
-    // The tests whose work is shared between threads, from a root of their
-    // own: what ThreadSanitizer runs, where the codecs' exhaustive single
-    // threaded loops would cost its job its time and find nothing.
+    // The tests whose work is shared between threads: what ThreadSanitizer
+    // runs, where the codecs' exhaustive single threaded loops would cost
+    // its job its time and find nothing. The same root, built with only
+    // their files' tests: a root of their own would compile in the tests of
+    // every source file they import, which `test` runs already.
+    const concurrent_files = [_][]const u8{ "testing.parallel_test.", "testing.speculative_test.", "testing.zstd_parallel_test.", "testing.index_test.", "testing.api_test." };
     const concurrent_module = b.createModule(.{
-        .root_source_file = p.path("src/concurrent_test.zig"),
+        .root_source_file = p.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
     addSourceImports(p, concurrent_module, target, optimize);
     addTestImports(b, p, concurrent_module);
-    const concurrent_tests = b.addTest(.{ .name = "warp-concurrent-tests", .filters = filters, .root_module = concurrent_module });
-    const concurrent_run = b.addRunArtifact(concurrent_tests);
-    b.step("concurrent", "Run the tests whose work is shared between threads").dependOn(&concurrent_run.step);
-    test_step.dependOn(&concurrent_run.step);
+    const concurrent_tests = b.addTest(.{
+        .name = "warp-concurrent-tests",
+        .filters = if (test_filter != null) filters else &concurrent_files,
+        .root_module = concurrent_module,
+    });
+    b.step("concurrent", "Run the tests whose work is shared between threads").dependOn(&b.addRunArtifact(concurrent_tests).step);
     // The benchmarks' input generator and the code warp replaces carry tests
     // of their own; a test runs only from its module's root, so each is one.
     for ([_][]const u8{"bench/gen.zig"}) |source| {

@@ -4,7 +4,6 @@
   ],
   "test_roots": [
     "src/tests.zig",
-    "src/concurrent_test.zig",
     "bench/gen.zig"
   ],
   "test_support": [

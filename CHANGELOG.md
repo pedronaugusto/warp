@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Development: every test runs once. `concurrent`'s root of its own (`src/concurrent_test.zig`, 0.4.3) compiled in the tests of every source file its tests import, as Zig does for each file of a root's module, so `test` ran the codecs' tests twice, and the riscv64 leg's shards, splitting the two roots apart, ran the copies on different shards (the profile's `TestOnTwoShards`, the 2026-10-23 nightly). `src/tests.zig` is the one root; `concurrent`, what ThreadSanitizer runs, builds it with only the tests of the five files whose work is shared between threads.
+
 ## [0.4.3] - 2026-10-21
 
 ### Fixed

@@ -1,5 +1,6 @@
-//! Every test in warp but those whose work is shared between threads,
-//! which `concurrent_test.zig` holds; the `test` step runs both roots.
+//! Every test in warp. The `concurrent` step builds this root with only the
+//! tests whose work is shared between threads (`build.zig`), for
+//! ThreadSanitizer.
 
 test {
     _ = @import("checksum.zig");
@@ -27,4 +28,9 @@ test {
     _ = @import("testing/zstd_seekable_test.zig");
     _ = @import("testing/zstd_super_test.zig");
     _ = @import("testing/zstd_index_test.zig");
+    _ = @import("testing/parallel_test.zig");
+    _ = @import("testing/speculative_test.zig");
+    _ = @import("testing/zstd_parallel_test.zig");
+    _ = @import("testing/index_test.zig");
+    _ = @import("testing/api_test.zig");
 }
