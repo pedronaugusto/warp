@@ -8,6 +8,7 @@ All notable changes to warp are documented here. The format follows
 ### Fixed
 
 - The zstd encoder writes a frame into exactly the room the same frame took before. A block of one repeated byte, given less room than a Huffman literals header needs, was stored raw and refused (`error.OutputTooSmall`) where its run of one byte fits: the literals now settle a run before asking for that header (`zstd_encode_test`'s generated round trips, found by the release gate's fuzzing).
+- The same in a split block's literals: a sub-block carrying a new Huffman description longer than its literals, given the room its raw literals took, refused the block where the raw section fits; it is stored raw, as when the Huffman body does not fit.
 - Development: every test runs once. `concurrent`'s root of its own (`src/concurrent_test.zig`, 0.4.3) compiled in the tests of every source file its tests import, as Zig does for each file of a root's module, so `test` ran the codecs' tests twice, and the riscv64 leg's shards, splitting the two roots apart, ran the copies on different shards (the profile's `TestOnTwoShards`, the 2026-10-23 nightly). `src/tests.zig` is the one root; `concurrent`, what ThreadSanitizer runs, builds it with only the tests of the five files whose work is shared between threads.
 
 ## [0.4.3] - 2026-10-21

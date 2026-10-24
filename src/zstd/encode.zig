@@ -334,7 +334,9 @@ pub const Target = struct {
         // bits for both regenerated and compressed sizes before emission.
         const bound = lits.len + description;
         const header: usize = 3 + @as(usize, @intFromBool(bound >= 1024)) + @intFromBool(bound >= 16384);
-        if (out.len < header + description + 1) return null;
+        // With no room for the section, the literals go raw, as when the
+        // body does not fit below: what a raw section takes is all it needs.
+        if (out.len < header + description + 1) return rawLiterals(lits, out);
         @memcpy(out[header..][0..description], plan.huf_description[0..description]);
         const single = header == 3;
         const body = if (single) huffman.compress1(&plan.tables.huf, lits, out[header + description ..]) else huffman.compress4(&plan.tables.huf, lits, out[header + description ..]);
@@ -768,4 +770,18 @@ inline fn extraBits(comptime checked: bool, w: *Writer, store: *const SeqStore, 
     if (@as(u32, ll_bits) + ml_bits + ofc > 56) flush(checked, w);
     w.add(store.seqs[i].off - (@as(u32, 1) << @intCast(ofc)), @intCast(ofc));
     flush(checked, w);
+}
+
+test "a plan's literals with no room for their Huffman section are stored raw, in the room a raw section takes" {
+    // A new tree's description longer than the literals: the section it plans
+    // cannot fit where the raw section, the one a frame wrote before, does.
+    var plan: Target = .{ .tables = undefined, .huf_kind = .compressed, .huf_len = 40 };
+    var next: Entropy = undefined;
+    var used = false;
+    const lits = "abcdefghijklmnopqrst";
+    var out: [lits.len + 1]u8 = undefined;
+    try std.testing.expectEqual(@as(?usize, out.len), plan.literals(lits, &next, &out, &used));
+    try std.testing.expectEqual(@as(u8, lits.len << 3), out[0]);
+    try std.testing.expectEqualSlices(u8, lits, out[1..]);
+    try std.testing.expect(!used);
 }
