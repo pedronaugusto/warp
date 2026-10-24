@@ -395,10 +395,16 @@ fn compressLiterals(lits: []const u8, out: []u8, prev: *const Entropy, next: *En
     const min_len: usize = if (prev.huf_repeat == .valid) 6 else @as(usize, 8) << @intCast(@min(9 - s, 3));
     if (lits.len < min_len) return rawLiterals(lits, out);
     const header: usize = 3 + @as(usize, @intFromBool(lits.len >= 1024)) + @intFromBool(lits.len >= 16 * 1024);
-    if (out.len < header + 1) return null;
     var single = lits.len < 256;
     if (prev.huf_repeat == .valid and header == 3) single = true;
     const prefer_repeat = s < @backingInt(Strategy.lazy) and lits.len <= 1024;
+    if (out.len < header + 1) {
+        // No room for a Huffman section's header, but a run of one byte takes
+        // two: chosen as below, where a run is settled before any table, so a
+        // frame fits the room it took before.
+        const run = !(prefer_repeat and prev.huf_repeat == .valid) and allSame(lits) and 1 < lits.len - minGain(lits.len, strategy);
+        return if (run) rleLiterals(lits, out) else null;
+    }
     const optimal_depth = s >= @backingInt(Strategy.btultra);
     var repeat = prev.huf_repeat;
     const result = huffmanLiterals(lits, out[header..], &prev.huf, &next.huf, &repeat, single, prefer_repeat, optimal_depth, suspect);

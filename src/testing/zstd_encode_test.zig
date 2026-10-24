@@ -298,7 +298,7 @@ fn property(_: void, case: *shakedown.Case) !void {
 }
 
 test "zstd encoder: generated round trips shrink through shakedown" {
-    try shakedown.check(testing.allocator, {}, property, .{ .cases = 100, .seed = 0x893402 });
+    try shakedown.check(testing.allocator, {}, property, .{ .cases = 100, .seed = 0x893402, .regressions = &.{"1a:8"} });
 }
 
 test "zstd encoder: fast and lazy levels meet captured size bounds" {
