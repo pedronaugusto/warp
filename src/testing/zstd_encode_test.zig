@@ -301,12 +301,36 @@ test "zstd encoder: generated round trips shrink through shakedown" {
     try shakedown.check(testing.allocator, {}, property, .{ .cases = 100, .seed = 0x893402, .regressions = &.{"1a:8"} });
 }
 
-test "zstd encoder: fast and lazy levels meet captured size bounds" {
+// One test a band of levels: the whole corpus at every level is more work
+// than one test may take under the watchdog on a loaded machine.
+test "zstd encoder: levels -7 to 2 meet captured size bounds" {
+    try sizeBounds(&.{ -7, -6, -5, -4, -3, -2, -1, 1, 2 });
+}
+
+test "zstd encoder: levels 3 to 12 meet captured size bounds" {
+    try sizeBounds(&.{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
+}
+
+test "zstd encoder: levels 13 to 17 meet captured size bounds" {
+    try sizeBounds(&.{ 13, 14, 15, 16, 17 });
+}
+
+test "zstd encoder: levels 18 and 19 meet captured size bounds" {
+    try sizeBounds(&.{ 18, 19 });
+}
+
+test "zstd encoder: levels 20 to 22 meet captured size bounds" {
+    try sizeBounds(&.{ 20, 21, 22 });
+}
+
+/// Each level's output on every input of the captured corpus within 2% and
+/// 800 bytes of the reference's, and each kind's total within 0.5%.
+fn sizeBounds(levels: []const i32) !void {
     const gpa = testing.allocator;
     const corpus = @import("corpus.zig");
     const sizes = try corpus.Corpus.parse(@embedFile("zstd-sizes.corpus"));
     const kinds = std.enums.values(inputs.Kind);
-    for ([_]i32{ -7, -6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22 }) |level| {
+    for (levels) |level| {
         var c = try Compressor.init(gpa, .{ .level = level });
         defer c.deinit();
         var totals: [kinds.len][2]u64 = std.mem.zeroes([kinds.len][2]u64);

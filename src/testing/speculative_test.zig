@@ -140,7 +140,10 @@ test "speculative decoding preserves captured invalid-stream verdicts and diagno
 
 test "speculative decoding handles concatenation, bad trailers, every truncation and short output" {
     const a = testing.allocator;
-    const input = try gen.alloc(a, .text, 9, 20000);
+    // Small enough that decoding every truncation twice, once on three
+    // threads, stays far inside the watchdog on a loaded machine: the work
+    // grows with the square of the input.
+    const input = try gen.alloc(a, .text, 9, 5000);
     defer a.free(input);
     const first = try compressed(input, .gzip, .default);
     defer a.free(first);
@@ -157,7 +160,7 @@ test "speculative decoding handles concatenation, bad trailers, every truncation
     try compare(testing.io, &decoder, stream, left, right, .{ .accept = .gzip });
     try compare(testing.io, &decoder, stream, left, right, .{ .accept = .gzip, .members = .one });
     for (0..first.len) |cut| try compare(testing.io, &decoder, first[0..cut], left, right, .{ .accept = .gzip });
-    for ([_]usize{ 0, 1, 37, 8192, input.len - 1 }) |len| {
+    for ([_]usize{ 0, 1, 37, input.len / 2, input.len - 1 }) |len| {
         try compare(testing.io, &decoder, first, left[0..len], right[0..len], .{ .accept = .gzip });
         try compare(testing.io, &decoder, first, left[0..len], right[0..len], .{ .accept = .gzip, .partial = true });
     }
