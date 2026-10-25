@@ -2,9 +2,10 @@
 
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
-through `warp.lz4`, and decompresses Brotli streams through `warp.brotli`. It
+through `warp.lz4`, and Brotli streams through `warp.brotli`. It
 computes CRC-32, CRC-32C and Adler-32. Whole-buffer and streaming calls use caller memory
-and allocate nothing after initialization. Checksum dispatch selects
+and allocate nothing after initialization, except Brotli encoding, which allocates
+as the reference does. Checksum dispatch selects
 a kernel supported by the CPU.
 
 W5 performance work remains in progress. Correctness and deterministic
@@ -375,6 +376,18 @@ What the reference decoder (google/brotli 1.2.1) accepts, warp accepts, and
 what it refuses, warp refuses for the same reason; a captured corpus of its
 streams and verdicts checks it.
 
+`Compressor.compress(in, out)` writes a stream at the reference's qualities 0-11
+(11, the densest, by default), window 10-24 bits (to 30 with `large_window`),
+`mode` (generic, text, font), `block_bits`, `size_hint` and an optional
+`PreparedDictionary` (a raw prefix dictionary, prepared once); `bound(len)`
+reserves the output. `Compress` is the same encoder resumable, with `write`,
+`flush`, `finish` and metadata meta-blocks, and a `Writer` adapter. For the same
+input and parameters warp writes the reference's (google/brotli 1.2.1) stream
+byte for byte, at every quality, whole and streamed: its parsers, match finders,
+block splitting and clustering are the reference's, and its static-dictionary
+lookup the reference's table. Encoding allocates its window and tables per
+stream, from the allocator `init` takes.
+
 ### GDeflate
 
 `warp.gdeflate` writes and reads GDeflate, the DEFLATE variant DirectStorage
@@ -405,7 +418,7 @@ three.
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
-Brotli decompression; GDeflate compression and decompression on the CPU;
+Brotli compression and decompression; GDeflate compression and decompression on the CPU;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

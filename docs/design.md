@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, Brotli decoding and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 
@@ -33,6 +33,17 @@ rolls back to its start with its bytes kept in a 64-byte carry, so streaming
 resumes at any byte with no second decoder. The command loop keeps its state in
 locals and copies 16 bytes at a time; a long literal block's trees are looked
 up by the two bytes before each literal in one table.
+
+Brotli's encoder is the reference's (google/brotli 1.2.1), stage for stage, so
+its streams are the reference's byte for byte: the fragment coders of
+qualities 0-1, the hashers and lazy parsing of 2-9, the binary-tree finder,
+Zopfli parsing and block splitting and clustering of 10-11, each stage a file
+beneath `warp.brotli` and layered in `ci/layers.zig`. The static dictionary's
+lookup for 10-11 is static data (`dictionary_lut.bin`, pinned against the
+reference's and rebuilt in the tests), so no encoder builds it at run time.
+Unlike warp's other codecs, an encoder allocates its ring buffer, hashers
+and block storage per stream, as the reference does; moving them into memory
+taken once is open.
 
 Each whole-buffer decoder owns its tables; its output supplies history. Each
 streaming decoder owns progress and borrows its caller window. Encoders own

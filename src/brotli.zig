@@ -1,5 +1,5 @@
-//! Brotli (RFC 7932): streams decoded, with the large-window extension and
-//! raw prefix dictionaries.
+//! Brotli (RFC 7932): streams decoded and encoded, with the large-window
+//! extension and raw prefix dictionaries.
 
 /// Where a stream was refused, and why.
 pub const Diagnostic = @import("brotli/Diagnostic.zig");
@@ -7,6 +7,12 @@ pub const Diagnostic = @import("brotli/Diagnostic.zig");
 pub const Decompressor = @import("brotli/Decompressor.zig");
 /// Resumable decoding and its reader adapter.
 pub const Decompress = @import("brotli/Decompress.zig");
+/// Whole-buffer encoding.
+pub const Compressor = @import("brotli/Compressor.zig");
+/// Resumable encoding and its writer adapter.
+pub const Compress = @import("brotli/Compress.zig");
+/// A prefix dictionary prepared for encoding.
+pub const PreparedDictionary = @import("brotli/Prepared.zig");
 /// How many streams a decoder reads.
 pub const Streams = Decompressor.Streams;
 
@@ -17,4 +23,7 @@ test {
     _ = @import("brotli/dictionary.zig");
     _ = @import("brotli/huffman.zig");
     _ = @import("brotli/decode.zig");
+    _ = @import("brotli/command.zig");
+    _ = @import("brotli/entropy.zig");
+    _ = @import("brotli/words.zig");
 }

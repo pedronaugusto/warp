@@ -7,6 +7,9 @@
 //! fail with `error.NeedInput` when the input ends first; the unit that
 //! made them then rolls back to its `Mark` and is read again with more
 //! input, or the stream is truncated.
+//!
+//! The writer is the encoder's: bits put least significant first, eight
+//! bytes stored at once, so its buffer keeps eight bytes past the last bit.
 
 const std = @import("std");
 const aegis = @import("aegis");
@@ -108,6 +111,55 @@ pub const Reader = struct {
         r.count = 0;
     }
 };
+
+pub const Writer = struct {
+    buf: []u8,
+    /// Bits written; the byte at `pos >> 3` holds the partial byte, and the
+    /// bits above `pos` in it are zero.
+    pos: usize = 0,
+
+    /// Put the low `n` bits of `v` (no bits above them), `n <= 56`.
+    pub inline fn bits(w: *Writer, n: u32, v: u64) void {
+        std.debug.assert(n <= 56 and v >> @intCast(n) == 0); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
+        const at = w.pos >> 3;
+        const old: u64 = w.buf[at];
+        std.mem.writeInt(u64, w.buf[at..][0..8], old | v << @intCast(w.pos & 7), .little);
+        w.pos += n;
+    }
+
+    /// Pad with zero bits to a byte boundary.
+    pub fn alignByte(w: *Writer) void {
+        w.pos = (w.pos + 7) & ~@as(usize, 7);
+        w.buf[w.pos >> 3] = 0;
+    }
+
+    /// Put whole bytes at a byte boundary.
+    pub fn bytes(w: *Writer, data: []const u8) void {
+        aegis.assert.invariant(w.pos & 7 == 0, "w.pos & 7 == 0");
+        @memcpy(w.buf[w.pos >> 3 ..][0..data.len], data);
+        w.pos += data.len * 8;
+        w.buf[w.pos >> 3] = 0;
+    }
+};
+
+test "the writer puts what the reader takes" {
+    var buf: [40]u8 = @splat(0);
+    var w: Writer = .{ .buf = &buf };
+    const fields = [_][2]u64{ .{ 3, 5 }, .{ 13, 0x1abc }, .{ 1, 1 }, .{ 56, 0xab_cdef_0123_4567 }, .{ 7, 0 }, .{ 9, 300 } };
+    for (fields) |f| w.bits(@intCast(f[0]), f[1]);
+    w.alignByte();
+    w.bytes("xy");
+    var r: Reader = .{ .in = &buf };
+    for (fields) |f| {
+        var v: u64 = 0;
+        var n: u32 = 0;
+        while (n < f[0]) : (n += @min(24, @as(u32, @intCast(f[0])) - n)) v |= @as(u64, try r.bits(true, @min(24, @as(u32, @intCast(f[0])) - n))) << @intCast(n);
+        try std.testing.expectEqual(f[1], v);
+    }
+    try std.testing.expect(r.alignByte());
+    try std.testing.expectEqual('x', try r.bits(true, 8));
+    try std.testing.expectEqual('y', try r.bits(true, 8));
+}
 
 test "fast and careful reads agree, and careful reads stop at the end" {
     const in = [_]u8{ 0b1010_1100, 0xff, 0x01, 0x80 } ++ @as([32]u8, @splat(0));
