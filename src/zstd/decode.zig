@@ -364,7 +364,7 @@ pub const Frame = struct {
             f.stopped = n < last;
             op += n;
         } else {
-            if (last > lits.limit - op) return f.fail(error.OutputTooSmall, at, .bad_length);
+            if (last > lits.limit - op) return f.fail(error.OutputTooSmall, ip, .bad_length);
             @memmove(f.out[op..][0..last], lits.bytes[lp..][0..last]);
             op += last;
         }
