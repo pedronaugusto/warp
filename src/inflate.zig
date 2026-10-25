@@ -25,6 +25,7 @@
 //! keeps the unit's bits for the next call.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const huffman = @import("huffman.zig").decode;
 const Diagnostic = @import("Diagnostic.zig");
 
@@ -243,7 +244,7 @@ pub const Stream = struct {
     /// bytes were loaded from `in` (a unit finished in this input).
     pub fn alignToByte(s: *Stream) void {
         s.consume(@intCast(s.bitsleft & 7));
-        std.debug.assert(s.bitsleft / 8 <= s.ip);
+        aegis.assert.invariant(s.bitsleft / 8 <= s.ip, "s.bitsleft / 8 <= s.ip");
         s.ip -= s.bitsleft / 8;
         s.bitbuf = 0;
         s.bitsleft = 0;
@@ -281,6 +282,34 @@ pub const State = struct {
     pre_bits: u5 = 0,
 
     pub const Phase = enum { header, stored_lengths, stored, precode, lengths, codes, done };
+
+    /// A block's type read from its header, a part read, or a block ended:
+    /// the last, or one more follow.
+    pub const Event = enum { stored, fixed, dynamic, read, last, more };
+
+    const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .header, .terminal = &.{.done}, .edges = &.{
+        .{ .from = .header, .on = .stored, .to = .stored_lengths },
+        .{ .from = .header, .on = .fixed, .to = .codes },
+        .{ .from = .header, .on = .dynamic, .to = .precode },
+        .{ .from = .stored_lengths, .on = .read, .to = .stored },
+        .{ .from = .stored, .on = .last, .to = .done },
+        .{ .from = .stored, .on = .more, .to = .header },
+        .{ .from = .precode, .on = .read, .to = .lengths },
+        .{ .from = .lengths, .on = .read, .to = .codes },
+        .{ .from = .codes, .on = .last, .to = .done },
+        .{ .from = .codes, .on = .more, .to = .header },
+    } });
+
+    /// The one place the phase changes: along a declared edge.
+    pub fn go(state: *State, comptime from: Phase, comptime on: Event) void {
+        state.phase = comptime Machine.after(from, on);
+    }
+
+    /// The block whose data `from` reads has ended: the stream's last, or
+    /// one before another header.
+    pub fn endBlock(state: *State, comptime from: Phase) void {
+        if (state.final) state.go(from, .last) else state.go(from, .more);
+    }
 };
 
 /// Decode until a block ends, the final one ends, or the output is full
@@ -304,14 +333,14 @@ pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) E
             if (len != ~@as(u16, @truncate(lens >> 16))) return s.fail(.stored_length);
             s.alignToByte();
             state.stored_left = len;
-            state.phase = .stored;
+            state.go(.stored_lengths, .read);
             source.commit(s);
             if (s.stop_header) return .block_end;
             continue :phase .stored;
         },
         .stored => {
             if (!try stored(s, source, state)) return .output_full;
-            return blockEnd(s, source, state);
+            return blockEnd(s, source, state, .stored);
         },
         .precode => {
             try precode(t, s, source, state);
@@ -332,14 +361,14 @@ pub noinline fn decode(t: anytype, s: *Stream, source: anytype, state: *State) E
             else
                 try codes(s, source, state, &t.litlen, state.lbits, &t.dist, state.dbits);
             if (!ended) return .output_full;
-            return blockEnd(s, source, state);
+            return blockEnd(s, source, state, .codes);
         },
         .done => return .done,
     }
 }
 
-inline fn blockEnd(s: *Stream, source: anytype, state: *State) Status {
-    state.phase = if (state.final) .done else .header;
+inline fn blockEnd(s: *Stream, source: anytype, state: *State, comptime from: State.Phase) Status {
+    state.endBlock(from);
     source.commit(s);
     if (state.final and s.stop_final) return .block_end;
     return if (state.final) .done else .block_end;
@@ -353,11 +382,11 @@ inline fn blockHeader(s: *Stream, source: anytype, state: *State) Error!State.Ph
     switch (header >> 1) {
         0 => {
             s.consume(@intCast(s.bitsleft & 7));
-            state.phase = .stored_lengths;
+            state.go(.header, .stored);
         },
         1 => {
             state.fixed = true;
-            state.phase = .codes;
+            state.go(.header, .fixed);
         },
         2 => {
             const counts = try s.take(source, 14);
@@ -368,7 +397,7 @@ inline fn blockHeader(s: *Stream, source: anytype, state: *State) Error!State.Ph
             state.hdist = hdist;
             state.hclen = @intCast(((counts >> 10) & 15) + 4);
             state.read = 0;
-            state.phase = .precode;
+            state.go(.header, .dynamic);
         },
         else => return s.fail(.bad_block_type),
     }
@@ -412,7 +441,7 @@ fn precode(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     }
     state.pre_bits = huffman.build(.precode, &t.precode, &t.pre, &huffman.countLengths(&t.pre)) catch |err| return s.fail(codeReason(err));
     read = 0;
-    state.phase = .lengths;
+    state.go(.precode, .read);
 }
 
 /// A dynamic block's litlen and distance code lengths through the
@@ -469,7 +498,7 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     state.lbits = huffman.build(if (@TypeOf(t.*).wide) .litlen64 else .litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
     state.dbits = huffman.build(if (@TypeOf(t.*).wide) .dist64 else .dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
     state.fixed = false;
-    state.phase = .codes;
+    state.go(.lengths, .read);
 }
 
 fn codeReason(err: huffman.BuildError) Diagnostic.Reason {
@@ -528,8 +557,8 @@ const FastExit = enum { stop, end, bad_symbol, far };
 /// alive across it, and on x86-64 (fifteen registers) that state would be
 /// spilled to the stack in every round, not only the rare one.
 pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
-    std.debug.assert(s.virtual == 0);
-    std.debug.assert(s.ip + fast_input <= s.in.len);
+    aegis.assert.invariant(s.virtual == 0, "s.virtual == 0");
+    aegis.assert.invariant(s.ip + fast_input <= s.in.len, "s.ip + fast_input <= s.in.len");
     std.debug.assert(output.position(s) + margin <= output.capacity());
     var r: Fast = .{
         .in = s.in,

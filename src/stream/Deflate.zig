@@ -13,6 +13,7 @@
 const Deflate = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const bits = @import("../bits.zig");
@@ -339,7 +340,7 @@ fn keepWriter(d: *Deflate, w: *const bits.Writer) void {
 
 /// Parse with the pending buffer empty, into it.
 fn pump(d: *Deflate, end: deflate.End) deflate.Progress {
-    std.debug.assert(d.pending_start == d.pending_end);
+    aegis.assert.invariant(d.pending_start == d.pending_end, "d.pending_start == d.pending_end");
     var w = d.writer();
     const progress = d.engine.parse(true, .{ .in = d.window[0..d.filled] }, &w, end);
     d.keepWriter(&w);

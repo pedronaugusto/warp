@@ -65,12 +65,12 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
 /// Valid options and aligned storage of `memory(options)` bytes.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) Decompressor {
     std.debug.assert(buffer.len >= memory(options));
-    const slots: []Slot = @alignCast(std.mem.bytesAsSlice(Slot, buffer[0 .. @as(usize, options.concurrency) * 2 * @sizeOf(Slot)])); // safe: caller buffer is 64-byte aligned
+    const slots: []Slot = @alignCast(std.mem.bytesAsSlice(Slot, buffer[0 .. @as(usize, options.concurrency) * 2 * @sizeOf(Slot)])); // aegis: no-danger: caller buffer is 64-byte aligned
     var at = std.mem.alignForward(usize, @sizeOf(Slot) * slots.len, 64);
     const seq_size = max_sequences * @sizeOf(decode.PreparedSequence);
     const stride = std.mem.alignForward(usize, seq_size + decode.block_max + decode.margin, 64);
     for (slots) |*slot| {
-        slot.* = .{ .prepared = .{ .tables = undefined, .cursor = undefined, .seqs = @alignCast(std.mem.bytesAsSlice(decode.PreparedSequence, buffer[at..][0..seq_size])), .literals = buffer[at + seq_size ..][0 .. decode.block_max + decode.margin] } }; // safe: each worker starts at a 64-byte boundary
+        slot.* = .{ .prepared = .{ .tables = undefined, .cursor = undefined, .seqs = @alignCast(std.mem.bytesAsSlice(decode.PreparedSequence, buffer[at..][0..seq_size])), .literals = buffer[at + seq_size ..][0 .. decode.block_max + decode.margin] } }; // aegis: no-danger: each worker starts at a 64-byte boundary
         at += stride;
     }
     return .{ .slots = slots };
@@ -190,7 +190,7 @@ fn apply(f: *decode.Frame, slots: []Slot, out: []u8, op: *usize, hash: *std.hash
             .compressed => {
                 op.* += f.applyBlock(&slot.prepared, op.*) catch |err| return fail(options, err, slot.at + 3 + f.fault.offset, f.fault.reason);
             },
-            .reserved => unreachable, // unreachable: prepare refuses reserved blocks
+            .reserved => unreachable, // aegis: no-danger: prepare refuses reserved blocks
         }
         if (verify) hash.update(out[before..op.*]);
     }

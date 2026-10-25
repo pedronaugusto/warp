@@ -69,6 +69,12 @@ windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 
+Each resumable decoder's phase is an `aegis.state.Machine`: the edges are
+declared beside the phases, and one function per decoder changes the phase,
+along an edge named by its phase and event, checked as it compiles and a plain
+store at run time. LZ4's and zstd's frame decoders keep a refusal apart from
+the phase, and answer it to every later call.
+
 GDeflate is DEFLATE's engine with another bit layout beneath `warp.gdeflate`.
 The parsers hand each finished block to a writer: DEFLATE's bit writer, or
 GDeflate's lane writer, which serializes the block the engine chose

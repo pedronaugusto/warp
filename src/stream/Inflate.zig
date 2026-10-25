@@ -13,6 +13,7 @@
 const Inflate = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const inflate_ = @import("../inflate.zig");
 const unwrap = @import("../unwrap.zig");
@@ -357,7 +358,7 @@ fn absorb(z: *Inflate, s: *inflate_.Stream) void {
     var bits = s.bitbuf & ((@as(u64, 1) << @intCast(s.bitsleft)) - 1);
     var n = s.bitsleft;
     for (s.in[s.ip..]) |byte| {
-        std.debug.assert(n + 8 <= 64);
+        aegis.assert.invariant(n + 8 <= 64, "n + 8 <= 64");
         bits |= @as(u64, byte) << @intCast(n);
         n += 8;
     }

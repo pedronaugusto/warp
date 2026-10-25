@@ -69,7 +69,7 @@ const State = struct {
 
 fn state(z: *Stream, direction: @TypeOf(@as(State, undefined).direction)) ?*State {
     const pointer = z.state orelse return null;
-    const s: *State = @ptrCast(@alignCast(pointer)); // safe: only initialization assigns a state pointer
+    const s: *State = @ptrCast(@alignCast(pointer)); // aegis: no-danger: only initialization assigns a state pointer
     if (s.magic != signature or s.direction != direction) return null;
     return s;
 }
@@ -79,11 +79,11 @@ fn create(z: *Stream, bytes: usize) ?*State {
     const n = std.mem.alignForward(usize, @sizeOf(State), 64) + bytes + 63;
     if (n > std.math.maxInt(c_uint)) return null;
     const original: [*]u8 = if (z.zalloc) |allocate|
-        @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // safe: allocation callbacks return at least n writable bytes
+        @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: no-danger: allocation callbacks return at least n writable bytes
     else
         std.heap.page_allocator.rawAlloc(n, .@"64", @returnAddress()) orelse return null;
-    const address = std.mem.alignForward(usize, @intFromPtr(original), 64); // safe: 63 padding bytes permit aligning within this allocation
-    const s: *State = @ptrFromInt(address);
+    const address = std.mem.alignForward(usize, @intFromPtr(original), 64); // aegis: no-danger: 63 padding bytes permit aligning within this allocation
+    const s: *State = @ptrFromInt(address); // aegis: no-danger: the aligned address and State's size lie within the allocation
     s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode };
     z.state = s;
     z.total_in = 0;
@@ -155,7 +155,7 @@ pub fn deflateInit2(stream: ?*Stream, value: c_int, method: c_int, window_bits: 
     const options: Deflate.Options = .{ .level = lv, .strategy = st, .container = kind, .window_bits = @intCast(bits), .hash_bits = @intCast(mem_level + 7) };
     const n = Deflate.memory(options);
     const s = create(z, n) orelse return mem_error;
-    const buffer: [*]align(64) u8 = @ptrFromInt(@intFromPtr(s) + std.mem.alignForward(usize, @sizeOf(State), 64)); // safe: create reserved the aligned engine region after State
+    const buffer: [*]align(64) u8 = @ptrFromInt(@intFromPtr(s) + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger: create reserved the aligned engine region after State
     s.encoder = .initBuffer(buffer[0..n], options);
     s.engine_bytes = n;
     z.adler = if (kind == .gzip) 0 else 1;
@@ -457,7 +457,7 @@ pub export fn inflateMark(stream: ?*Stream) c_long {
     return switch (engine.phase) {
         .stored => -65536 + @as(c_long, engine.stored_left),
         .codes => if (engine.copy_left != 0)
-            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // safe: a DEFLATE match emits at most 258 bytes
+            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // aegis: no-danger: a DEFLATE match emits at most 258 bytes
         else
             0,
         else => -65536,
@@ -702,8 +702,8 @@ fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State 
 
 fn moved(slice: anytype, old: *const State, fresh: *State) @TypeOf(slice) {
     if (slice.len == 0) return slice;
-    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old); // safe: this slice lies within the old state's allocation
-    const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // safe: the identical copied layout preserves the slice's alignment and length
+    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old); // aegis: no-danger: this slice lies within the old state's allocation
+    const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // aegis: no-danger: the identical copied layout preserves the slice's alignment and length
     return pointer[0..slice.len];
 }
 
@@ -726,8 +726,8 @@ pub export fn deflateCopy(destination: ?*Stream, source: ?*Stream) c_int {
     const old = state(src, .encode) orelse return stream_error;
     const fresh = copiedState(dest, src, old) orelse return mem_error;
     const padding = std.mem.alignForward(usize, @sizeOf(State), 64);
-    const from: [*]const u8 = @ptrCast(old); // safe: the engine allocation follows State at padding
-    const to: [*]u8 = @ptrCast(fresh); // safe: copiedState reserved the same engine bytes
+    const from: [*]const u8 = @ptrCast(old); // aegis: no-danger: the engine allocation follows State at padding
+    const to: [*]u8 = @ptrCast(fresh); // aegis: no-danger: copiedState reserved the same engine bytes
     @memcpy(to[padding..][0..old.engine_bytes], from[padding..][0..old.engine_bytes]);
     fresh.encoder.window = moved(old.encoder.window, old, fresh);
     fresh.encoder.pending = moved(old.encoder.pending, old, fresh);

@@ -226,6 +226,77 @@ test "gzip headers: every field written is read back, and a wrong header CRC is 
     try testing.expectEqual(Diagnostic.Reason.header_crc, diag.reason);
 }
 
+/// A field's bytes with no zero in them, or none.
+fn headerField(case: *shakedown.Case) !?[]const u8 {
+    if (!shakedown.gen.boolean(case.source)) return null;
+    const bytes = try shakedown.gen.string(case.source, case.gpa, .{ .kind = .bytes, .max_len = 40, .average = 8 });
+    for (bytes) |*b| if (b.* == 0) {
+        b.* = 'z';
+    };
+    return bytes;
+}
+
+/// Arbitrary bytes, or a written header cut, changed or followed by more:
+/// parsed whole or refused, and when parsed, written back byte for byte and
+/// read the same by the parser in pieces.
+fn parseAnyHeader(_: void, case: *shakedown.Case) !void {
+    const s = case.source;
+    const input = if (shakedown.gen.boolean(s)) try shakedown.gen.string(s, case.gpa, .{ .kind = .bytes, .max_len = 120, .average = 24 }) else blk: {
+        const header: gzip.Header = .{
+            .text = shakedown.gen.boolean(s),
+            .mtime = shakedown.gen.int(s, u32),
+            .xfl = shakedown.gen.int(s, u8),
+            .os = shakedown.gen.int(s, u8),
+            .extra = try headerField(case),
+            .name = try headerField(case),
+            .comment = try headerField(case),
+            .header_crc = shakedown.gen.boolean(s),
+        };
+        const tail = try shakedown.gen.string(s, case.gpa, .{ .kind = .bytes, .max_len = 8, .average = 2 });
+        const bytes = try case.gpa.alloc(u8, gzip.headerLen(header) + tail.len);
+        var w: std.Io.Writer = .fixed(bytes);
+        try gzip.writeHeader(&w, header);
+        @memcpy(bytes[gzip.headerLen(header)..], tail);
+        if (shakedown.gen.boolean(s)) bytes[shakedown.gen.intRange(s, usize, 0, bytes.len - 1)] ^= @as(u8, 1) << shakedown.gen.int(s, u3);
+        break :blk bytes[0..shakedown.gen.intRange(s, usize, 0, bytes.len)];
+    };
+    case.note("{d} bytes", .{input.len});
+    const whole = gzip.parseHeader(input);
+
+    var parser: gzip.Parser = .{};
+    var buffers: [3][64]u8 = undefined;
+    var fields: gzip.Fields = .{ .extra_buffer = &buffers[0], .name_buffer = &buffers[1], .comment_buffer = &buffers[2] };
+    var at: usize = 0;
+    var status: gzip.Parser.Status = .more;
+    while (at < input.len and status == .more) {
+        const piece = input[at..][0..shakedown.gen.intRange(s, usize, 1, input.len - at)];
+        const fed = parser.feed(piece, &fields);
+        at += fed.used;
+        status = fed.status;
+    }
+
+    const parsed = whole catch |err| {
+        try testing.expectEqual(@as(gzip.Parser.Status, if (err == error.Truncated) .more else .invalid), status);
+        return;
+    };
+    try testing.expectEqual(gzip.Parser.Status.done, status);
+    try testing.expectEqual(parsed.len, at);
+    const header = parser.header();
+    try testing.expectEqual(parsed.header.header_crc, header.header_crc);
+    for ([_]?[]const u8{ parsed.header.extra, parsed.header.name, parsed.header.comment }, [_]?[]const u8{ fields.header.extra, fields.header.name, fields.header.comment }) |a, b| {
+        try testing.expectEqual(a == null, b == null);
+        if (a) |bytes| try testing.expectEqualStrings(bytes, b.?);
+    }
+    const again = try case.gpa.alloc(u8, gzip.headerLen(parsed.header));
+    var w: std.Io.Writer = .fixed(again);
+    try gzip.writeHeader(&w, parsed.header);
+    try testing.expectEqualSlices(u8, input[0..parsed.len], again);
+}
+
+test "fuzz: any bytes into the gzip header parser are parsed whole, as in pieces, and written back the same, or refused" {
+    try shakedown.check(testing.allocator, {}, parseAnyHeader, .{ .cases = 2000 });
+}
+
 test "init survives every allocation failure, at every level" {
     for (0..13) |level| {
         try testing.checkAllAllocationFailures(testing.allocator, struct {

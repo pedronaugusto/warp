@@ -9,6 +9,7 @@
 //! after each (`commit`), as the engine does; bytes of a gzip header are
 //! read a piece at a time and never need to be read again.
 
+const aegis = @import("aegis");
 const inflate = @import("inflate.zig");
 const checksum = @import("checksum.zig");
 const container = @import("container.zig");
@@ -51,6 +52,29 @@ pub const Status = enum {
 };
 
 const Phase = enum { detect, zlib_header, dictionary_id, gzip_header, body, zlib_trailer, gzip_crc, gzip_size, member_end, done };
+
+/// What moves a stream on: the wrapper found (or the body's end in it), a
+/// part read, a dictionary named, the stream's last byte, or a member's
+/// end with more allowed.
+const Event = enum { raw, zlib, gzip, read, dictionary, last, member };
+
+const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .detect, .terminal = &.{.done}, .edges = &.{
+    .{ .from = .detect, .on = .raw, .to = .body },
+    .{ .from = .detect, .on = .zlib, .to = .zlib_header },
+    .{ .from = .detect, .on = .gzip, .to = .gzip_header },
+    .{ .from = .zlib_header, .on = .read, .to = .body },
+    .{ .from = .zlib_header, .on = .dictionary, .to = .dictionary_id },
+    .{ .from = .dictionary_id, .on = .read, .to = .body },
+    .{ .from = .gzip_header, .on = .read, .to = .body },
+    .{ .from = .body, .on = .last, .to = .done },
+    .{ .from = .body, .on = .zlib, .to = .zlib_trailer },
+    .{ .from = .body, .on = .gzip, .to = .gzip_crc },
+    .{ .from = .zlib_trailer, .on = .read, .to = .done },
+    .{ .from = .gzip_crc, .on = .read, .to = .gzip_size },
+    .{ .from = .gzip_size, .on = .last, .to = .done },
+    .{ .from = .gzip_size, .on = .member, .to = .member_end },
+    .{ .from = .member_end, .on = .gzip, .to = .gzip_header },
+} });
 
 /// Where a stream is: the wrapper's part, the engine's state inside the
 /// body, the member's running checksum and length.
@@ -96,6 +120,11 @@ pub const State = struct {
     pub fn complete(st: *const State) bool {
         return st.phase == .done or st.phase == .member_end;
     }
+
+    /// The one place the phase changes: along a declared edge.
+    fn go(st: *State, comptime from: Phase, comptime on: Event) void {
+        st.phase = comptime Machine.after(from, on);
+    }
 };
 
 /// Run until the stream ends, a block or member ends, or the output is
@@ -137,30 +166,34 @@ pub fn run(t: anytype, st: *State, s: *inflate.Stream, source: anytype, options:
                 .output_full => return .output_full,
                 .done => switch (st.wrapper) {
                     .raw => {
-                        st.phase = .done;
+                        st.go(.body, .last);
                         return .done;
                     },
-                    .zlib => continue :phase .zlib_trailer,
-                    .gzip => continue :phase .gzip_crc,
+                    .zlib => {
+                        st.go(.body, .zlib);
+                        continue :phase .zlib_trailer;
+                    },
+                    .gzip => {
+                        st.go(.body, .gzip);
+                        continue :phase .gzip_crc;
+                    },
                 },
             }
         },
         .zlib_trailer => {
-            st.phase = .zlib_trailer;
             s.consume(@intCast(s.bitsleft & 7));
             const want = @byteSwap(try s.take(source, 32));
             if (st.verify and st.check != want) return mismatch(s, .adler32);
-            st.phase = .done;
+            st.go(.zlib_trailer, .read);
             source.commit(s);
             return .done;
         },
         .gzip_crc => {
-            st.phase = .gzip_crc;
             s.consume(@intCast(s.bitsleft & 7));
             // Each check as soon as its bytes are read, as zlib makes them.
             const expected = try s.take(source, 32);
             if (st.verify and st.check != expected) return mismatch(s, .crc32);
-            st.phase = .gzip_size;
+            st.go(.gzip_crc, .read);
             source.commit(s);
             continue :phase .gzip_size;
         },
@@ -168,15 +201,16 @@ pub fn run(t: anytype, st: *State, s: *inflate.Stream, source: anytype, options:
             const expected = try s.take(source, 32);
             if (st.verify and st.size != expected) return mismatch(s, .size);
             st.members += 1;
-            st.phase = if (options.members == .one) .done else .member_end;
+            const last = options.members == .one;
+            if (last) st.go(.gzip_size, .last) else st.go(.gzip_size, .member);
             st.member_offset = s.bitOffset();
             source.commit(s);
-            return if (st.phase == .done) .done else .member_end;
+            return if (last) .done else .member_end;
         },
         .member_end => {
             // Called again with input: what follows is another member, or
             // refused.
-            st.phase = .gzip_header;
+            st.go(.member_end, .gzip);
             st.header = .{};
             continue :phase .gzip_header;
         },
@@ -204,12 +238,12 @@ fn detect(st: *State, s: *inflate.Stream, source: anytype, options: Options) Err
     switch (wrapper) {
         .raw => {
             if (!options.keep_history) replaceHistory(st, s, options.dictionary);
-            st.phase = .body;
+            st.go(.detect, .raw);
         },
-        .zlib => st.phase = .zlib_header,
+        .zlib => st.go(.detect, .zlib),
         .gzip => {
             st.header = .{};
-            st.phase = .gzip_header;
+            st.go(.detect, .gzip);
         },
     }
     return wrapper;
@@ -226,14 +260,15 @@ fn zlibHeader(st: *State, s: *inflate.Stream, source: anytype, options: Options)
     const cmf: u8 = @truncate(header);
     const flg: u8 = @truncate(header >> 8);
     if ((@as(u16, cmf) << 8 | flg) % 31 != 0 or cmf & 15 != 8 or (cmf >> 4) + 8 > options.window_bits) return s.fail(.bad_zlib_header);
-    if (flg & 0x20 != 0) {
-        st.phase = .dictionary_id;
+    const named = flg & 0x20 != 0;
+    if (named) {
+        st.go(.zlib_header, .dictionary);
     } else {
         if (!options.keep_history) replaceHistory(st, s, &.{});
-        st.phase = .body;
+        st.go(.zlib_header, .read);
     }
     source.commit(s);
-    return st.phase == .dictionary_id;
+    return named;
 }
 
 /// The Adler-32 of the dictionary a zlib stream names.
@@ -246,7 +281,7 @@ fn dictionaryId(st: *State, s: *inflate.Stream, source: anytype, options: Option
         return error.DictionaryMismatch;
     }
     replaceHistory(st, s, options.dictionary);
-    st.phase = .body;
+    st.go(.dictionary_id, .read);
     source.commit(s);
 }
 
@@ -302,7 +337,7 @@ fn headerDone(st: *State, s: *inflate.Stream, fields: ?*gzip.Fields, keep: bool)
     st.check = 0;
     st.size = 0;
     st.engine = .{};
-    st.phase = .body;
+    st.go(.gzip_header, .read);
 }
 
 /// A header refused: what follows a member and is not one is trailing

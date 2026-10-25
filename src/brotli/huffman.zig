@@ -10,6 +10,7 @@
 //! entries (`maxEntries`).
 
 const std = @import("std");
+const aegis = @import("aegis");
 const bits_ = @import("bits.zig");
 const Reader = bits_.Reader;
 const NeedInput = bits_.NeedInput;
@@ -26,7 +27,7 @@ pub fn maxEntries(alphabet: usize) usize {
 
 inline fn entry(len: u32, value: u32) Entry {
     std.debug.assert(len <= max_length);
-    std.debug.assert(value < 1 << 12);
+    aegis.assert.invariant(value < 1 << 12, "value < 1 << 12");
     return @intCast(len | value << 4);
 }
 

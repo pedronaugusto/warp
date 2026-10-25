@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
     const a = session.arena;
 
     if (arguments.file) |path| {
-        const stream = try Io.Dir.cwd().readFileAlloc(init.io, path, a, .unlimited);
+        const stream = try support.readFile(init.io, a, path);
         for ([_]bool{ false, true }) |pieces| {
             const ctx = try a.create(Whole);
             ctx.* = .{ .session = &session, .stream = stream, .pieces = pieces };

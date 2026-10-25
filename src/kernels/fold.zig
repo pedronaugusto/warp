@@ -109,7 +109,7 @@ pub const Arm = struct {
     pub const vector = @Vector(2, u64);
 
     pub inline fn clmulLo(x: vector, k: vector) vector {
-        return asm ("pmull %[r].1q, %[x].1d, %[k].1d"
+        return asm ("pmull %[r].1q, %[x].1d, %[k].1d" // aegis: boundary: one instruction on vector registers, no memory
             : [r] "=w" (-> vector),
             : [x] "w" (x),
               [k] "w" (k),
@@ -117,7 +117,7 @@ pub const Arm = struct {
     }
 
     pub inline fn clmulHi(x: vector, k: vector) vector {
-        return asm ("pmull2 %[r].1q, %[x].2d, %[k].2d"
+        return asm ("pmull2 %[r].1q, %[x].2d, %[k].2d" // aegis: boundary: one instruction on vector registers, no memory
             : [r] "=w" (-> vector),
             : [x] "w" (x),
               [k] "w" (k),
@@ -141,7 +141,7 @@ pub const X86Sse = struct {
     }
 
     inline fn clmul(comptime select: u8, x: vector, k: vector) vector {
-        return asm ("pclmulqdq $" ++ std.fmt.comptimePrint("{d}", .{select}) ++ ", %[k], %[r]"
+        return asm ("pclmulqdq $" ++ std.fmt.comptimePrint("{d}", .{select}) ++ ", %[k], %[r]" // aegis: boundary: one instruction on vector registers, no memory
             : [r] "=x" (-> vector),
             : [x] "0" (x),
               [k] "x" (k),
@@ -167,7 +167,7 @@ pub const X86Avx2 = struct {
     inline fn clmul(comptime select: u8, x: anytype, k: @TypeOf(x)) @TypeOf(x) {
         const R = @TypeOf(x);
         const imm = std.fmt.comptimePrint("{d}", .{select});
-        return asm ("vpclmulqdq $" ++ imm ++ ", %[k], %[x], %[r]"
+        return asm ("vpclmulqdq $" ++ imm ++ ", %[k], %[x], %[r]" // aegis: boundary: one instruction on vector registers, no memory
             : [r] "=x" (-> R),
             : [x] "x" (x),
               [k] "x" (k),

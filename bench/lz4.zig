@@ -42,7 +42,7 @@ pub fn main(init: std.process.Init) !void {
 
     var inputs: std.ArrayList(struct { []const u8, []const u8 }) = .empty;
     if (arguments.file) |path| {
-        try inputs.append(a, .{ path, try Io.Dir.cwd().readFileAlloc(init.io, path, a, .unlimited) });
+        try inputs.append(a, .{ path, try support.readFile(init.io, a, path) });
     } else {
         const len: usize = if (arguments.smoke) 20_000 else 4 << 20;
         for ([_]gen.Kind{ .text, .binary, .json, .noise, .runs, .png }) |kind| {

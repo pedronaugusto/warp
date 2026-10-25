@@ -8,7 +8,7 @@ pub fn crc32c(reg: u32, bytes: []const u8) u32 {
     var c: u64 = reg;
     var rest = bytes;
     while (rest.len >= 8) {
-        c = asm ("crc32q %[word], %[c]"
+        c = asm ("crc32q %[word], %[c]" // aegis: boundary: one instruction on registers; the word comes from a bounded slice
             : [c] "=r" (-> u64),
             : [in] "0" (c),
               [word] "r" (std.mem.readInt(u64, rest[0..8], .little)),
@@ -16,7 +16,7 @@ pub fn crc32c(reg: u32, bytes: []const u8) u32 {
         rest = rest[8..];
     }
     var c32: u32 = @truncate(c);
-    for (rest) |b| c32 = asm ("crc32b %[b], %[c]"
+    for (rest) |b| c32 = asm ("crc32b %[b], %[c]" // aegis: boundary: one instruction on registers; the bytes come from a bounded slice
         : [c] "=r" (-> u32),
         : [in] "0" (c32),
           [b] "r" (b),

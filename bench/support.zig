@@ -8,6 +8,7 @@
 //! the JSONL, so a program prints no table of its own.
 const std = @import("std");
 const Io = std.Io;
+const aegis = @import("aegis");
 const warp = @import("warp");
 const gen = @import("gen");
 const shakedown = @import("shakedown");
@@ -24,6 +25,14 @@ pub const Error = std.mem.Allocator.Error || Io.Writer.Error || Io.Reader.Error 
     std.compress.flate.Decompress.Error || error{ WrongLength, WrongOutput, InvalidOptions };
 
 pub const Row = shakedown.bench.Row;
+
+/// The most a program reads of one file: a corpus, a stream or a dictionary.
+const file_limit: aegis.units.Bytes(u64) = .fromRaw(4 << 30);
+
+/// The bytes of the file at `path`, allocated with `gpa`.
+pub fn readFile(io: Io, gpa: std.mem.Allocator, path: []const u8) aegis.own.ReadFileError![]u8 {
+    return aegis.own.readFile(io, Io.Dir.cwd(), path, gpa, file_limit);
+}
 
 /// One workload: the inputs, as whole streams.
 pub const Workload = struct {
@@ -118,7 +127,7 @@ pub const Session = struct {
     /// `git cat-file --batch` output, each object as a loose object deflates it.
     fn objects(s: *Session, dir: []const u8, name_: []const u8, file: []const u8, max_size: usize) !Workload {
         const path = try std.fs.path.join(s.arena, &.{ dir, file });
-        const data = try Io.Dir.cwd().readFileAlloc(s.io, path, s.arena, .unlimited);
+        const data = try readFile(s.io, s.arena, path);
         var inputs: std.ArrayList([]const u8) = .empty;
         var total: u64 = 0;
         var max: usize = 0;
@@ -145,7 +154,7 @@ pub const Session = struct {
         var total: u64 = 0;
         var max: usize = 0;
         for (names) |n| {
-            const data = try Io.Dir.cwd().readFileAlloc(s.io, try std.fs.path.join(s.arena, &.{ dir, n }), s.arena, .unlimited);
+            const data = try readFile(s.io, s.arena, try std.fs.path.join(s.arena, &.{ dir, n }));
             try inputs.append(s.arena, data);
             total += data.len;
             max = @max(max, data.len);

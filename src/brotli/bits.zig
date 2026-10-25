@@ -9,6 +9,7 @@
 //! input, or the stream is truncated.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const NeedInput = error{NeedInput};
 
@@ -101,7 +102,7 @@ pub const Reader = struct {
     /// Give back the whole bytes loaded and not taken, at a byte boundary,
     /// so `in[pos..]` is the next input byte.
     pub fn unload(r: *Reader) void {
-        std.debug.assert(r.count & 7 == 0);
+        aegis.assert.invariant(r.count & 7 == 0, "r.count & 7 == 0");
         r.pos -= r.count >> 3;
         r.buf = 0;
         r.count = 0;

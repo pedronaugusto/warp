@@ -2,6 +2,7 @@
 //! extra field and the canonical empty EOF member. No allocation per block.
 const Bgzf = @This();
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Compressor = @import("Compressor.zig");
 
@@ -80,7 +81,7 @@ pub fn finish(b: *Bgzf, out: *Io.Writer) WriteError!void {
 /// BGZF's virtual position: member byte offset above its 16-bit decoded
 /// offset. Flush before recording a position that must be on disk.
 pub fn virtualOffset(b: *const Bgzf) u64 {
-    std.debug.assert(b.compressed_offset < 1 << 48);
+    aegis.assert.invariant(b.compressed_offset < 1 << 48, "b.compressed_offset < 1 << 48");
     std.debug.assert(b.filled < 65536);
     return b.compressed_offset << 16 | @as(u64, @intCast(b.filled));
 }
@@ -89,14 +90,14 @@ fn emit(b: *Bgzf, out: *Io.Writer) WriteError!void {
     var extra = [_]u8{ 'B', 'C', 2, 0, 0, 0 };
     const frame: Compressor.Frame = .{ .container = .gzip, .gzip = .{ .extra = &extra } };
     var take = b.filled;
-    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // unreachable: output has the whole-buffer bound
+    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output has the whole-buffer bound
     if (n > 65536) {
         // 65,280 bytes fit even as stored blocks. Keep the rest for the
         // next member; this is determined by bytes, never write chunking.
         take = @min(take, 65280);
-        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // unreachable: output has the whole-buffer bound
+        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output has the whole-buffer bound
     }
-    std.debug.assert(n <= 65536);
+    aegis.assert.invariant(n <= 65536, "n <= 65536");
     std.mem.writeInt(u16, b.output[16..18], @intCast(n - 1), .little);
     try out.writeAll(b.output[0..n]);
     b.compressed_offset += n;

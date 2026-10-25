@@ -130,7 +130,7 @@ pub const Kind = enum { single, double };
 
 /// A decoding table, indexed by the next `log` bits of a stream.
 pub const Table = struct {
-    kind: Kind,
+    kind: Kind, // aegis: no-danger: the layout of the cells, set where they are built; no transitions
     log: u4,
     cells: extern union {
         /// symbol | length << 8

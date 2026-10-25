@@ -153,7 +153,7 @@ pub fn page(t: *Tables, in: []const u8, out: []u8, diagnostic: ?*Diagnostic, bas
             while (true) {
                 const bit = @as(u32, 1) << r.lane;
                 if (waiting & bit != 0) {
-                    try copy(&r, out, pending[r.lane], dist, dbits);
+                    try copy(&r, out, pending[r.lane], dist, dbits); // aegis: no-danger: a lane's waiting bit is set only after its pending match is written
                     waiting &= ~bit;
                 } else {
                     const s = try r.symbol(litlen, lbits);

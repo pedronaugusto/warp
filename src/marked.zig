@@ -35,14 +35,15 @@ pub const Decoder = struct {
             for (d.stream.in[d.stream.ip..][0..len], d.tokens[d.written..][0..len]) |byte, *token| token.* = byte;
             d.written += len;
             d.stream.ip += len;
+            d.state.endBlock(.stored);
         } else {
             const ll: []const u32 = if (d.state.fixed) &huffman.Fixed(.litlen).table else &d.tables.litlen;
             const dd: []const u32 = if (d.state.fixed) &huffman.Fixed(.dist).table else &d.tables.dist;
             const lb = if (d.state.fixed) huffman.Fixed(.litlen).bits else d.state.lbits;
             const db = if (d.state.fixed) huffman.Fixed(.dist).bits else d.state.dbits;
             try d.codes(io, ll, lb, dd, db);
+            d.state.endBlock(.codes);
         }
-        d.state.phase = if (d.state.final) .done else .header;
         return if (d.state.final) .done else .block_end;
     }
 
@@ -61,7 +62,7 @@ pub const Decoder = struct {
             if (lit.entry & huffman.end_flag != 0) return;
             if (lit.entry & huffman.literal_flag != 0) {
                 if (d.written == d.tokens.len) return error.OutputTooSmall;
-                d.tokens[d.written] = @as(u8, @truncate(lit.entry >> 16)); // safe: the low byte of the value is the literal; the high bit is its tag
+                d.tokens[d.written] = @as(u8, @truncate(lit.entry >> 16)); // aegis: no-danger: the low byte of the value is the literal; the high bit is its tag
                 d.written += 1;
                 continue;
             }
@@ -119,7 +120,7 @@ pub const Decoder = struct {
             const missing = back - d.written;
             d.required = @max(d.required, missing);
             count = @min(len, missing);
-            for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // safe: window markers fit u16
+            for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // aegis: no-danger: window markers fit u16
         }
         if (wild and count < len) {
             engine.copyMatch(u16, d.tokens, d.written + count, back, len - count);

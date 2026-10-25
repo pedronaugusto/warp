@@ -3,14 +3,18 @@
 //! each input compares with the size recorded for it: the median, the 99th
 //! percentile and the worst.
 const std = @import("std");
+const aegis = @import("aegis");
 const warp = @import("warp");
 const captured = @import("captured");
 
 const File = struct { parts: []const []const u8, length: usize, sha256: []const u8 };
 const Corpus = struct { name: []const u8, files: []const File, limits: [13]u64 };
 
+/// The most the gate reads of one file: the manifest or a corpus part.
+const file_limit: aegis.units.Bytes(u64) = .fromRaw(1 << 30);
+
 pub fn main(init: std.process.Init) !void {
-    const manifest = try std.Io.Dir.cwd().readFileAlloc(init.io, "testdata/standard.json", init.arena.allocator(), .unlimited);
+    const manifest = try aegis.own.readFile(init.io, std.Io.Dir.cwd(), "testdata/standard.json", init.arena.allocator(), file_limit);
     const parsed = try std.json.parseFromSlice([]const Corpus, init.arena.allocator(), manifest, .{});
     var progress_buffer: [4096]u8 = undefined;
     var progress = std.Io.File.stderr().writerStreaming(init.io, &progress_buffer);
@@ -87,7 +91,7 @@ fn report(w: *std.Io.Writer, ratios: []const f64, specs: []const []const u8) !vo
 fn read(a: std.mem.Allocator, io: std.Io, file: File) ![]u8 {
     var compressed: std.ArrayList(u8) = .empty;
     for (file.parts) |part| {
-        const piece = try std.Io.Dir.cwd().readFileAlloc(io, part, a, .unlimited);
+        const piece = try aegis.own.readFile(io, std.Io.Dir.cwd(), part, a, file_limit);
         try compressed.appendSlice(a, piece);
     }
     const output = try a.alloc(u8, file.length);

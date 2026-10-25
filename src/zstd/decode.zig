@@ -208,12 +208,12 @@ pub const Frame = struct {
                         lits.* = .{ .bytes = in[header..], .len = len, .in_out = null, .limit = f.out.len };
                     } else {
                         lits.* = f.literalStorage(len, op);
-                        @memcpy(@constCast(lits.bytes[0..len]), in[header..][0..len]); // safe: literalStorage returns this decoder's writable scratch or output.
+                        @memcpy(@constCast(lits.bytes[0..len]), in[header..][0..len]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
                     }
                     return header + len;
                 }
                 lits.* = f.literalStorage(len, op);
-                @memset(@constCast(lits.bytes[0..len]), in[header]); // safe: literalStorage returns this decoder's writable scratch or output.
+                @memset(@constCast(lits.bytes[0..len]), in[header]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
                 return header + 1;
             },
             2, 3 => {
@@ -247,7 +247,7 @@ pub const Frame = struct {
                 if (expected < len) return f.fail(error.OutputTooSmall, 0, .bad_literals_header);
                 const src = in[header..][0..csize];
                 lits.* = f.literalStorage(len, op);
-                const dst = @constCast(lits.bytes[0..len]); // safe: literalStorage returns this decoder's writable scratch or output.
+                const dst = @constCast(lits.bytes[0..len]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
                 if (kind == 2) {
                     try f.huffmanTable(src, header, !single and huffman.chooseDouble(len, csize));
                     const used = f.tables.weights.len;

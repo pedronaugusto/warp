@@ -80,11 +80,11 @@ pub const Compressor = struct {
         // Worker records are kept contiguously at the front. All engine
         // regions start after the records, at a 64-byte boundary.
         const record_bytes = std.mem.alignForward(usize, @sizeOf(Worker), 64) * options.concurrency;
-        const records: []Worker = @as([*]Worker, @ptrCast(owned.ptr))[0..options.concurrency]; // safe: owned is 64-byte aligned and reserves record_bytes for these workers
+        const records: []Worker = @as([*]Worker, @ptrCast(owned.ptr))[0..options.concurrency]; // aegis: no-danger: owned is 64-byte aligned and reserves record_bytes for these workers
         var at = record_bytes;
         for (records) |*worker| {
             const engine_len = std.mem.alignForward(usize, sizes.memory(), 64);
-            const engine_buffer: []align(64) u8 = @alignCast(owned[at..][0..engine_len]); // safe: each region is padded to 64 bytes
+            const engine_buffer: []align(64) u8 = @alignCast(owned[at..][0..engine_len]); // aegis: no-danger: each region is padded to 64 bytes
             at += engine_len;
             const dictionary = owned[at..][0..32768];
             at += 32768;
@@ -274,9 +274,9 @@ pub const Decompressor = struct {
         std.debug.assert(buffer.len >= memory(options));
         const records = std.mem.alignForward(usize, @as(usize, @sizeOf(DecodeWorker)) * options.concurrency, 64);
         return .{
-            .workers = @as([*]DecodeWorker, @ptrCast(buffer.ptr))[0..options.concurrency], // safe: buffer is aligned and reserves these worker records
+            .workers = @as([*]DecodeWorker, @ptrCast(buffer.ptr))[0..options.concurrency], // aegis: no-danger: buffer is aligned and reserves these worker records
             .gpa = undefined,
-            .speculative = if (options.speculative) |spec| Speculative.initBuffer(@alignCast(buffer[records..]), options.concurrency, spec) else null, // safe: records and the following marker storage are padded to 64 bytes
+            .speculative = if (options.speculative) |spec| Speculative.initBuffer(@alignCast(buffer[records..]), options.concurrency, spec) else null, // aegis: no-danger: records and the following marker storage are padded to 64 bytes
         };
     }
 

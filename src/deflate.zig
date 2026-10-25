@@ -298,7 +298,7 @@ pub const Engine = struct {
             };
             // A block's sequences are made from its path, over the nodes'
             // memory (see `optimal.emitPath`); the other parsers' fit too.
-            e.b.seqs = @as([*]block.Sequence, @ptrCast(nodes.ptr))[0..nodes.len]; // safe: two u32 and two u32-aligned u16 pairs, 8 bytes each
+            e.b.seqs = @as([*]block.Sequence, @ptrCast(nodes.ptr))[0..nodes.len]; // aegis: no-danger: two u32 and two u32-aligned u16 pairs, 8 bytes each
         } else e.b.seqs = take(block.Sequence, buffer, &at, sizes.sequences);
         e.b.lits = take(u8, buffer, &at, sizes.literals);
         return e;
@@ -307,7 +307,7 @@ pub const Engine = struct {
     fn take(comptime T: type, buf: []align(64) u8, offset: *usize, count: usize) []T {
         const bytes = buf[offset.*..][0 .. count * @sizeOf(T)];
         offset.* += bytes.len;
-        return @alignCast(std.mem.bytesAsSlice(T, bytes)); // safe: every table starts at a multiple of 2 bytes in a 64-byte aligned buffer, and sequences at a multiple of 64
+        return @alignCast(std.mem.bytesAsSlice(T, bytes)); // aegis: no-danger: every table starts at a multiple of 2 bytes in a 64-byte aligned buffer, and sequences at a multiple of 64
     }
 
     /// Start a stream at position `first` of `h` (a whole input, its

@@ -8,6 +8,7 @@
 //! the bytes written up to there are not a stream.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const Writer = struct {
     out: []u8,
@@ -65,7 +66,7 @@ pub const Writer = struct {
 
     /// Bytes as they are, at a byte boundary.
     pub fn writeBytes(w: *Writer, bytes: []const u8) void {
-        std.debug.assert(w.count == 0);
+        aegis.assert.invariant(w.count == 0, "w.count == 0");
         if (w.out.len - w.at < bytes.len) {
             w.overflow = true;
             return;

@@ -15,6 +15,7 @@
 //! itself, or a window.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const bits_ = @import("bits.zig");
 const Reader = bits_.Reader;
 const huffman = @import("huffman.zig");
@@ -102,7 +103,66 @@ const Phase = enum {
     done,
 };
 
-/// What a prefix code's description is being read for.
+/// What moves the stream on. `read`: a unit is done and the next in order
+/// follows. `last` and `more`: a meta-block ends, the stream's last or one
+/// before another. A meta-block's kind. `code`: a prefix code's
+/// description starts, and it ends with what it was read for (a `Target`).
+/// `distance_map` and `trees`: the literal context map is done and the
+/// distance map follows, or both are and the trees follow. `insert` and
+/// `copy`: a command's literals follow, or its copy's distance. `history`
+/// and `word`: the distance copies from the output or the prefix, or a
+/// dictionary word.
+const Event = enum { read, last, more, metadata, uncompressed, compressed, code, block_type, block_count, map_code, tree, distance_map, trees, insert, copy, history, word };
+
+const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .stream_header, .terminal = &.{.done}, .edges = &.{
+    .{ .from = .stream_header, .on = .read, .to = .metablock_header },
+    .{ .from = .metablock_header, .on = .last, .to = .end },
+    .{ .from = .metablock_header, .on = .metadata, .to = .metadata },
+    .{ .from = .metablock_header, .on = .uncompressed, .to = .uncompressed },
+    .{ .from = .metablock_header, .on = .compressed, .to = .block_types },
+    .{ .from = .metadata, .on = .last, .to = .end },
+    .{ .from = .metadata, .on = .more, .to = .metablock_header },
+    .{ .from = .uncompressed, .on = .last, .to = .end },
+    .{ .from = .uncompressed, .on = .more, .to = .metablock_header },
+    .{ .from = .block_types, .on = .read, .to = .distance_params },
+    .{ .from = .block_types, .on = .code, .to = .prefix_code },
+    .{ .from = .block_count_code, .on = .code, .to = .prefix_code },
+    .{ .from = .block_count, .on = .read, .to = .block_types },
+    .{ .from = .distance_params, .on = .read, .to = .modes },
+    .{ .from = .modes, .on = .read, .to = .context_map_trees },
+    .{ .from = .context_map_trees, .on = .read, .to = .context_map_rle },
+    .{ .from = .context_map_trees, .on = .distance_map, .to = .context_map_trees },
+    .{ .from = .context_map_trees, .on = .trees, .to = .tree_groups },
+    .{ .from = .context_map_rle, .on = .code, .to = .prefix_code },
+    .{ .from = .context_map_entries, .on = .read, .to = .context_map_mtf },
+    .{ .from = .context_map_mtf, .on = .distance_map, .to = .context_map_trees },
+    .{ .from = .context_map_mtf, .on = .trees, .to = .tree_groups },
+    .{ .from = .tree_groups, .on = .code, .to = .prefix_code },
+    .{ .from = .tree_groups, .on = .read, .to = .command },
+    .{ .from = .prefix_code, .on = .block_type, .to = .block_count_code },
+    .{ .from = .prefix_code, .on = .block_count, .to = .block_count },
+    .{ .from = .prefix_code, .on = .map_code, .to = .context_map_entries },
+    .{ .from = .prefix_code, .on = .tree, .to = .tree_groups },
+    .{ .from = .command, .on = .insert, .to = .literals },
+    .{ .from = .command, .on = .copy, .to = .distance },
+    .{ .from = .command, .on = .last, .to = .end },
+    .{ .from = .command, .on = .more, .to = .metablock_header },
+    .{ .from = .literals, .on = .copy, .to = .distance },
+    .{ .from = .literals, .on = .last, .to = .end },
+    .{ .from = .literals, .on = .more, .to = .metablock_header },
+    .{ .from = .distance, .on = .history, .to = .copy },
+    .{ .from = .distance, .on = .word, .to = .word },
+    .{ .from = .copy, .on = .read, .to = .command },
+    .{ .from = .copy, .on = .last, .to = .end },
+    .{ .from = .copy, .on = .more, .to = .metablock_header },
+    .{ .from = .word, .on = .read, .to = .command },
+    .{ .from = .word, .on = .last, .to = .end },
+    .{ .from = .word, .on = .more, .to = .metablock_header },
+    .{ .from = .end, .on = .read, .to = .done },
+} });
+
+/// What a prefix code's description is being read for; its event when it
+/// is read.
 const Target = enum { block_type, block_count, map_code, tree };
 
 /// The block types in force and the counts left of each: what a block
@@ -166,8 +226,6 @@ pub const State = struct {
     tree: u32 = 0,
     group_used: u32 = 0,
     code: Code = .{},
-    /// Where the next phase goes after a prefix code is read.
-    after_code: Phase = .done,
 
     // The meta-block body.
     blocks: Blocks = .{},
@@ -189,6 +247,16 @@ pub const State = struct {
     reason: Diagnostic.Reason = .truncated,
     /// The refused unit's first bit, counted from the reader's input.
     fail_bit: u64 = 0,
+
+    /// The one place the phase changes: along a declared edge.
+    fn go(s: *State, comptime from: Phase, comptime on: Event) void {
+        s.phase = comptime Machine.after(from, on);
+    }
+
+    /// The meta-block read in `from` has ended.
+    fn endPart(s: *State, comptime from: Phase) void {
+        if (s.last) s.go(from, .last) else s.go(from, .more);
+    }
 
     fn fail(s: *State, reason: Diagnostic.Reason, at: u64) Fail {
         s.reason = reason;
@@ -258,7 +326,7 @@ fn step(comptime careful: bool, s: *State, t: *Tables, r: *Reader, h: anytype) S
         .end => {
             if (!r.alignByte()) return s.fail(.padding, at);
             r.unload();
-            s.phase = .done;
+            s.go(.end, .read);
             return .done;
         },
         .done => return .done,
@@ -277,7 +345,7 @@ fn bytesStep(s: *State, r: *Reader, h: anytype) StepError!?Status {
             r.pos += n;
             s.remaining -= @intCast(n);
             if (s.remaining != 0) return .need_input;
-            s.phase = if (s.last) .end else .metablock_header;
+            s.endPart(.metadata);
         },
         .uncompressed => {
             r.unload();
@@ -290,7 +358,7 @@ fn bytesStep(s: *State, r: *Reader, h: anytype) StepError!?Status {
                 r.pos += n;
                 s.remaining -= @intCast(n);
             }
-            s.phase = if (s.last) .end else .metablock_header;
+            s.endPart(.uncompressed);
         },
         else => unreachable,
     }
@@ -302,7 +370,7 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
     switch (s.phase) {
         .block_types => {
             if (s.category == 3) {
-                s.phase = .distance_params;
+                s.go(.block_types, .read);
                 return null;
             }
             const n = try varLenUint8(careful, r) + 1;
@@ -311,13 +379,13 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 s.category +%= 1;
                 return null;
             }
-            startCode(s, .block_type, n + 2, n + 2, .block_count_code);
+            startCode(s, .block_types, .block_type, n + 2, n + 2);
         },
-        .block_count_code => startCode(s, .block_count, 26, 26, .block_count),
+        .block_count_code => startCode(s, .block_count_code, .block_count, 26, 26),
         .block_count => {
             s.blocks.counts[s.category] = try blockCount(careful, r, &t.block_counts[s.category]);
             s.category +%= 1;
-            s.phase = .block_types;
+            s.go(.block_count, .read);
         },
         .distance_params => {
             const v = try r.bits(careful, 6);
@@ -327,12 +395,12 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
             s.distance_max = a.max;
             s.distance_limit = a.limit;
             s.mode_index = 0;
-            s.phase = .modes;
+            s.go(.distance_params, .read);
         },
         .modes => {
             if (s.mode_index == s.num_types[0]) {
                 s.map = .{ .distance = false, .size = s.num_types[0] << 6 };
-                s.phase = .context_map_trees;
+                s.go(.modes, .read);
                 return null;
             }
             t.modes[s.mode_index] = @fromBackingInt(@intCast(try r.bits(careful, 2)));
@@ -346,14 +414,14 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
             const map = mapSlice(s, t);
             if (n == 1) {
                 @memset(map, 0);
-                return mapDone(s);
+                return mapDone(s, .context_map_trees);
             }
-            s.phase = .context_map_rle;
+            s.go(.context_map_trees, .read);
         },
         .context_map_rle => {
             s.map.rlemax = if (try r.bits(careful, 1) == 1) try r.bits(careful, 4) + 1 else 0;
             const alphabet = s.map.trees + s.map.rlemax;
-            startCode(s, .map_code, alphabet, alphabet, .context_map_entries);
+            startCode(s, .context_map_rle, .map_code, alphabet, alphabet);
         },
         .context_map_entries => {
             const map = mapSlice(s, t);
@@ -374,11 +442,11 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 }
                 if (careful or !r.roomy()) return null;
             }
-            s.phase = .context_map_mtf;
+            s.go(.context_map_entries, .read);
         },
         .context_map_mtf => {
             if (try r.bits(careful, 1) == 1) inverseMoveToFront(mapSlice(s, t));
-            return mapDone(s);
+            return mapDone(s, .context_map_mtf);
         },
         .tree_groups => {
             const n = switch (s.group) {
@@ -393,16 +461,16 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 s.group_used = 0;
                 if (s.group == 3) {
                     startBody(s, t);
-                    s.phase = .command;
+                    s.go(.tree_groups, .read);
                 }
                 return null;
             }
             const groups = groupTrees(t, s.group);
             groups[s.tree] = s.group_used;
             switch (s.group) {
-                0 => startCode(s, .tree, 256, 256, .tree_groups),
-                1 => startCode(s, .tree, 704, 704, .tree_groups),
-                2 => startCode(s, .tree, s.distance_max, s.distance_limit, .tree_groups),
+                0 => startCode(s, .tree_groups, .tree, 256, 256),
+                1 => startCode(s, .tree_groups, .tree, 704, 704),
+                2 => startCode(s, .tree_groups, .tree, s.distance_max, s.distance_limit),
                 3 => unreachable,
             }
         },
@@ -418,12 +486,12 @@ noinline fn bodyStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader, 
         .command => {
             if (!careful) return fastCommands(s, t, r, h);
             try readCommand(careful, s, t, r, at);
-            s.phase = if (s.insert == 0) .distance else .literals;
+            if (s.insert == 0) s.go(.command, .copy) else s.go(.command, .insert);
         },
         .literals => {
             if (s.insert == 0) {
-                if (s.remaining <= 0) return endMetablock(s, at);
-                s.phase = .distance;
+                if (s.remaining <= 0) return endMetablock(s, .literals, at);
+                s.go(.literals, .copy);
                 return null;
             }
             if (h.room() == 0) return h.full();
@@ -436,10 +504,10 @@ noinline fn bodyStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader, 
         },
         .distance => {
             const d = try readDistance(careful, s, t, r, at);
-            s.phase = switch (try resolve(s, h, d.distance, d.push, at, &s.word)) {
-                .history, .prefix => .copy,
-                .word => .word,
-            };
+            switch (try resolve(s, h, d.distance, d.push, at, &s.word)) {
+                .history, .prefix => s.go(.distance, .history),
+                .word => s.go(.distance, .word),
+            }
         },
         .copy => {
             if (s.copy != 0) {
@@ -449,15 +517,15 @@ noinline fn bodyStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader, 
                 if (s.copy != 0) return h.full();
             }
             s.from_prefix = false;
-            if (s.remaining <= 0) return endMetablock(s, at);
-            s.phase = .command;
+            if (s.remaining <= 0) return endMetablock(s, .copy, at);
+            s.go(.copy, .read);
         },
         .word => {
             const n = h.writeSome(s.word[s.word_at..s.word_len]);
             s.word_at += @intCast(n);
             if (s.word_at != s.word_len) return h.full();
-            if (s.remaining <= 0) return endMetablock(s, at);
-            s.phase = .command;
+            if (s.remaining <= 0) return endMetablock(s, .word, at);
+            s.go(.word, .read);
         },
         else => unreachable,
     }
@@ -487,7 +555,7 @@ noinline fn streamHeader(comptime careful: bool, s: *State, r: *Reader, at: u64)
         }
     }
     s.max_backward = (@as(u32, 1) << s.window_bits) - 16;
-    s.phase = .metablock_header;
+    s.go(.stream_header, .read);
 }
 
 noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u64) StepError!void {
@@ -495,7 +563,7 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
     if (last and try r.bits(careful, 1) == 1) {
         s.last = true;
         s.remaining = 0;
-        s.phase = .end;
+        s.go(.metablock_header, .last);
         return;
     }
     const nibbles = try r.bits(careful, 2);
@@ -511,7 +579,7 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
         if (!r.alignByte()) return s.fail(.padding, at);
         s.last = last;
         s.remaining = if (nbytes == 0) 0 else @as(i64, len) + 1;
-        s.phase = .metadata;
+        s.go(.metablock_header, .metadata);
         return;
     }
     const n = nibbles + 4;
@@ -526,7 +594,7 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
     s.last = last;
     s.remaining = @as(i64, len) + 1;
     if (uncompressed) {
-        s.phase = .uncompressed;
+        s.go(.metablock_header, .uncompressed);
         return;
     }
     s.category = 0;
@@ -535,7 +603,7 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
     s.group = 0;
     s.tree = 0;
     s.group_used = 0;
-    s.phase = .block_types;
+    s.go(.metablock_header, .compressed);
 }
 
 /// A number 0-255 in 1 to 11 bits.
@@ -618,12 +686,14 @@ fn mapSlice(s: *const State, t: *Tables) []u8 {
     return if (s.map.distance) t.distance_map[0..s.map.size] else t.context_map[0..s.map.size];
 }
 
-fn mapDone(s: *State) ?Status {
+/// The context map read in `from` is done: the distance map follows the
+/// literal map, and the trees follow both.
+fn mapDone(s: *State, comptime from: Phase) ?Status {
     if (!s.map.distance) {
         s.map = .{ .distance = true, .size = s.num_types[2] << 2 };
-        s.phase = .context_map_trees;
+        s.go(from, .distance_map);
     } else {
-        s.phase = .tree_groups;
+        s.go(from, .trees);
     }
     return null;
 }
@@ -642,10 +712,11 @@ fn inverseMoveToFront(v: []u8) void {
     }
 }
 
-fn startCode(s: *State, target: Target, max: u32, limit: u32, after: Phase) void {
+/// Leave `from` to read a prefix code for `target`; reading it ends in
+/// the phase its target's edge leads to.
+fn startCode(s: *State, comptime from: Phase, target: Target, max: u32, limit: u32) void {
     s.code = .{ .target = target, .max = max, .limit = limit };
-    s.after_code = after;
-    s.phase = .prefix_code;
+    s.go(from, .code);
 }
 
 /// Where the table of the code being read goes.
@@ -668,7 +739,9 @@ fn codeDone(s: *State, used: usize) void {
         s.group_used += @intCast(used);
         s.tree += 1;
     }
-    s.phase = s.after_code;
+    switch (s.code.target) {
+        inline else => |target| s.go(.prefix_code, @field(Event, @tagName(target))),
+    }
 }
 
 /// One unit of a prefix code's description: its header (a simple code
@@ -860,7 +933,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
     const max_backward = s.max_backward;
     var command_table = t.command[s.blocks.command_tree..].ptr;
     while (true) {
-        if (f.br.pos > end) return f.stop(s, r, h, .command);
+        if (f.br.pos > end) return f.stop(s, r, h, null);
         const at = f.br.bitOffset();
         // The command.
         if (f.counts[1] == 0) {
@@ -879,14 +952,14 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         f.remaining -= insert;
         if (limit - f.pos < @as(usize, insert) + copy + fast_room) {
             command(s, c, insert, copy);
-            return f.stop(s, r, h, if (insert == 0) .distance else .literals);
+            return if (insert == 0) f.stop(s, r, h, .copy) else f.stop(s, r, h, .insert);
         }
         // Its literals.
         var left: u32 = insert;
         while (left != 0) {
             if (f.br.pos > end) {
                 command(s, c, left, copy);
-                return f.stop(s, r, h, .literals);
+                return f.stop(s, r, h, .insert);
             }
             if (f.counts[0] == 0) {
                 f.save(s, r, h);
@@ -902,12 +975,12 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         }
         if (insert != 0 and f.remaining <= 0) {
             f.save(s, r, h);
-            return endMetablock(s, at);
+            return endMetablock(s, .command, at);
         }
         // Its distance.
         if (f.br.pos > end) {
             command(s, c, 0, copy);
-            return f.stop(s, r, h, .distance);
+            return f.stop(s, r, h, .copy);
         }
         const dat = f.br.bitOffset();
         var d: u32 = undefined;
@@ -928,7 +1001,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 push = symbol != 0;
             } else {
                 const range = t.distance_ranges[symbol];
-                f.br.fill(false, range.extra) catch unreachable; // unreachable: fast reads never fail
+                f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger: fast reads never fail
                 d = range.offset +% (@as(u32, @intCast(f.br.peek(range.extra))) << @intCast(npostfix));
                 f.br.drop(range.extra);
             }
@@ -949,7 +1022,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             f.save(s, r, h);
             s.copy = copy;
             switch (try resolve(s, h, d, push, dat, buf + h.pos)) {
-                .history => unreachable,
+                .history => unreachable, // aegis: no-danger: resolve gives .history only for a distance this branch has excluded
                 .prefix => {
                     h.write(h.prefix()[s.prefix_at..][0..copy]);
                     s.from_prefix = false;
@@ -961,7 +1034,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         }
         if (f.remaining <= 0) {
             f.save(s, r, h);
-            return endMetablock(s, at);
+            return endMetablock(s, .command, at);
         }
     }
 }
@@ -1000,10 +1073,11 @@ const Fast = struct {
         s.blocks.counts = f.counts;
     }
 
-    /// Hand the stream to the unit path at `phase`.
-    inline fn stop(f: *const Fast, s: *State, r: *Reader, h: anytype, phase: Phase) ?Status {
+    /// Hand the stream to the unit path: at the next command, or along
+    /// the edge `on` from it.
+    inline fn stop(f: *const Fast, s: *State, r: *Reader, h: anytype, comptime on: ?Event) ?Status {
         f.save(s, r, h);
-        s.phase = phase;
+        if (on) |event| s.go(.command, event);
         return null;
     }
 };
@@ -1103,9 +1177,10 @@ fn pushDistance(s: *State, d: u32) void {
     s.distances = .{ d, old[0], old[1], old[2] };
 }
 
-fn endMetablock(s: *State, at: u64) StepError!?Status {
+/// The meta-block's commands end in `from`.
+fn endMetablock(s: *State, comptime from: Phase, at: u64) StepError!?Status {
     if (s.remaining < 0) return s.fail(.block_length, at);
-    s.phase = if (s.last) .end else .metablock_header;
+    s.endPart(from);
     return null;
 }
 

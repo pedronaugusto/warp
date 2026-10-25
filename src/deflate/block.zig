@@ -289,7 +289,7 @@ fn cheapestItems(header: *const Header, lens: []const u8, item: *[320]u16, take:
             front = 0;
             back = 0;
         }
-        while (back > front and window[front & 127].at > i + 138) front += 1;
+        while (back > front and window[front & 127].at > i + 138) front += 1; // aegis: no-danger: entries from front to back were written as back passed them
         if (run >= 11) {
             const at = i + 11;
             while (back > front and window[(back - 1) & 127].cost >= cost[at]) back -= 1;

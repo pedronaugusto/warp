@@ -1,7 +1,7 @@
 //! The instruction-set extensions warp's checksum kernels use, as this CPU
 //! has them. A feature the target guarantees is known at compile time and
 //! costs nothing; any other is detected on first use and kept: one atomic
-//! word, written by whichever thread asks first (every writer writes the
+//! cell, written by whichever thread asks first (every writer writes the
 //! same value).
 //!
 //! Detection is the only contact with the operating system in warp: CPUID
@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 
 /// One extension or a group the kernels need together.
 pub const Feature = enum(u5) {
@@ -56,8 +57,9 @@ pub const guaranteed: Set = blk: {
     break :blk set;
 };
 
-/// Bit 31 says the word below it has been detected.
-var detected: std.atomic.Value(u32) = .init(0);
+/// The detected set's mask, with bit 31 saying it has been detected.
+const Detection = enum(u32) { pending = 0, _ };
+var detected: aegis.Atomic(Detection) = .init(.pending);
 const done: u32 = 1 << 31;
 
 /// Whether this CPU has `feature`.
@@ -69,10 +71,10 @@ pub fn has(comptime feature: Feature) bool {
 
 /// Every feature this CPU has that warp can use.
 pub fn features() Set {
-    var word = detected.load(.monotonic);
+    var word: u32 = @backingInt(detected.load(.monotonic));
     if (word & done == 0) {
         word = @as(u32, detect().bits.mask) | done;
-        detected.store(word, .monotonic);
+        detected.store(@fromBackingInt(@intCast(word)), .monotonic);
     }
     var set: Set = .empty;
     // safe: the mask's bits are the set's, below the done bit
@@ -181,7 +183,7 @@ fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
     var ebx: u32 = undefined;
     var ecx: u32 = undefined;
     var edx: u32 = undefined;
-    asm volatile ("cpuid"
+    asm volatile ("cpuid" // aegis: boundary: CPUID writes the four registers bound to its outputs and nothing else
         : [eax] "={eax}" (eax),
           [ebx] "={ebx}" (ebx),
           [ecx] "={ecx}" (ecx),
@@ -189,11 +191,11 @@ fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
         : [leaf] "{eax}" (leaf),
           [subleaf] "{ecx}" (subleaf),
     );
-    return .{ eax, ebx, ecx, edx };
+    return .{ eax, ebx, ecx, edx }; // aegis: no-danger: the asm above writes all four
 }
 
 fn xgetbv() u32 {
-    return asm volatile ("xgetbv"
+    return asm volatile ("xgetbv" // aegis: boundary: XGETBV reads ECX and writes EAX and EDX, which it declares
         : [eax] "={eax}" (-> u32),
         : [ecx] "{ecx}" (@as(u32, 0)),
         : .{ .edx = true });

@@ -31,7 +31,7 @@ pub fn build(gpa: std.mem.Allocator, in: []const u8, accept: container.Accept, s
         const step = try z.decode(in[at..], output);
         at += step.in_len;
         if (step.status == .block_end and z.out_total - last >= @max(spacing, 1)) {
-            try points.append(gpa, z.checkpoint() catch unreachable); // unreachable: decode just returned block_end
+            try points.append(gpa, z.checkpoint() catch unreachable); // aegis: no-danger: decode just returned block_end
             last = z.out_total;
         }
         if (step.status == .done or (step.status == .member_end and at == in.len)) break;

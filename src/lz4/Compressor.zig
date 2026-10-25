@@ -138,11 +138,11 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
 
 fn take(comptime T: type, buffer: []align(64) u8, at: *usize) *T {
     const bytes = takeBytes(buffer, at, @sizeOf(T));
-    return @ptrCast(@alignCast(bytes.ptr)); // safe: 64-aligned bytes of T's size, which no T exceeds in alignment
+    return @ptrCast(@alignCast(bytes.ptr)); // aegis: no-danger: 64-aligned bytes of T's size, which no T exceeds in alignment
 }
 
 fn takeBytes(buffer: []align(64) u8, at: *usize, len: usize) []align(64) u8 {
-    const bytes: []align(64) u8 = @alignCast(buffer[at.*..][0..len]); // safe: every piece starts at a multiple of 64
+    const bytes: []align(64) u8 = @alignCast(buffer[at.*..][0..len]); // aegis: no-danger: every piece starts at a multiple of 64
     at.* += std.mem.alignForward(usize, len, 64);
     return bytes;
 }

@@ -247,30 +247,30 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
     const l = Layout.of(options);
     std.debug.assert(buffer.len >= l.bytes());
     var at: usize = 0;
-    const long_matches: []long_match.Match = @alignCast(std.mem.bytesAsSlice(long_match.Match, buffer[at..][0 .. l.long_matches * @sizeOf(long_match.Match)])); // safe: base has 64-byte alignment
+    const long_matches: []long_match.Match = @alignCast(std.mem.bytesAsSlice(long_match.Match, buffer[at..][0 .. l.long_matches * @sizeOf(long_match.Match)])); // aegis: no-danger: base has 64-byte alignment
     at += l.long_matches * @sizeOf(long_match.Match);
-    const long_entries: []long_match.Entry = @alignCast(std.mem.bytesAsSlice(long_match.Entry, buffer[at..][0 .. l.long_entries * @sizeOf(long_match.Entry)])); // safe: preceding table size is divisible by eight
+    const long_entries: []long_match.Entry = @alignCast(std.mem.bytesAsSlice(long_match.Entry, buffer[at..][0 .. l.long_entries * @sizeOf(long_match.Entry)])); // aegis: no-danger: preceding table size is divisible by eight
     at += l.long_entries * @sizeOf(long_match.Entry);
     const long_heads = buffer[at..][0..l.long_heads];
     at += l.long_heads;
     // Even the smallest long table has four heads.
-    const dictionary_heads: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_heads * 4])); // safe: base has 64-byte alignment
+    const dictionary_heads: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_heads * 4])); // aegis: no-danger: base has 64-byte alignment
     at += l.dict_heads * 4;
-    const dictionary_chain: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_chain * 4])); // safe: preceding table size is divisible by four
+    const dictionary_chain: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_chain * 4])); // aegis: no-danger: preceding table size is divisible by four
     at += l.dict_chain * 4;
-    const dictionary_sequences: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.dict_sequences * @sizeOf(encode.Sequence)])); // safe: preceding tables and Sequence have four-byte alignment
+    const dictionary_sequences: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.dict_sequences * @sizeOf(encode.Sequence)])); // aegis: no-danger: preceding tables and Sequence have four-byte alignment
     at += l.dict_sequences * @sizeOf(encode.Sequence);
-    const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
+    const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
     at += l.hash * 4;
-    const chain_table: []u32 = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // safe: 64-byte base and preceding tables have sizes divisible by four
+    const chain_table: []u32 = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
     if (l.chain_offset == null) at += l.chain * 4;
     const tag_table = buffer[at..][0..l.tags];
     at += l.tags;
-    const hash3_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash3 * 4])); // safe: preceding tables have sizes divisible by four
+    const hash3_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash3 * 4])); // aegis: no-danger: preceding tables have sizes divisible by four
     at += l.hash3 * 4;
-    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) @ptrCast(@alignCast(buffer[at..][0..l.opt])) else null; // safe: preceding tables and Workspace have four-byte alignment
+    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) @ptrCast(@alignCast(buffer[at..][0..l.opt])) else null; // aegis: no-danger: preceding tables and Workspace have four-byte alignment
     at += l.opt;
-    const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)])); // safe: 64-byte base and preceding tables have sizes divisible by four
+    const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
     at += l.seqs * @sizeOf(encode.Sequence);
     const codes_ = buffer[at..][0 .. 3 * l.seqs];
     at += 3 * l.seqs;
@@ -612,7 +612,7 @@ pub fn writeTarget(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_litera
         beginning = false;
     }
     if (cursor.unchanged) reps.* = searched_reps;
-    std.debug.assert(at == in.len);
+    aegis.assert.invariant(at == in.len, "at == in.len");
     return o;
 }
 
@@ -624,7 +624,7 @@ fn writeLiteralTargets(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_li
         var part = c.store;
         part.count = 0;
         part.long = null;
-        part.lits = @constCast(in[at..][0..len]); // safe: emission only reads literals
+        part.lits = @constCast(in[at..][0..len]); // aegis: no-danger: emission only reads literals
         part.lit_len = len;
         o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, reps.*, prev, first and at == 0, last and at + len == in.len);
         at += len;

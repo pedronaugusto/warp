@@ -6,6 +6,7 @@
 //! copies them into `Fields`, the whole-buffer decoder skips them.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const checksum = @import("checksum.zig");
 const Diagnostic = @import("Diagnostic.zig");
@@ -178,6 +179,24 @@ pub const Parser = struct {
 
     const Part = enum { fixed, extra_len, extra, name, comment, hcrc, done };
 
+    /// A part is read, the flags leave it out, or the extra field is empty.
+    const Event = enum { read, absent, empty };
+
+    /// The parts in the header's order; one the flags leave out is passed.
+    const Machine = aegis.state.Machine(Part, Event, .{ .initial = .fixed, .terminal = &.{.done}, .edges = &.{
+        .{ .from = .fixed, .on = .read, .to = .extra_len },
+        .{ .from = .extra_len, .on = .read, .to = .extra },
+        .{ .from = .extra_len, .on = .empty, .to = .name },
+        .{ .from = .extra_len, .on = .absent, .to = .name },
+        .{ .from = .extra, .on = .read, .to = .name },
+        .{ .from = .name, .on = .read, .to = .comment },
+        .{ .from = .name, .on = .absent, .to = .comment },
+        .{ .from = .comment, .on = .read, .to = .hcrc },
+        .{ .from = .comment, .on = .absent, .to = .hcrc },
+        .{ .from = .hcrc, .on = .read, .to = .done },
+        .{ .from = .hcrc, .on = .absent, .to = .done },
+    } });
+
     pub const Status = enum { more, done, invalid };
 
     /// What a piece did: the bytes it used (through the refused byte when
@@ -203,7 +222,7 @@ pub const Parser = struct {
                     }
                     if (p.at == 10) {
                         if (flags & flag_hcrc != 0) p.crc.update(&p.fixed);
-                        p.next(.extra_len);
+                        p.next(.fixed, .read);
                     }
                 },
                 .extra_len => {
@@ -213,7 +232,7 @@ pub const Parser = struct {
                     i += 1;
                     if (p.at == 2) {
                         sink.bytes(.extra, in[i..i], i);
-                        p.next(if (p.extra_len == 0) .name else .extra);
+                        if (p.extra_len == 0) p.next(.extra_len, .empty) else p.next(.extra_len, .read);
                     }
                 },
                 .extra => {
@@ -222,10 +241,10 @@ pub const Parser = struct {
                     p.sum(in[i..][0..n]);
                     p.at += @intCast(n);
                     i += n;
-                    if (p.at == p.extra_len) p.next(.name);
+                    if (p.at == p.extra_len) p.next(.extra, .read);
                 },
-                .name, .comment => {
-                    const field: Field = if (p.part == .name) .name else .comment;
+                inline .name, .comment => |part| {
+                    const field: Field = if (part == .name) .name else .comment;
                     if (p.at == 0) sink.bytes(field, in[i..i], i);
                     p.at = 1;
                     const end = std.mem.findScalarPos(u8, in, i, 0);
@@ -236,7 +255,7 @@ pub const Parser = struct {
                     if (end != null) {
                         p.sum(in[i..][0..1]);
                         i += 1;
-                        p.next(if (field == .name) .comment else .hcrc);
+                        p.next(part, .read);
                     }
                 },
                 .hcrc => {
@@ -248,7 +267,7 @@ pub const Parser = struct {
                     }
                     i += 1;
                     if (p.verify and (@as(u16, in[i - 1]) << 8 | p.hcrc_low != @as(u16, @truncate(p.crc.final())))) return .{ .used = i, .status = .invalid, .reason = .header_crc };
-                    p.part = .done;
+                    p.next(.hcrc, .read);
                 },
                 .done => break,
             }
@@ -275,32 +294,36 @@ pub const Parser = struct {
         };
     }
 
-    /// Start `part`, or the first part after it that the flags include.
-    fn next(p: *Parser, part: Part) void {
-        p.part = part;
-        p.at = 0;
+    /// Take the edge from `from` on `on`, then pass the parts the flags
+    /// leave out.
+    fn next(p: *Parser, comptime from: Part, comptime on: Event) void {
+        p.enter(comptime Machine.after(from, on));
         p.skipAbsent();
     }
 
     fn skipAbsent(p: *Parser) void {
         const flags = p.fixed[3];
         while (true) {
-            const present = switch (p.part) {
-                .extra_len, .extra => flags & flag_extra != 0,
-                .name => flags & flag_name != 0,
-                .comment => flags & flag_comment != 0,
-                .hcrc => flags & flag_hcrc != 0,
-                .fixed, .done => return,
-            };
-            if (present) return;
-            p.part = switch (p.part) {
-                .extra_len, .extra => .name,
-                .name => .comment,
-                .comment => .hcrc,
-                else => .done,
-            };
-            p.at = 0;
+            switch (p.part) {
+                .fixed, .extra, .done => return,
+                inline .extra_len, .name, .comment, .hcrc => |part| {
+                    const flag = switch (part) {
+                        .extra_len => flag_extra,
+                        .name => flag_name,
+                        .comment => flag_comment,
+                        else => flag_hcrc,
+                    };
+                    if (flags & flag != 0) return;
+                    p.enter(comptime Machine.after(part, .absent));
+                },
+            }
         }
+    }
+
+    /// The one place a part starts: `to` is a declared edge's end.
+    fn enter(p: *Parser, to: Part) void {
+        p.part = to;
+        p.at = 0;
     }
 
     /// The header CRC over `bytes`, when the header has one.

@@ -109,12 +109,11 @@ pub const Bytes = struct {
     base: usize,
 
     pub fn of(w: Window) Bytes {
-        // safe: an address, only ever offset by indices of `w.in`
-        return .{ .base = @intFromPtr(w.in.ptr) -% w.start }; // safe: an address, dereferenced only with an index into w.in
+        return .{ .base = @intFromPtr(w.in.ptr) -% w.start }; // aegis: no-danger: an address, dereferenced only with an index into w.in
     }
 
     pub inline fn ptr(b: Bytes, i: usize) [*]const u8 {
-        return @ptrFromInt(b.base +% i);
+        return @ptrFromInt(b.base +% i); // aegis: no-danger: callers pass only indices whose byte lies in w.in
     }
 
     pub inline fn byte(b: Bytes, i: usize) u8 {

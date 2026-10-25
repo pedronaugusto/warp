@@ -54,7 +54,7 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
 }
 
 inline fn udot(acc: u32x4, a: u8x16, b: u8x16) u32x4 {
-    return asm ("udot %[r].4s, %[a].16b, %[b].16b"
+    return asm ("udot %[r].4s, %[a].16b, %[b].16b" // aegis: boundary: one instruction on vector registers, no memory
         : [r] "=w" (-> u32x4),
         : [acc] "0" (acc),
           [a] "w" (a),

@@ -184,7 +184,10 @@ pub fn dev(b: *std.Build, tools: type) void {
         .root_source_file = p.path("ci/sizes.zig"),
         .target = b.graph.host,
         .optimize = .fast,
-        .imports = &.{.{ .name = "warp", .module = warpModule(p, b.graph.host, .fast) }},
+        .imports = &.{
+            .{ .name = "warp", .module = warpModule(p, b.graph.host, .fast) },
+            .{ .name = "aegis", .module = p.dependency("aegis", .{ .target = b.graph.host, .optimize = .fast }).module("aegis") },
+        },
     });
     const captured_module = b.createModule(.{ .root_source_file = p.path("src/testing/corpus/data.zig"), .target = b.graph.host, .optimize = .fast });
     captured_module.addImport("gen", b.createModule(.{ .root_source_file = p.path("bench/gen.zig"), .target = b.graph.host, .optimize = .fast }));
@@ -295,6 +298,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const ensign = b.dependency("ensign", .{ .target = target, .optimize = optimize }).module("ensign");
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "warp", .module = warp },
+        .{ .name = "aegis", .module = p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis") },
         .{ .name = "gen", .module = gen },
         .{ .name = "ensign", .module = ensign },
         .{ .name = "brotli-streams.corpus", .module = b.createModule(.{ .root_source_file = p.path("testdata/brotli-streams.corpus") }) },

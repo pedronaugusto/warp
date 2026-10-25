@@ -247,7 +247,7 @@ const Decoder = struct {
 /// off the path from `lit`, where reassociation would put it back.
 inline fn chainless(x: usize) usize {
     return switch (@import("builtin").cpu.arch) {
-        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // safe: an empty template; the value passes through its register
+        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // aegis: boundary: an empty template; the value passes through its register
             : [out] "=r" (-> usize),
             : [in] "0" (x),
         ),
@@ -257,7 +257,7 @@ inline fn chainless(x: usize) usize {
 
 /// The little-endian offset at `p`, in one load.
 inline fn read16(p: [*]const u8) u16 {
-    return std.mem.littleToNative(u16, @as(*align(1) const u16, @ptrCast(p)).*); // safe: an unaligned read of two bytes the caller has bounded
+    return std.mem.littleToNative(u16, @as(*align(1) const u16, @ptrCast(p)).*); // aegis: no-danger: an unaligned read of two bytes the caller has bounded
 }
 
 /// A length's bytes after its token field's 15, read while `ip` stays
@@ -311,12 +311,12 @@ inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
                 store16(op + i + step, pattern);
             }
         },
-        else => unreachable,
+        else => unreachable, // aegis: no-danger: offsets of 8 and more returned above, and the decoder refuses offset 0
     }
 }
 
 inline fn store16(p: [*]u8, v: @Vector(16, u8)) void {
-    @as(*align(1) @Vector(16, u8), @ptrCast(p)).* = v; // safe: an unaligned store of 16 bytes the caller has bounded
+    @as(*align(1) @Vector(16, u8), @ptrCast(p)).* = v; // aegis: no-danger: an unaligned store of 16 bytes the caller has bounded
 }
 
 fn periodMask(comptime period: usize) @Vector(16, i32) {

@@ -133,7 +133,7 @@ fn parseFields(h: []const u8, format: Format, fault: *Fault) ParseError!Header {
         window += (window >> 3) * (wd & 7);
     }
     var id: u32 = 0;
-    switch (fhd & 3) {
+    switch (@as(u2, @truncate(fhd))) {
         0 => {},
         1 => {
             id = h[pos];
@@ -147,17 +147,15 @@ fn parseFields(h: []const u8, format: Format, fault: *Fault) ParseError!Header {
             id = std.mem.readInt(u32, h[pos..][0..4], .little);
             pos += 4;
         },
-        else => unreachable,
     }
     var content: ?u64 = null;
-    switch (fhd >> 6) {
+    switch (@as(u2, @truncate(fhd >> 6))) {
         0 => if (single) {
             content = h[pos];
         },
         1 => content = @as(u64, std.mem.readInt(u16, h[pos..][0..2], .little)) + 256,
         2 => content = std.mem.readInt(u32, h[pos..][0..4], .little),
         3 => content = std.mem.readInt(u64, h[pos..][0..8], .little),
-        else => unreachable,
     }
     if (single) window = content.?;
     return .{

@@ -83,12 +83,12 @@ pub fn memory(concurrency: u16, options: Options) usize {
 
 pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) Speculative {
     std.debug.assert(buffer.len >= memory(concurrency, options));
-    const workers = @as([*]Worker, @ptrCast(buffer.ptr))[0..concurrency]; // safe: aligned memory reserves all worker records
+    const workers = @as([*]Worker, @ptrCast(buffer.ptr))[0..concurrency]; // aegis: no-danger: aligned memory reserves all worker records
     var at = std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64);
     for (workers) |*w| {
-        const tokens = @as([*]u16, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.chunkLen()]; // safe: padded, aligned token regions are reserved by memory
+        const tokens = @as([*]u16, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.chunkLen()]; // aegis: no-danger: padded, aligned token regions are reserved by memory
         at += std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64);
-        const blocks = @as([*]Block, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.max_blocks]; // safe: padded, aligned descriptor regions are reserved by memory
+        const blocks = @as([*]Block, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.max_blocks]; // aegis: no-danger: padded, aligned descriptor regions are reserved by memory
         at += std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64);
         w.* = .{ .tokens = tokens, .blocks = blocks };
     }
@@ -128,7 +128,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     var active = @min(p.workers.len, (input.len - 1) / p.options.searchLen());
     while (true) {
         try io.checkCancel();
-        const bit: usize = @intCast(stream.bitOffset()); // safe: consumed bits are within this addressable input
+        const bit: usize = @intCast(stream.bitOffset()); // aegis: no-danger: consumed bits are within this addressable input
         if (active > 0 and state.phase == .body and state.engine.phase == .header) {
             const w = &p.workers[slot];
             if (bit >= w.from) {
@@ -197,7 +197,7 @@ fn setBit(s: *engine.Stream, bit: usize) void {
     s.bitsleft = 0;
     s.virtual = 0;
     if (bit % 8 != 0) {
-        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // safe: pending bits belong to this byte
+        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger: pending bits belong to this byte
         s.bitsleft = @intCast(8 - bit % 8); // safe: 1-7 pending bits
         s.ip += 1;
     }
@@ -277,14 +277,14 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
             var count: usize = 0;
             var written: usize = 0;
             while (count < w.blocks.len) {
-                const begin: usize = @intCast(decoder.stream.bitOffset()); // safe: block starts are real bits within input
+                const begin: usize = @intCast(decoder.stream.bitOffset()); // aegis: no-danger: block starts are real bits within input
                 const status = decoder.block(io) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.OutputTooSmall) w.stats.limited += 1;
                     written += decoder.written;
                     break;
                 };
-                const end: usize = @intCast(decoder.stream.bitOffset()); // safe: successful decode consumed real bits from input
+                const end: usize = @intCast(decoder.stream.bitOffset()); // aegis: no-danger: successful decode consumed real bits from input
                 w.blocks[count] = .{ .start = begin, .end = end, .token = written, .len = decoder.written, .final = status == .done, .required = decoder.required, .max_distance = decoder.max_distance };
                 written += decoder.written;
                 decoder.written = 0;

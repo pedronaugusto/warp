@@ -62,7 +62,7 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
 
 /// Sums of each eight bytes, in four 64-bit lanes.
 inline fn sad(v: u8x32) u64x4 {
-    return asm ("vpsadbw %[z], %[v], %[r]"
+    return asm ("vpsadbw %[z], %[v], %[r]" // aegis: boundary: one instruction on vector registers, no memory
         : [r] "=x" (-> u64x4),
         : [v] "x" (v),
           [z] "x" (@as(u8x32, @splat(0))),
@@ -71,7 +71,7 @@ inline fn sad(v: u8x32) u64x4 {
 
 /// Unsigned bytes of `v` times the signed bytes of `w`, pairs added.
 inline fn maddubs(v: u8x32, w: u8x32) @Vector(16, u16) {
-    return asm ("vpmaddubsw %[w], %[v], %[r]"
+    return asm ("vpmaddubsw %[w], %[v], %[r]" // aegis: boundary: one instruction on vector registers, no memory
         : [r] "=x" (-> @Vector(16, u16)),
         : [v] "x" (v),
           [w] "x" (w),
@@ -80,7 +80,7 @@ inline fn maddubs(v: u8x32, w: u8x32) @Vector(16, u16) {
 
 /// 16-bit lanes times `m`, pairs added into 32-bit lanes.
 inline fn maddwd(v: @Vector(16, u16), m: @Vector(16, u16)) u32x8 {
-    return asm ("vpmaddwd %[m], %[v], %[r]"
+    return asm ("vpmaddwd %[m], %[v], %[r]" // aegis: boundary: one instruction on vector registers, no memory
         : [r] "=x" (-> u32x8),
         : [v] "x" (v),
           [m] "x" (m),

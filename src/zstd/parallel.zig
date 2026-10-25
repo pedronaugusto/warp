@@ -61,11 +61,11 @@ const Worker = struct {
     result: usize = 0,
 
     fn frame(w: *Worker, options: Encoder.Frame) void {
-        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // unreachable: output holds the whole-buffer bound
+        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // aegis: no-danger: output holds the whole-buffer bound
     }
 
     fn run(w: *Worker, params: Encoder.Params) void {
-        w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // unreachable: each block reserves raw bytes plus all possible partition headers
+        w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // aegis: no-danger: each block reserves raw bytes plus all possible partition headers
     }
 };
 
@@ -158,16 +158,16 @@ pub const Compressor = struct {
     pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
         std.debug.assert(buffer.len >= memory(options));
         const cfg = config(options) catch unreachable; // unreachable: valid options are a caller precondition
-        const workers: []Worker = @alignCast(std.mem.bytesAsSlice(Worker, buffer[0 .. @sizeOf(Worker) * @as(usize, options.concurrency)])); // safe: buffer is 64-byte aligned
+        const workers: []Worker = @alignCast(std.mem.bytesAsSlice(Worker, buffer[0 .. @sizeOf(Worker) * @as(usize, options.concurrency)])); // aegis: no-danger: buffer is 64-byte aligned
         var at = std.mem.alignForward(usize, @sizeOf(Worker) * workers.len, 64);
         const enc_size = Encoder.memory(cfg.encoder);
         for (workers) |*w| {
-            w.* = .{ .encoder = .initBuffer(@alignCast(buffer[at..][0..enc_size]), cfg.encoder), .input = buffer[at + enc_size ..][0 .. cfg.job_len + cfg.overlap], .output = buffer[at + enc_size + cfg.job_len + cfg.overlap ..][0..cfg.output_len] }; // safe: each worker starts at a 64-byte boundary
+            w.* = .{ .encoder = .initBuffer(@alignCast(buffer[at..][0..enc_size]), cfg.encoder), .input = buffer[at + enc_size ..][0 .. cfg.job_len + cfg.overlap], .output = buffer[at + enc_size + cfg.job_len + cfg.overlap ..][0..cfg.output_len] }; // aegis: no-danger: each worker starts at a 64-byte boundary
             at += enc_size + std.mem.alignForward(usize, cfg.job_len + cfg.overlap + cfg.output_len, 64);
         }
         const history = buffer[at..][0..cfg.overlap];
         at = std.mem.alignForward(usize, at + cfg.overlap, 64);
-        const jobs: []Job = @alignCast(std.mem.bytesAsSlice(Job, buffer[at..][0 .. workers.len * @sizeOf(Job)])); // safe: jobs follow aligned worker storage
+        const jobs: []Job = @alignCast(std.mem.bytesAsSlice(Job, buffer[at..][0 .. workers.len * @sizeOf(Job)])); // aegis: no-danger: jobs follow aligned worker storage
         for (jobs) |*job| job.* = .{};
         return .{ .options = options, .cfg = cfg, .workers = workers, .jobs = jobs, .history = history };
     }

@@ -70,7 +70,7 @@ pub const Chains = struct {
     prefix_idx: u32,
     low_limit: u32,
     next_to_update: u32,
-    end_idx: u32,
+    end_idx: u32, // aegis: no-danger: four positions on one axis, each compared with and subtracted from the others
     /// The tables hold LZ4MID's two hashes, not the chains'.
     mid: bool = false,
     /// The optimal parser's costs, when the levels reach it.
@@ -82,7 +82,7 @@ pub const Chains = struct {
     }
 
     pub fn initBuffer(buffer: []align(64) u8, optimal: bool) *Chains {
-        const c: *Chains = @ptrCast(@alignCast(buffer.ptr)); // safe: 64-aligned bytes of `memory`, the Chains first
+        const c: *Chains = @ptrCast(@alignCast(buffer.ptr)); // aegis: no-danger: 64-aligned bytes of `memory`, the Chains first
         c.hash = @splat(0);
         c.chain = @splat(0xFFFF);
         c.prefix_idx = window_gap;
@@ -90,7 +90,7 @@ pub const Chains = struct {
         c.next_to_update = window_gap;
         c.end_idx = window_gap;
         c.mid = false;
-        c.costs = if (optimal) @ptrCast(@alignCast(buffer[@sizeOf(Chains)..].ptr)) else null; // safe: the costs follow at a multiple of Chains' 8-byte alignment
+        c.costs = if (optimal) @ptrCast(@alignCast(buffer[@sizeOf(Chains)..].ptr)) else null; // aegis: no-danger: the costs follow at a multiple of Chains' 8-byte alignment
         return c;
     }
 

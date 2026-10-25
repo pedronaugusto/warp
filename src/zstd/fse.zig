@@ -8,6 +8,7 @@
 //! built at compile time.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const codes = @import("codes.zig");
 
 /// The largest table log a description may state before its use's limit
@@ -201,7 +202,7 @@ pub fn SeqTable(comptime max_log: u4) type {
 
         /// Build from counts; `base` and `extra` describe the code.
         pub fn build(t: *Self, norm: []const i16, log: u4, base: []const u32, extra: []const u8) void {
-            std.debug.assert(log <= max_log);
+            aegis.assert.invariant(log <= max_log, "log <= max_log");
             t.log = log;
             decodeCells(SeqCell, Code, Code.cell, norm, log, &t.cells, .{ .base = base, .extra = extra });
         }
@@ -244,7 +245,7 @@ pub fn Table(comptime max_log: u4) type {
         log: u4,
 
         pub fn build(t: *Self, norm: []const i16, log: u4) void {
-            std.debug.assert(log <= max_log);
+            aegis.assert.invariant(log <= max_log, "log <= max_log");
             t.log = log;
             const Plain = struct {
                 fn cell(_: void, symbol: u8, nb_bits: u8, next_state: u16) Cell {
@@ -489,7 +490,7 @@ pub fn EncodeTable(comptime table_log: u4, comptime max_symbol: u8) type {
         transforms: [@as(usize, max_symbol) + 1]Transform,
 
         pub fn build(t: *Self, norm: []const i16, log: u4) void {
-            std.debug.assert(log <= table_log);
+            aegis.assert.invariant(log <= table_log, "log <= table_log");
             std.debug.assert(norm.len <= @as(usize, max_symbol) + 1);
             const size: u32 = @as(u32, 1) << log;
             t.log = log;
