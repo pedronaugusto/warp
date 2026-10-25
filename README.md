@@ -353,9 +353,6 @@ compression writes the bytes `compress` does however the input arrives.
 `Decompress.memory(max_block_size)` is its window: 64 KiB of history, one
 block and one stored block; 8 MiB admits legacy frames.
 
-## Scope
-
-Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
 ### Brotli
 
 `warp.brotli.Decompressor.decompress` decodes RFC 7932 streams straight into
@@ -378,10 +375,36 @@ What the reference decoder (google/brotli 1.2.1) accepts, warp accepts, and
 what it refuses, warp refuses for the same reason; a captured corpus of its
 streams and verdicts checks it.
 
+### GDeflate
+
+`warp.gdeflate` writes and reads GDeflate, the DEFLATE variant DirectStorage
+1.1+ and nvCOMP decode on the GPU: DEFLATE's blocks over Deflate64's alphabet,
+their bits dealt across 32 lanes so 32 symbols decode at once. A page holds at
+most 64 KiB and is its own window; DirectStorage's tile stream holds a page a
+64 KiB tile, with the tiles' offsets.
+
+`Compressor.compress(in, out)` writes a tile stream at DEFLATE's levels (0
+stored, 1-9 zlib's scale, 10-12 the most compression); `compressPage` writes
+one page, as nvCOMP's batched API takes them. The engine and its parsers are
+DEFLATE's, and runs of matches at one distance are written as one Deflate64
+match of up to 65,538 bytes. `bound(len)` and `pageBound(len)` reserve the
+output. `init` takes the level's match state once, `initBuffer` caller memory
+of `memory(options)` bytes.
+
+`Decompressor.decompress(in, out, .{})` decodes a tile stream into at least the
+size `inspect(in)` gives; every tile must decode to its size.
+`decompressPage` decodes one page. A `Decompressor` holds one page's tables
+(about 12 KiB). `Diagnostic` records the tile, the byte and the reason of a
+refusal. Microsoft's reference codec (DirectStorage's GDeflate, Apache-2.0)
+decodes what warp writes at every level, warp decodes what it writes, and
+warp's lane writer, given the blocks and symbols of the reference's pages,
+writes them byte for byte: a captured corpus of its tile streams checks all
+three.
+
 ## Scope
 
-Raw DEFLATE, the RFC 1950 wrapper, gzip and Zstandard compression and decompression;
-Brotli decompression;
+Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
+Brotli decompression; GDeflate compression and decompression on the CPU;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

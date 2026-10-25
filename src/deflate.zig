@@ -8,7 +8,6 @@
 //! bytes however it arrives.
 
 const std = @import("std");
-const bits = @import("bits.zig");
 const match = @import("match.zig");
 const block = @import("deflate/block.zig");
 const parse_ = @import("deflate/parse.zig");
@@ -416,7 +415,7 @@ pub const Engine = struct {
     /// after a block, or where `end` says. With `keep_literals` the
     /// literals are kept apart (the bytes will move on before a block is
     /// written).
-    pub fn parse(e: *Engine, comptime keep_literals: bool, h: match.History, w: *bits.Writer, end: End) Progress {
+    pub fn parse(e: *Engine, comptime keep_literals: bool, h: match.History, w: anytype, end: End) Progress {
         if (e.primed < e.first) e.prime(h, end != .more);
         // Whole inputs keep hot counts and split state in a local builder;
         // a stream keeps the same state in its resumable engine.
@@ -425,7 +424,7 @@ pub const Engine = struct {
         defer if (!keep_literals) {
             e.b = whole;
         };
-        var c: parse_.Cursor(keep_literals) = .init(b, w, h.in, end != .more);
+        var c: parse_.Cursor(keep_literals, @TypeOf(w.*)) = .init(b, w, h.in, end != .more);
         defer c.save();
         b.ended = false;
         // Without a dictionary every position is in the input, and its
@@ -452,8 +451,8 @@ pub const Engine = struct {
     }
 
     /// Write the block in the making at the parse position, not final.
-    pub fn endBlock(e: *Engine, w: *bits.Writer, h: match.History) void {
-        var c: parse_.Cursor(true) = .init(&e.b, w, h.in, false);
+    pub fn endBlock(e: *Engine, w: anytype, h: match.History) void {
+        var c: parse_.Cursor(true, @TypeOf(w.*)) = .init(&e.b, w, h.in, false);
         defer c.save();
         if (e.level.parser == .optimal and e.strategy != .huffman_only and e.strategy != .rle) {
             optimal.finish(&c, e.opt, h, false, e.level.optimal);
@@ -499,8 +498,10 @@ pub const Engine = struct {
     }
 
     /// One complete raw DEFLATE stream of `in` into `w`, whose matches may
-    /// reach into the last 32 KiB of `dictionary`.
-    pub fn compressPasses(e: *Engine, in: []const u8, dictionary: []const u8, w: *bits.Writer, level: u4, strategy: Strategy, passes: ?u32) void {
+    /// reach into the last 32 KiB of `dictionary`. `w` is DEFLATE's bit
+    /// writer, or a writer of DEFLATE's blocks in another layout
+    /// (`parse.Cursor`).
+    pub fn compressPasses(e: *Engine, in: []const u8, dictionary: []const u8, w: anytype, level: u4, strategy: Strategy, passes: ?u32) void {
         const h: match.History = .{ .in = in, .dict = dictionary[dictionary.len -| match.window..] };
         // Small inputs use the tables' first entries only.
         e.start(h, 0, in.len + h.dict.len, level, strategy);
@@ -512,7 +513,7 @@ pub const Engine = struct {
 
     /// A verified short period needs no graph search. Keep its identical
     /// matches in one block rather than adding headers at graph boundaries.
-    fn periodic(e: *Engine, in: []const u8, w: *bits.Writer) bool {
+    fn periodic(e: *Engine, in: []const u8, w: anytype) bool {
         if (in.len < 512) return false;
         const sample = in[0..@min(in.len, 1024)];
         var period: usize = 0;
@@ -523,7 +524,7 @@ pub const Engine = struct {
             break;
         }
         if (period == 0) return false;
-        var c: parse_.Cursor(false) = .init(&e.b, w, in, true);
+        var c: parse_.Cursor(false, @TypeOf(w.*)) = .init(&e.b, w, in, true);
         for (in[0..period]) |byte| c.literalUnobserved(byte);
         var at = period;
         const min_len: usize = if (e.strategy == .filtered) 6 else 3;

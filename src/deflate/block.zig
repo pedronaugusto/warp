@@ -22,7 +22,7 @@ pub const Sequence = struct {
 
 pub const litlen_symbols = 288;
 pub const dist_symbols = 30;
-const end_of_block = 256;
+pub const end_of_block = 256;
 
 /// Each length's litlen symbol (257-285).
 const length_symbol: [259]u16 = blk: {
@@ -88,14 +88,14 @@ pub const Counts = struct {
 pub const Kinds = enum { any, optimal, no_dynamic, stored_only };
 
 /// One code: each symbol's codeword (bit-reversed) and length.
-const Code = struct {
+pub const Code = struct {
     litlen_codes: [litlen_symbols]u16,
     litlen_lens: [litlen_symbols]u8,
     dist_codes: [32]u16,
     dist_lens: [32]u8,
 };
 
-const fixed: Code = blk: {
+pub const fixed: Code = blk: {
     var c: Code = undefined;
     @memset(c.litlen_lens[0..144], 8);
     @memset(c.litlen_lens[144..256], 9);
@@ -110,7 +110,7 @@ const fixed: Code = blk: {
 
 /// A dynamic block's header, as written: the code lengths run-length
 /// coded with the code-length code.
-const Header = struct {
+pub const Header = struct {
     hlit: u16,
     hdist: u16,
     hclen: u16,
@@ -121,7 +121,7 @@ const Header = struct {
     pre_codes: [19]u16,
 };
 
-const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
+pub const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
 
 /// The dynamic code's lengths for `counts`, its header and its cost in bits;
 /// `codewords` makes the codewords. A cost of `beat` or more is not made
@@ -421,35 +421,52 @@ pub const Data = struct {
     raw: ?[]const u8,
 };
 
+/// Which kind of block `choose` picked.
+pub const Choice = enum { stored, fixed, dynamic };
+
+/// A dynamic block's code and header, with their codewords, when `choose`
+/// picks one.
+pub const Plan = struct { code: Code, header: Header };
+
+/// The cheapest block `kinds` allows for `counts`, which do not include the
+/// end of the block; `stored_cost` is what stored blocks of its bytes cost
+/// in the format being written, null when the bytes are not at hand. A
+/// block with nothing in it (`empty`) is the fixed code's end of block: no
+/// other block is as short. `plan` holds the dynamic code when that is
+/// picked. Writers of DEFLATE and of formats that deal its bits elsewhere
+/// (GDeflate) write the same choice.
+pub fn choose(counts_in: *const Counts, empty: bool, kinds: Kinds, stored_cost: ?u64, plan: *Plan) Choice {
+    if (kinds == .stored_only) return .stored;
+    if (empty) return .fixed;
+    var counts = counts_in.*;
+    counts.litlen[end_of_block] += 1;
+    const fixed_cost = 3 + dataCost(&counts, &fixed);
+    const dynamic_cost = if (kinds == .any or kinds == .optimal) 3 + dynamicCode(&counts, &plan.code, &plan.header, kinds == .optimal, fixed_cost - 3) else std.math.maxInt(u64);
+    if (stored_cost) |cost| {
+        if (cost < @min(fixed_cost, dynamic_cost)) return .stored;
+    }
+    if (fixed_cost <= dynamic_cost) return .fixed;
+    codewords(&plan.code, &plan.header);
+    return .dynamic;
+}
+
 /// Write one block: the matches in `seqs`, each after its literals, then
 /// `tail` literals; the cheapest kind `kinds` allows for `counts`, which
 /// do not include the end of the block.
-pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []const Sequence, tail: u32, counts_in: *const Counts, final: bool, kinds: Kinds) void {
-    if (kinds == .stored_only) return writeStored(w, data.raw.?, final);
-    // A block with nothing in it is the fixed code's end of block: no other
-    // block is as short.
-    if (seqs.len == 0 and tail == 0) {
-        w.add(@as(u64, @intFromBool(final)) | 2, 3);
-        writeData(interleaved, w, data.bytes, seqs, tail, &fixed);
-        return;
-    }
-    var counts = counts_in.*;
-    counts.litlen[end_of_block] += 1;
-    var code: Code = undefined;
-    var header: Header = undefined;
-    const fixed_cost = 3 + dataCost(&counts, &fixed);
-    const dynamic_cost = if (kinds == .any or kinds == .optimal) 3 + dynamicCode(&counts, &code, &header, kinds == .optimal, fixed_cost - 3) else std.math.maxInt(u64);
-    if (data.raw) |raw| {
-        if (storedCost(raw.len, w.bitPosition()) < @min(fixed_cost, dynamic_cost)) return writeStored(w, raw, final);
-    }
-    if (fixed_cost <= dynamic_cost) {
-        w.add(@as(u64, @intFromBool(final)) | 2, 3);
-        writeData(interleaved, w, data.bytes, seqs, tail, &fixed);
-    } else {
-        w.add(@as(u64, @intFromBool(final)) | 4, 3);
-        codewords(&code, &header);
-        writeHeader(w, &header);
-        writeData(interleaved, w, data.bytes, seqs, tail, &code);
+pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []const Sequence, tail: u32, counts: *const Counts, final: bool, kinds: Kinds) void {
+    const stored_cost: ?u64 = if (kinds == .stored_only) null else if (data.raw) |raw| storedCost(raw.len, w.bitPosition()) else null;
+    var plan: Plan = undefined;
+    switch (choose(counts, seqs.len == 0 and tail == 0, kinds, stored_cost, &plan)) {
+        .stored => writeStored(w, data.raw.?, final),
+        .fixed => {
+            w.add(@as(u64, @intFromBool(final)) | 2, 3);
+            writeData(interleaved, w, data.bytes, seqs, tail, &fixed);
+        },
+        .dynamic => {
+            w.add(@as(u64, @intFromBool(final)) | 4, 3);
+            writeHeader(w, &plan.header);
+            writeData(interleaved, w, data.bytes, seqs, tail, &plan.code);
+        },
     }
 }
 

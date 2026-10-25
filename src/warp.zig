@@ -1,5 +1,6 @@
 //! DEFLATE, zlib, gzip, zstd and LZ4: compression and decompression; Brotli
-//! decompression; CRC-32, CRC-32C and Adler-32.
+//! decompression; GDeflate compression and decompression on the CPU; CRC-32,
+//! CRC-32C and Adler-32.
 
 const checksum = @import("checksum.zig");
 const flate = @import("flate.zig");
@@ -11,6 +12,9 @@ pub const zstd = @import("zstd.zig");
 pub const lz4 = @import("lz4.zig");
 /// Brotli streams, decompression.
 pub const brotli = @import("brotli.zig");
+/// GDeflate pages and DirectStorage tile streams, compressed at DEFLATE's levels
+/// and decoded on the CPU.
+pub const gdeflate = @import("gdeflate.zig");
 
 /// The wrapper a compressor writes: raw DEFLATE, zlib or gzip.
 pub const Container = flate.Container;

@@ -89,11 +89,14 @@ pub const Builder = struct {
 /// What a parser carries from symbol to symbol, in registers, over the
 /// bytes `in`: `final` when they end there (the input's end, or a flush).
 /// With `keep_literals` the literals are kept in the builder, as a
-/// streaming window moves on before a block is written.
-pub fn Cursor(comptime keep_literals: bool) type {
+/// streaming window moves on before a block is written. Blocks go to a
+/// `Writer`: DEFLATE's bit writer, or a writer of a format that deals
+/// DEFLATE's bits elsewhere (GDeflate's lanes), which takes each block as
+/// `block.write` does through its `writeBlock`.
+pub fn Cursor(comptime keep_literals: bool, comptime Writer: type) type {
     return struct {
         b: *Builder,
-        w: *bits.Writer,
+        w: *Writer,
         in: []const u8,
         final: bool,
         run: u32,
@@ -102,7 +105,7 @@ pub fn Cursor(comptime keep_literals: bool) type {
         const Self = @This();
         pub const keeps_literals = keep_literals;
 
-        pub fn init(b: *Builder, w: *bits.Writer, in: []const u8, final: bool) Self {
+        pub fn init(b: *Builder, w: *Writer, in: []const u8, final: bool) Self {
             return .{ .b = b, .w = w, .in = in, .final = final, .run = b.run, .pending = b.pending };
         }
 
@@ -230,7 +233,9 @@ pub fn Cursor(comptime keep_literals: bool) type {
             const b = c.b;
             const raw: ?[]const u8 = if (b.start >= 0) c.in[@intCast(b.start)..end] else null;
             const data: block.Data = .{ .bytes = if (keep_literals) b.lits[0..b.n_lits] else raw.?, .raw = raw };
-            block.write(!keep_literals, c.w, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);
+            if (Writer == bits.Writer) {
+                block.write(!keep_literals, c.w, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);
+            } else c.w.writeBlock(!keep_literals, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);
             b.n = 0;
             b.n_lits = 0;
             b.counts = .{};

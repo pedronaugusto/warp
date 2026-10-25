@@ -69,6 +69,17 @@ windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 
+GDeflate is DEFLATE's engine with another bit layout beneath `warp.gdeflate`.
+The parsers hand each finished block to a writer: DEFLATE's bit writer, or
+GDeflate's lane writer, which serializes the block the engine chose
+(`deflate/block.zig`'s `choose`: kind, code and header, with the format's own
+stored cost) into 32 lanes, playing the decoder's reader to reserve each lane's
+next word. The page decoder uses DEFLATE's table builder at Deflate64's sizes;
+its round loop, with a pending match per lane, is GDeflate's own. A pending
+match's source always lies before its place, and every other pending match's
+place after it, so a copy reads only written output. The tile stream and its
+offsets are checked before any page is decoded.
+
 LZ4 has its own block engine, parsers and frame owners beneath `warp.lz4`, and
 no entropy stage: it imports neither the bit layer nor the Huffman builders.
 The block decoder holds no state, so the whole-buffer frame decoder is a

@@ -37,4 +37,6 @@ test {
     _ = @import("testing/lz4_test.zig");
     _ = @import("brotli.zig");
     _ = @import("testing/brotli_decode_test.zig");
+    _ = @import("gdeflate.zig");
+    _ = @import("testing/gdeflate_test.zig");
 }

@@ -32,6 +32,8 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "containers", .patterns = &.{ "src/container.zig", "src/gzip.zig" } },
     .{ .name = "unwrap", .patterns = &.{"src/unwrap.zig"} },
     .{ .name = "frame", .patterns = &.{ "src/Decompressor.zig", "src/Compressor.zig", "src/stream/Inflate.zig", "src/stream/Deflate.zig" } },
+    .{ .name = "gdeflate pages", .patterns = &.{ "src/gdeflate/decode.zig", "src/gdeflate/lanes.zig", "src/gdeflate/Diagnostic.zig" } },
+    .{ .name = "gdeflate", .patterns = &.{"src/gdeflate.zig"} },
     .{ .name = "stream", .patterns = &.{"src/stream.zig"} },
     .{ .name = "index", .patterns = &.{"src/Index.zig"} },
     .{ .name = "blocked gzip", .patterns = &.{"src/Bgzf.zig"} },
@@ -105,6 +107,7 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "lz4-invalid.corpus",
         "brotli-streams.corpus",
         "brotli-invalid.corpus",
+        "gdeflate.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };
