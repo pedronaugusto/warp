@@ -101,6 +101,9 @@ pub const length_base = [29]u16{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23
 pub const length_extra = [29]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
 pub const dist_base = [30]u16{ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
 pub const dist_extra = [30]u8{ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
+/// Deflate64's distance codes: DEFLATE's, and 30 and 31 reaching 65,536.
+pub const dist_base64 = dist_base ++ [2]u16{ 32769, 49153 };
+pub const dist_extra64 = dist_extra ++ [2]u8{ 14, 14 };
 
 /// The entry for an invalid code of `len` bits.
 pub fn invalid(len: u32) u32 {
@@ -122,8 +125,7 @@ fn symbolEntry(comptime alphabet: Alphabet, sym: usize, len: u32) u32 {
             return invalid(len);
         },
         .dist, .dist64 => {
-            if (alphabet == .dist64 and sym >= 30) return (@as(u32, if (sym == 30) 32769 else 49153) << 16) | (len << 8) | (len + 14);
-            if (sym < 30) return (@as(u32, dist_base[sym]) << 16) | (len << 8) | (len + dist_extra[sym]);
+            if (sym < (if (alphabet == .dist64) 32 else 30)) return (@as(u32, dist_base64[sym]) << 16) | (len << 8) | (len + dist_extra64[sym]);
             return invalid(len);
         },
     }

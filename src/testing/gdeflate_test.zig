@@ -440,6 +440,38 @@ test "warp's tile streams round-trip at every level, through both decoders" {
     }
 }
 
+test "a page's matches reach back past 32 KiB at every level, with distance codes 30 and 31" {
+    const gpa = testing.allocator;
+    var d: gdeflate.Decompressor = .init;
+    // Text repeated 40,000 bytes on (code 30), and 55,000 bytes on (31).
+    for ([_]struct { []const u8, u16 }{ .{ "text 2 15000 + noise 7 25000 + text 2 15000", 30 }, .{ "text 3 10000 + noise 8 45000 + text 3 10000", 31 } }) |case| {
+        const spec, const symbol = case;
+        const in = try corpus.input(gpa, spec);
+        defer gpa.free(in);
+        try testing.expect(in.len <= gdeflate.tile_size);
+        const out = try gpa.alloc(u8, gdeflate.pageBound(in.len));
+        defer gpa.free(out);
+        const back = try gpa.alloc(u8, in.len);
+        defer gpa.free(back);
+        for (1..13) |level| {
+            errdefer std.debug.print("{s} level {d}\n", .{ spec, level });
+            var c: gdeflate.Compressor = try .init(gpa, .{ .level = @intCast(level) });
+            defer c.deinit();
+            const n = try c.compressPage(in, out);
+            try testing.expectEqual(in.len, try d.decompressPage(out[0..n], back, .{}));
+            try testing.expectEqualSlices(u8, in, back);
+            var p: Plain = .{ .in = out[0..n], .gpa = gpa };
+            defer p.deinit();
+            try testing.expectEqual(in.len, try p.page(back));
+            var seen = false;
+            for (p.blocks.items) |b| for (b.tokens.items) |t| {
+                seen = seen or (t == .match and t.match.distance_symbol == symbol);
+            };
+            try testing.expect(seen);
+        }
+    }
+}
+
 test "pages stay within their bound, and the stream within its own" {
     const gpa = testing.allocator;
     var c: gdeflate.Compressor = try .init(gpa, .{ .level = 6 });

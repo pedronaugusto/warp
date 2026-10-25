@@ -16,12 +16,15 @@ pub const Sequence = struct {
     literals: u32,
     /// 3-258.
     length: u16,
-    /// 1-32768.
+    /// 1-32768; up to 65,535 in a GDeflate page.
     distance: u16,
 };
 
 pub const litlen_symbols = 288;
-pub const dist_symbols = 30;
+/// Deflate64's distance codes: DEFLATE's 30, and 30 and 31 for distances
+/// past 32 KiB, which GDeflate writes. A DEFLATE stream never counts them,
+/// so its codes and costs are those of DEFLATE's 30.
+pub const dist_symbols = 32;
 pub const end_of_block = 256;
 
 /// Each length's litlen symbol (257-285).
@@ -37,24 +40,24 @@ const length_symbol: [259]u16 = blk: {
 };
 
 /// Each distance's symbol: distances 1-256 directly, longer ones by their
-/// value divided by 128 (zlib's `_dist_code`).
+/// value divided by 128 (zlib's `_dist_code`), to 65,536.
 const dist_symbol_small: [256]u8 = blk: {
     @setEvalBranchQuota(100_000);
     var t: [256]u8 = undefined;
-    for (0..30) |s| {
-        const span: usize = @as(usize, 1) << decode.dist_extra[s];
-        for (decode.dist_base[s]..decode.dist_base[s] + span) |d| {
+    for (0..dist_symbols) |s| {
+        const span: usize = @as(usize, 1) << decode.dist_extra64[s];
+        for (decode.dist_base64[s]..decode.dist_base64[s] + span) |d| {
             if (d <= 256) t[d - 1] = s;
         }
     }
     break :blk t;
 };
-const dist_symbol_large: [256]u8 = blk: {
-    @setEvalBranchQuota(100_000);
-    var t: [256]u8 = undefined;
-    for (0..30) |s| {
-        const span: usize = @as(usize, 1) << decode.dist_extra[s];
-        for (decode.dist_base[s]..decode.dist_base[s] + span) |d| {
+const dist_symbol_large: [512]u8 = blk: {
+    @setEvalBranchQuota(200_000);
+    var t: [512]u8 = undefined;
+    for (0..dist_symbols) |s| {
+        const span: usize = @as(usize, 1) << decode.dist_extra64[s];
+        for (decode.dist_base64[s]..decode.dist_base64[s] + span) |d| {
             if (d > 256) t[(d - 1) >> 7] = s;
         }
     }
@@ -130,25 +133,24 @@ pub const precode_order = [19]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3
 /// header takes.
 fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_header: bool, beat: u64) u64 {
     var lit_counts = counts.litlen;
-    var dist_counts: [32]u32 = @splat(0);
-    @memcpy(dist_counts[0..dist_symbols], &counts.dist);
+    var dist_counts = counts.dist;
     // At least two codes each, so neither code is incomplete (zlib's rule
     // for the codes it writes; some decoders refuse a one-code code).
     ensureTwo(lit_counts[0..286]);
-    ensureTwo(dist_counts[0..30]);
+    ensureTwo(&dist_counts);
     encode.buildLengths(&lit_counts, 15, &code.litlen_lens);
     encode.buildLengths(&dist_counts, 15, &code.dist_lens);
 
     var hlit: usize = 286;
     while (hlit > 257 and code.litlen_lens[hlit - 1] == 0) hlit -= 1;
-    var hdist: usize = 30;
+    var hdist: usize = dist_symbols;
     while (hdist > 1 and code.dist_lens[hdist - 1] == 0) hdist -= 1;
     header.hlit = @intCast(hlit);
     header.hdist = @intCast(hdist);
 
     // The lengths, run-length coded: 16 repeats the last length 3-6
     // times, 17 writes 3-10 zeros, 18 writes 11-138.
-    var lens: [286 + 30]u8 = undefined;
+    var lens: [286 + dist_symbols]u8 = undefined;
     @memcpy(lens[0..hlit], code.litlen_lens[0..hlit]);
     @memcpy(lens[hlit..][0..hdist], code.dist_lens[0..hdist]);
     var pre_counts: [19]u32 = @splat(0);
@@ -368,8 +370,8 @@ const litlen_extra: [litlen_symbols]u8 = blk: {
     break :blk e;
 };
 
-/// Each distance symbol's extra bits, padded to 32.
-const dist_extra: [32]u8 = decode.dist_extra ++ [2]u8{ 0, 0 };
+/// Each distance symbol's extra bits.
+const dist_extra: [dist_symbols]u8 = decode.dist_extra64;
 
 /// The bits of the block's symbols and extra bits with `code`: sixteen
 /// symbols a step.
@@ -383,10 +385,8 @@ fn dataCost(counts: *const Counts, code: *const Code) u64 {
         const e: u64x16 = @as(@Vector(16, u8), litlen_extra[i..][0..16].*);
         acc += c * (l + e);
     }
-    var dist: [32]u32 = @splat(0);
-    @memcpy(dist[0..dist_symbols], &counts.dist);
     inline for (0..2) |half| {
-        const c: u64x16 = @as(@Vector(16, u32), dist[half * 16 ..][0..16].*);
+        const c: u64x16 = @as(@Vector(16, u32), counts.dist[half * 16 ..][0..16].*);
         const l: u64x16 = @as(@Vector(16, u8), code.dist_lens[half * 16 ..][0..16].*);
         const e: u64x16 = @as(@Vector(16, u8), dist_extra[half * 16 ..][0..16].*);
         acc += c * (l + e);

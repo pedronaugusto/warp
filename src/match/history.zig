@@ -2,19 +2,34 @@
 //! lengths, hashing, and moving stored positions.
 //!
 //! Positions count from the input's first byte; a dictionary's bytes come
-//! before it, at negative positions. Tables hold positions as 16-bit
-//! offsets from a base that moves 32 KiB at a time (every entry moved with
-//! it, saturating at "none"), which halves their cache footprint against
-//! 32-bit positions.
+//! before it, at negative positions. Tables hold positions as offsets from
+//! a base that moves a window at a time (every entry moved with it,
+//! saturating at "none"): 16 bits over DEFLATE's 32 KiB, which halves their
+//! cache footprint against 32-bit positions, and 32 over a larger window
+//! (GDeflate's 64 KiB).
 
 const std = @import("std");
 
+/// DEFLATE's window.
 pub const window = 32768;
 pub const min_match = 3;
 pub const max_match = 258;
 
+/// A match: its length (3-258) and distance.
+pub const Match = struct { length: u16, offset: u16 };
+
+/// The most matches one search finds: one per length.
+pub const max_matches = max_match - min_match + 1;
+
+/// A stored position over a window of `window_` bytes.
+pub fn Position(comptime window_: u32) type {
+    return if (window_ <= 32768) i16 else i32;
+}
+
 /// The empty entry: older than anything in the window.
-pub const none: i16 = std.math.minInt(i16);
+pub fn none(comptime P: type) P {
+    return std.math.minInt(P);
+}
 
 /// What a matchfinder searches: the input, and the last bytes of a
 /// dictionary before it.
@@ -93,18 +108,20 @@ pub inline fn hash(word: u32, bits: u5) u32 {
     return (word *% 0x1e35a7bd) >> @intCast(@as(u6, 32) - bits);
 }
 
-/// Every entry moved back `window` positions, saturating at `none`.
-pub fn rebase(table: []i16) void {
+/// Every entry moved back `window_` positions, saturating at `none`.
+pub fn rebase(comptime window_: u32, table: []Position(window_)) void {
+    const P = Position(window_);
     const lanes = 16;
-    const i16xn = @Vector(lanes, i16);
-    const shift: i16xn = @splat(window - 1);
+    const Pxn = @Vector(lanes, P);
+    // In two steps: `window_ - 1` and one, each a value of the entry type.
+    const shift: Pxn = @splat(window_ - 1);
     var i: usize = 0;
     // `-|` saturates; an entry at `none` + anything stays `none`.
     while (i + lanes <= table.len) : (i += lanes) {
-        const v: i16xn = table[i..][0..lanes].*;
-        table[i..][0..lanes].* = (v -| shift) -| @as(i16xn, @splat(1));
+        const v: Pxn = table[i..][0..lanes].*;
+        table[i..][0..lanes].* = (v -| shift) -| @as(Pxn, @splat(1));
     }
-    for (table[i..]) |*e| e.* = (e.* -| (window - 1)) -| 1;
+    for (table[i..]) |*e| e.* = (e.* -| @as(P, window_ - 1)) -| 1;
 }
 
 test "match lengths: across eight-byte steps, at the limit, and into the input from a dictionary" {
@@ -120,8 +137,14 @@ test "match lengths: across eight-byte steps, at the limit, and into the input f
 }
 
 test "rebase moves entries back a window, and old ones become none" {
-    var t = [_]i16{ none, -1, 0, 1, 32767, -32767, 100, 30000, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
-    rebase(&t);
-    const want = [_]i16{ none, none, none, -32767, -1, none, -32668, -2768, -32763, -32762, -32761, -32760, -32759, -32758, -32757, -32756, -32755, -32754 };
+    const n = none(i16);
+    var t = [_]i16{ n, -1, 0, 1, 32767, -32767, 100, 30000, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+    rebase(window, &t);
+    const want = [_]i16{ n, n, n, -32767, -1, n, -32668, -2768, -32763, -32762, -32761, -32760, -32759, -32758, -32757, -32756, -32755, -32754 };
     try std.testing.expectEqualSlices(i16, &want, &t);
+    // Over 64 KiB, in 32 bits.
+    const n32 = none(i32);
+    var w = [_]i32{ n32, -1, 0, 1, 65535, 65536, 100_000 };
+    rebase(65536, &w);
+    try std.testing.expectEqualSlices(i32, &.{ n32, -65537, -65536, -65535, -1, 0, 34464 }, &w);
 }

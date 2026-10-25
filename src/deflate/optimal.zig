@@ -18,8 +18,7 @@ const split = @import("split.zig");
 const huffman = @import("../huffman.zig");
 
 const decode = huffman.decode;
-const BinaryTrees = match.BinaryTrees;
-pub const Match = BinaryTrees.Match;
+pub const Match = match.Match;
 
 /// How a level searches and optimizes.
 pub const Params = struct {
@@ -60,17 +59,18 @@ const item_mask = (1 << item_shift) - 1;
 const Costs = struct {
     literal: [256]u32,
     length: [match.max_match + 1]u32,
-    offset: [30]u32,
+    offset: [block.dist_symbols]u32,
 };
 
-/// Each distance's symbol, all of them: the path search asks for many.
-const offset_slot: [match.window + 1]u8 = blk: {
-    @setEvalBranchQuota(200_000);
-    var t: [match.window + 1]u8 = undefined;
+/// Each distance's symbol, every distance a match holds: the path search
+/// asks for many. DEFLATE's reach only the first 32 KiB of it.
+const offset_slot: [1 << 16]u8 = blk: {
+    @setEvalBranchQuota(400_000);
+    var t: [1 << 16]u8 = undefined;
     t[0] = 0;
-    for (0..30) |s| {
-        const first = decode.dist_base[s];
-        for (first..first + (1 << decode.dist_extra[s])) |d| t[d] = s;
+    for (0..block.dist_symbols) |s| {
+        const first = decode.dist_base64[s];
+        for (first..@min(@as(usize, first) + (1 << decode.dist_extra64[s]), 1 << 16)) |d| t[d] = s;
     }
     break :blk t;
 };
@@ -172,7 +172,10 @@ pub const State = struct {
 /// Parse from the builder's position: find and keep matches, and write each
 /// block when it ends. Returns after a block, or where the bytes at hand
 /// end.
-pub fn parse(comptime dictionary: bool, comptime full_window: bool, c: anytype, o: *State, bt: *BinaryTrees, h: match.History, params: Params) void {
+/// `bt` is the window's binary trees (`match.BinaryTrees` or another
+/// window's).
+pub fn parse(comptime dictionary: bool, comptime full_window: bool, c: anytype, o: *State, bt: anytype, h: match.History, params: Params) void {
+    const BinaryTrees = @TypeOf(bt.*);
     const n = h.in.len;
     const stop = c.stop();
     var p = c.b.p;
@@ -425,7 +428,7 @@ fn setCostsFromLengths(costs: *Costs, lengths: *const block.Lengths) void {
         const code_len: u32 = lengths.litlen[257 + slot];
         costs.length[len] = ((if (code_len != 0) code_len else length_unused_bits) + decode.length_extra[slot]) * bit_cost;
     }
-    for (&costs.offset, lengths.dist[0..30], decode.dist_extra) |*cost, len, extra| cost.* = (@as(u32, if (len != 0) len else offset_unused_bits) + extra) * bit_cost;
+    for (&costs.offset, lengths.dist, decode.dist_extra64) |*cost, len, extra| cost.* = (@as(u32, if (len != 0) len else offset_unused_bits) + extra) * bit_cost;
 }
 
 /// The first pass's costs: defaults from the block's literals and the
@@ -491,7 +494,7 @@ inline fn defaultLengthCost(len: u32, length_cost: u32) u32 {
 /// Every offset symbol equally likely: -log2(1/30) bits, and its extra
 /// bits.
 inline fn defaultOffsetCost(slot: usize) u32 {
-    return 4 * bit_cost + (907 * bit_cost) / 1000 + @as(u32, decode.dist_extra[slot]) * bit_cost;
+    return 4 * bit_cost + (907 * bit_cost) / 1000 + @as(u32, decode.dist_extra64[slot]) * bit_cost;
 }
 
 /// Turn the path into the builder's sequences, counts and kept literals.

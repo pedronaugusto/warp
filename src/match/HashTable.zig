@@ -4,139 +4,147 @@
 //! position that has no longer match, and little output (0.45% of
 //! Silesia's), and the level is for speed.
 
-const HashTable = @This();
-
 const std = @import("std");
 const match = @import("history.zig");
 
-pub const bucket = 2;
+/// The table over a window of `window` bytes.
+pub fn HashTableFor(comptime window: u32) type {
+    return struct {
+        const HashTable = @This();
+        const Pos = match.Position(window);
+        const none = match.none(Pos);
 
-/// Private: the latest positions per four-byte hash, newest first.
-table: [][bucket]i16,
-/// Private: the table's size in use, in bits.
-bits: u5 = 0,
-/// Private: positions are stored relative to this.
-base: isize = 0,
-/// Private: the farthest a match reaches back.
-window: u32 = match.window,
+        pub const bucket = 2;
 
-pub fn memory(bits: u5) usize {
-    return (@as(usize, 1) << bits) * bucket * 2;
-}
+        /// Private: the latest positions per four-byte hash, newest first.
+        table: [][bucket]Pos,
+        /// Private: the table's size in use, in bits.
+        bits: u5 = 0,
+        /// Private: positions are stored relative to this.
+        base: isize = 0,
+        /// Private: the farthest a match reaches back.
+        window: u32 = window,
 
-pub fn reset(ht: *HashTable, first: isize, bits: u5) void {
-    std.debug.assert(first >= -match.window);
-    ht.bits = bits;
-    @memset(ht.table[0 .. @as(usize, 1) << bits], .{ match.none, match.none });
-    ht.base = if (first < 0) -match.window else 0;
-}
+        pub fn memory(bits: u5) usize {
+            return (@as(usize, 1) << bits) * bucket * @sizeOf(Pos);
+        }
 
-/// Moved back `n` positions: the buffer the positions index slid by `n`.
-pub fn slide(ht: *HashTable, n: usize) void {
-    ht.base -= @intCast(n);
-}
+        pub fn reset(ht: *HashTable, first: isize, bits: u5) void {
+            std.debug.assert(first >= -@as(isize, window));
+            ht.bits = bits;
+            @memset(ht.table[0 .. @as(usize, 1) << bits], .{ none, none });
+            ht.base = if (first < 0) -@as(isize, window) else 0;
+        }
 
-/// Forget every position: a later match reaches none before this.
-pub fn forget(ht: *HashTable) void {
-    @memset(ht.table[0 .. @as(usize, 1) << ht.bits], .{ match.none, match.none });
-}
+        /// Moved back `n` positions: the buffer the positions index slid by `n`.
+        pub fn slide(ht: *HashTable, n: usize) void {
+            ht.base -= @intCast(n);
+        }
 
-inline fn advance(ht: *HashTable, p: isize) void {
-    if (p - ht.base >= match.window) {
-        @branchHint(.unlikely);
-        const n = @as(usize, 1) << ht.bits;
-        match.rebase(std.mem.bytesAsSlice(i16, std.mem.sliceAsBytes(ht.table[0..n])));
-        ht.base += match.window;
-    }
-}
+        /// Forget every position: a later match reaches none before this.
+        pub fn forget(ht: *HashTable) void {
+            @memset(ht.table[0 .. @as(usize, 1) << ht.bits], .{ none, none });
+        }
 
-/// The longer of the matches at the two positions with `p`'s hash, if
-/// either is four bytes or more; at most `max_len` (`max_len >= 5`).
-/// Inserts `p`. Returns the length (0 for none) and sets `distance`.
-pub inline fn longestMatch(ht: *HashTable, comptime dictionary: bool, comptime full_window: bool, h: match.History, p: isize, max_len: u32, distance: *u32) u32 {
-    ht.advance(p);
-    const base = ht.base;
-    const cur: i16 = @intCast(p - base);
-    const window: i32 = if (full_window) match.window else @intCast(ht.window);
-    const cutoff: i32 = @as(i32, cur) - window;
-    const word = h.load32Of(false, p);
-    const table = ht.table;
-    const bits = ht.bits;
-    const e = &table[match.hash(word, bits)];
-    const cands = e.*;
-    e.* = .{ cur, cands[0] };
-    // The next position's bucket, fetched while this one is compared.
-    @prefetch(&table[match.hash(h.load32Of(false, p + 1), bits)], .{ .rw = .write });
-    var best: u32 = 0;
-    var best_dist: u32 = 0;
-    inline for (0..bucket) |i| {
-        if (cands[i] > cutoff) {
-            const c = base + cands[i];
-            if (h.load32Of(dictionary, c) == word) {
-                const len = h.matchLengthOf(dictionary, c, p, 4, max_len);
-                if (len > best) {
-                    best = len;
-                    best_dist = @intCast(p - c);
+        inline fn advance(ht: *HashTable, p: isize) void {
+            if (p - ht.base >= window) {
+                @branchHint(.unlikely);
+                const n = @as(usize, 1) << ht.bits;
+                match.rebase(window, std.mem.bytesAsSlice(Pos, std.mem.sliceAsBytes(ht.table[0..n])));
+                ht.base += window;
+            }
+        }
+
+        /// The longer of the matches at the two positions with `p`'s hash, if
+        /// either is four bytes or more; at most `max_len` (`max_len >= 5`).
+        /// Inserts `p`. Returns the length (0 for none) and sets `distance`.
+        pub inline fn longestMatch(ht: *HashTable, comptime dictionary: bool, comptime full_window: bool, h: match.History, p: isize, max_len: u32, distance: *u32) u32 {
+            ht.advance(p);
+            const base = ht.base;
+            const cur: Pos = @intCast(p - base);
+            const reach: i32 = if (full_window) window else @intCast(ht.window);
+            const cutoff: i32 = @as(i32, cur) - reach;
+            const word = h.load32Of(false, p);
+            const table = ht.table;
+            const bits = ht.bits;
+            const e = &table[match.hash(word, bits)];
+            const cands = e.*;
+            e.* = .{ cur, cands[0] };
+            // The next position's bucket, fetched while this one is compared.
+            @prefetch(&table[match.hash(h.load32Of(false, p + 1), bits)], .{ .rw = .write });
+            var best: u32 = 0;
+            var best_dist: u32 = 0;
+            inline for (0..bucket) |i| {
+                if (cands[i] > cutoff) {
+                    const c = base + cands[i];
+                    if (h.load32Of(dictionary, c) == word) {
+                        const len = h.matchLengthOf(dictionary, c, p, 4, max_len);
+                        if (len > best) {
+                            best = len;
+                            best_dist = @intCast(p - c);
+                        }
+                    }
+                }
+            }
+            distance.* = best_dist;
+            return best;
+        }
+
+        /// Insert `count` positions from `p` (`p >= 0`) without searching.
+        pub inline fn skip(ht: *HashTable, h: match.History, p: isize, count: u32) void {
+            ht.insert(false, h, p, count);
+        }
+
+        /// Insert a dictionary's positions, which lie before the input.
+        pub fn prime(ht: *HashTable, h: match.History, p: isize, count: u32) void {
+            ht.insert(true, h, p, count);
+        }
+
+        inline fn insert(ht: *HashTable, comptime dictionary: bool, h: match.History, p: isize, count: u32) void {
+            var q = p;
+            const end = p + match.offset(count);
+            while (q < end) {
+                ht.advance(q);
+                // Up to the next window boundary, with the table in locals: no
+                // store into it makes the compiler reload them.
+                const base = ht.base;
+                const stop = @min(end, base + window);
+                const table = ht.table;
+                const bits = ht.bits;
+                // Four positions a step: their hashes before any store, then the
+                // stores in order.
+                while (q + 4 <= stop) : (q += 4) {
+                    const h0 = match.hash(h.load32Of(dictionary, q), bits);
+                    const h1 = match.hash(h.load32Of(dictionary, q + 1), bits);
+                    const h2 = match.hash(h.load32Of(dictionary, q + 2), bits);
+                    const h3 = match.hash(h.load32Of(dictionary, q + 3), bits);
+                    const cur: Pos = @intCast(q - base);
+                    const o0 = table[h0][0];
+                    table[h0] = .{ cur, o0 };
+                    const o1 = table[h1][0];
+                    table[h1] = .{ cur + 1, o1 };
+                    const o2 = table[h2][0];
+                    table[h2] = .{ cur + 2, o2 };
+                    const o3 = table[h3][0];
+                    table[h3] = .{ cur + 3, o3 };
+                }
+                while (q < stop) : (q += 1) {
+                    const e = &table[match.hash(h.load32Of(dictionary, q), bits)];
+                    // The old entry first: `e.* = .{ new, e[0] }` would write the
+                    // first field before reading it.
+                    const older = e[0];
+                    e.* = .{ @intCast(q - base), older };
                 }
             }
         }
-    }
-    distance.* = best_dist;
-    return best;
-}
-
-/// Insert `count` positions from `p` (`p >= 0`) without searching.
-pub inline fn skip(ht: *HashTable, h: match.History, p: isize, count: u32) void {
-    ht.insert(false, h, p, count);
-}
-
-/// Insert a dictionary's positions, which lie before the input.
-pub fn prime(ht: *HashTable, h: match.History, p: isize, count: u32) void {
-    ht.insert(true, h, p, count);
-}
-
-inline fn insert(ht: *HashTable, comptime dictionary: bool, h: match.History, p: isize, count: u32) void {
-    var q = p;
-    const end = p + match.offset(count);
-    while (q < end) {
-        ht.advance(q);
-        // Up to the next window boundary, with the table in locals: no
-        // store into it makes the compiler reload them.
-        const base = ht.base;
-        const stop = @min(end, base + match.window);
-        const table = ht.table;
-        const bits = ht.bits;
-        // Four positions a step: their hashes before any store, then the
-        // stores in order.
-        while (q + 4 <= stop) : (q += 4) {
-            const h0 = match.hash(h.load32Of(dictionary, q), bits);
-            const h1 = match.hash(h.load32Of(dictionary, q + 1), bits);
-            const h2 = match.hash(h.load32Of(dictionary, q + 2), bits);
-            const h3 = match.hash(h.load32Of(dictionary, q + 3), bits);
-            const cur: i16 = @intCast(q - base);
-            const o0 = table[h0][0];
-            table[h0] = .{ cur, o0 };
-            const o1 = table[h1][0];
-            table[h1] = .{ cur + 1, o1 };
-            const o2 = table[h2][0];
-            table[h2] = .{ cur + 2, o2 };
-            const o3 = table[h3][0];
-            table[h3] = .{ cur + 3, o3 };
-        }
-        while (q < stop) : (q += 1) {
-            const e = &table[match.hash(h.load32Of(dictionary, q), bits)];
-            // The old entry first: `e.* = .{ new, e[0] }` would write the
-            // first field before reading it.
-            const older = e[0];
-            e.* = .{ @intCast(q - base), older };
-        }
-    }
+    };
 }
 
 test "both positions of a bucket are candidates, the older one too" {
     // "wxyz" at 0, 10 and 20; from 0 it runs on longer than from 10.
     const in = "wxyz12345_wxyz9999__wxyz1234567890";
-    var table: [1 << 10][bucket]i16 = undefined;
+    const HashTable = HashTableFor(match.window);
+    var table: [1 << 10][HashTable.bucket]i16 = undefined;
     var ht: HashTable = .{ .table = &table };
     ht.reset(0, 10);
     const h: match.History = .{ .in = in };

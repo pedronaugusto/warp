@@ -47,7 +47,7 @@ pub const Compressor = struct {
     pub fn memory(options: Options) usize {
         std.debug.assert(chunkLen(options) > 0);
         std.debug.assert(options.concurrency > 0);
-        const sizes = deflate.Sizes.of(options.level, options.strategy, chunkLen(options));
+        const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, chunkLen(options));
         return stride(options, sizes) * options.concurrency + 32768;
     }
 
@@ -56,7 +56,7 @@ pub const Compressor = struct {
         return options.chunk_len.raw();
     }
 
-    fn stride(options: Options, sizes: deflate.Sizes) usize {
+    fn stride(options: Options, sizes: deflate.Engine.Sizes) usize {
         return std.mem.alignForward(usize, @sizeOf(Worker), 64) +
             std.mem.alignForward(usize, sizes.memory(), 64) + 32768 +
             std.mem.alignForward(usize, chunkLen(options), 64) +
@@ -75,7 +75,7 @@ pub const Compressor = struct {
     pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
         std.debug.assert(buffer.len >= memory(options));
         const owned = buffer[0..memory(options)];
-        const sizes = deflate.Sizes.of(options.level, options.strategy, chunkLen(options));
+        const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, chunkLen(options));
         const step = stride(options, sizes);
         // Worker records are kept contiguously at the front. All engine
         // regions start after the records, at a 64-byte boundary.

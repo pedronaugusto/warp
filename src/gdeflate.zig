@@ -9,7 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const decode = @import("gdeflate/decode.zig");
 const lanes = @import("gdeflate/lanes.zig");
-const DeflateCompressor = @import("Compressor.zig");
+const deflate = @import("deflate.zig");
 
 /// Where a page or tile stream was refused, and why.
 pub const Diagnostic = @import("gdeflate/Diagnostic.zig");
@@ -149,10 +149,21 @@ const Tiles = struct {
     }
 };
 
-/// Compression at one of DEFLATE's levels: the engine's match state for
-/// 64 KiB pages, taken once.
+/// Compression at one of DEFLATE's levels: the engine's match state over
+/// a page's whole 64 KiB, taken once, so a match reaches anywhere back in
+/// its page (Deflate64's distance codes 30 and 31).
 pub const Compressor = struct {
-    deflate: DeflateCompressor,
+    /// Private: the engine's tables.
+    engine: Engine,
+    /// Private: the level the tables were sized for.
+    level: u4,
+    /// Private: the memory `init` allocated, freed by `deinit`; empty after
+    /// `initBuffer`.
+    owned: []align(64) u8,
+    /// Private: the allocator of `owned`.
+    gpa: Allocator,
+
+    const Engine = deflate.EngineFor(tile_size);
 
     pub const Options = struct {
         /// 0 stored, 1-9 zlib's scale, 10-12 the most compression; 13-15
@@ -160,26 +171,33 @@ pub const Compressor = struct {
         level: u4 = 6,
     };
 
-    fn deflateOptions(options: Options) DeflateCompressor.Options {
-        return .{ .level = options.level, .max_input = .fromRaw(tile_size) };
+    fn sizes(options: Options) Engine.Sizes {
+        return .of(options.level, .default, tile_size);
     }
 
     /// The bytes `initBuffer` needs for `options`.
     pub fn memory(options: Options) usize {
-        return DeflateCompressor.memory(deflateOptions(options));
+        return sizes(options).memory();
     }
 
     pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
-        return .{ .deflate = try .init(gpa, deflateOptions(options)) };
+        const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
+        var c = initBuffer(buffer, options);
+        c.owned = buffer;
+        c.gpa = gpa;
+        return c;
     }
 
-    /// A compressor in caller memory: `buffer.len >= memory(options)`.
+    /// A compressor in caller memory: `buffer.len >= memory(options)`;
+    /// `deinit` then frees nothing.
     pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-        return .{ .deflate = .initBuffer(buffer, deflateOptions(options)) };
+        const s = sizes(options);
+        std.debug.assert(buffer.len >= s.memory());
+        return .{ .engine = .init(buffer, s), .level = options.level, .owned = &.{}, .gpa = undefined };
     }
 
     pub fn deinit(c: *Compressor) void {
-        c.deflate.deinit();
+        if (c.owned.len != 0) c.gpa.free(c.owned);
         c.* = undefined;
     }
 
@@ -194,8 +212,7 @@ pub const Compressor = struct {
     pub fn compressPage(c: *Compressor, in: []const u8, out: []u8) CompressError!usize {
         std.debug.assert(in.len <= tile_size);
         var w: lanes.Writer = .init(out);
-        const o = c.deflate.options;
-        c.deflate.engine.compressPasses(in, &.{}, &w, o.level, o.strategy, o.passes);
+        c.engine.compressPasses(in, &.{}, &w, c.level, .default, null);
         if (w.overflow) return error.OutputTooSmall;
         return w.finish();
     }

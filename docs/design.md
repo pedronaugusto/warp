@@ -76,6 +76,12 @@ store at run time. LZ4's and zstd's frame decoders keep a refusal apart from
 the phase, and answer it to every later call.
 
 GDeflate is DEFLATE's engine with another bit layout beneath `warp.gdeflate`.
+The engine is generic over its window (`deflate.EngineFor`): DEFLATE's 32 KiB
+keeps its matchfinders' positions in 16 bits, and GDeflate's compressor owns
+the 64 KiB instance, whose positions are 32 bits, so its matches reach across
+a whole page. Both share one distance alphabet, Deflate64's 32 codes, and one
+block writer; DEFLATE never counts codes 30 and 31, so its codes, costs and
+bytes are what they were.
 The parsers hand each finished block to a writer: DEFLATE's bit writer, or
 GDeflate's lane writer, which serializes the block the engine chose
 (`deflate/block.zig`'s `choose`: kind, code and header, with the format's own

@@ -99,7 +99,7 @@ const Change = struct { level: u4, strategy: Strategy };
 
 /// The engine's sizes, the window's and the pending buffer's.
 const Layout = struct {
-    sizes: deflate.Sizes,
+    sizes: deflate.Engine.Sizes,
     window: usize,
     pending: usize,
     /// The longest stored block: one fits in the pending buffer.
@@ -110,7 +110,7 @@ const Layout = struct {
         const hash_bits = options.hash_bits orelse std.math.clamp(@as(u5, options.window_bits) + 1, 10, 15);
         std.debug.assert(hash_bits >= 8);
         std.debug.assert(hash_bits <= 16);
-        const sizes = deflate.Sizes.stream(options.window_bits, hash_bits, @max(options.level, options.max_level) >= 10);
+        const sizes = deflate.Engine.Sizes.stream(options.window_bits, hash_bits, @max(options.level, options.max_level) >= 10);
         // The longest block: its literals, and matches of three bytes at most
         // for the near-optimal parser's, whose sequences are made from them.
         const matches = if (sizes.nodes != 0) sizes.literals / 3 else sizes.sequences;

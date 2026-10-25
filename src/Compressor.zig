@@ -48,7 +48,7 @@ pub const Options = struct {
 
 /// The bytes `initBuffer` needs for `options`.
 pub fn memory(options: Options) usize {
-    return deflate.Sizes.of(options.level, options.strategy, options.maxInput()).memory();
+    return deflate.Engine.Sizes.of(options.level, options.strategy, options.maxInput()).memory();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
@@ -62,7 +62,7 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
 /// A compressor in caller memory: `buffer.len >= memory(options)`; `deinit`
 /// then frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-    const sizes = deflate.Sizes.of(options.level, options.strategy, options.maxInput());
+    const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, options.maxInput());
     std.debug.assert(buffer.len >= sizes.memory());
     return .{ .engine = .init(buffer, sizes), .options = options, .owned = &.{}, .gpa = undefined };
 }

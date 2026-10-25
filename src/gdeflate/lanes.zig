@@ -281,7 +281,7 @@ fn Sequences(comptime interleaved: bool) type {
                     .length_symbol = @intCast(sym),
                     .length_extra = length - lengthBase(sym),
                     .distance_symbol = @intCast(ds),
-                    .distance_extra = s.distance - decode.dist_base[ds],
+                    .distance_extra = s.distance - decode.dist_base64[ds],
                 } };
             }
         }
@@ -296,7 +296,7 @@ fn lengthExtraBits(sym: u16) u6 {
 /// The extra bits of a Deflate64 distance symbol: DEFLATE's, and 14 for 30
 /// and 31.
 fn distExtraBits(sym: u8) u6 {
-    return if (sym >= 30) 14 else @intCast(decode.dist_extra[sym]);
+    return @intCast(decode.dist_extra64[sym]);
 }
 
 /// A match's distance waiting for its lane's next turn, from `round`

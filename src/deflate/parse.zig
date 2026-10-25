@@ -266,7 +266,7 @@ inline fn worthIt(len: u32, distance: u32, min_len: u32) bool {
 }
 
 /// Level 1.
-pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype, ht: *match.HashTable, h: match.History) void {
+pub fn fastest(comptime dictionary: bool, comptime full_window: bool, c: anytype, ht: anytype, h: match.History) void {
     const n = h.in.len;
     const stop = if (@TypeOf(c.*).keeps_literals) c.stop() else n;
     var p = c.b.p;
@@ -331,7 +331,7 @@ inline fn literals(comptime keeps: bool, b: *Builder, in: []const u8, p: usize, 
 /// Levels 2-3 (and any level's parse under `filtered`, with `min_len` 6).
 /// The block in the making is held in locals between the points that look at
 /// it; the builder and cursor are brought up to date there.
-pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
+pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: anytype, h: match.History, params: Params, min_len: u32) void {
     const keeps = @TypeOf(c.*).keeps_literals;
     const n = h.in.len;
     const stop = if (keeps) c.stop() else n;
@@ -392,7 +392,7 @@ pub fn greedy(comptime dictionary: bool, comptime full_window: bool, c: anytype,
 
 /// Insert the positions inside a match taken at `p`, as far as four bytes
 /// remain to hash.
-inline fn skipInside(comptime full_window: bool, hc: *match.HashChains, h: match.History, p: usize, len: u32) void {
+inline fn skipInside(comptime full_window: bool, hc: anytype, h: match.History, p: usize, len: u32) void {
     const n = h.in.len;
     if (n < 4) return;
     const last = n - 4;
@@ -411,7 +411,7 @@ inline fn score(len: u32, distance: u32) i32 {
 /// half the depth; a clearly better match there makes the held position a
 /// literal. A match of `nice` bytes is taken at once. The block in the making
 /// is held in locals between the points that look at it, as `greedy` does.
-pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: *match.HashChains, h: match.History, params: Params, min_len: u32) void {
+pub fn lazy(comptime dictionary: bool, comptime full_window: bool, c: anytype, hc: anytype, h: match.History, params: Params, min_len: u32) void {
     const keeps = @TypeOf(c.*).keeps_literals;
     const n = h.in.len;
     const stop = if (keeps) c.stop() else n;

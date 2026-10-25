@@ -386,8 +386,9 @@ most 64 KiB and is its own window; DirectStorage's tile stream holds a page a
 `Compressor.compress(in, out)` writes a tile stream at DEFLATE's levels (0
 stored, 1-9 zlib's scale, 10-12 the most compression); `compressPage` writes
 one page, as nvCOMP's batched API takes them. The engine and its parsers are
-DEFLATE's, and runs of matches at one distance are written as one Deflate64
-match of up to 65,538 bytes. `bound(len)` and `pageBound(len)` reserve the
+DEFLATE's, over the page's whole 64 KiB, so a match reaches anywhere back in
+its page (Deflate64's distance codes 30 and 31), and runs of matches at one
+distance are written as one Deflate64 match of up to 65,538 bytes. `bound(len)` and `pageBound(len)` reserve the
 output. `init` takes the level's match state once, `initBuffer` caller memory
 of `memory(options)` bytes.
 
