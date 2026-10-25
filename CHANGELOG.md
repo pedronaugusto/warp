@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Streaming Deflate64 (zip method 9) decoding: `Inflate.Options.format = .deflate64` decodes the extended length and distance codes with a 64 KiB window, through `Inflate.decode` and `Inflate.Reader` on the same engine and state machine as DEFLATE, so a zip entry need not fit in memory. Raw streams only; checkpoints stay DEFLATE's. `Options.windowLen()` gives the window (and, for `Reader`, the buffer less 4096) either format needs. Tested on 48 streams 7-Zip 26.05 writes (`testdata/deflate64.corpus`, captured in trials), whole, streamed at every cut and through the reader, and by a property that the streaming decoder answers as the whole-buffer one on arbitrary and mutated input.
+
 ### Fixed
 
 - The zstd decoder places a block's trailing literals that overrun the output (`error.OutputTooSmall`) at its sequence bitstream, as its other faults while executing sequences and the parallel decoder do; it named the sequences header, so the two decoders' diagnostics disagreed (`zstd_parallel_test`'s mutations, found by the release gate's fuzzing).

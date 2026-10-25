@@ -92,7 +92,9 @@ points. The coordinator accepts only boundaries
 connected to the actual stream, resolves literals and history markers through
 one byte table, and checks trailers. Exhausted search bounds and partial output use the core decoder.
 
-Deflate64 parameterizes the shared decoder's alphabet and window. BGZF writes
+Deflate64 parameterizes the shared decoder's alphabet and window, whole-buffer
+and streamed: the streaming value holds the tables of its format's alphabet and
+runs the same wrapper machine. BGZF writes
 bounded complete gzip members with virtual offsets. Additional optimal parsing
 passes reuse discovered matches. Compressed build assets use a host executable
 and return a build `LazyPath`.

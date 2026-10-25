@@ -88,6 +88,7 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "zstd-sizes.corpus",
         "zstd-invalid.corpus",
         "zstd-dictionaries.corpus",
+        "deflate64.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

@@ -479,8 +479,8 @@ pub export fn inflateCodesUsed(stream: ?*Stream) c_ulong {
     const z = stream orelse return std.math.maxInt(c_ulong);
     const s = state(z, .decode) orelse return std.math.maxInt(c_ulong);
     const engine = &s.decoder.state.engine;
-    if (engine.phase == .lengths) return @intCast(tableUsed(&s.decoder.tables.precode, engine.pre_bits));
-    return @intCast(tableUsed(&s.decoder.tables.litlen, engine.lbits) + tableUsed(&s.decoder.tables.dist, engine.dbits));
+    if (engine.phase == .lengths) return @intCast(tableUsed(&s.decoder.tables.deflate.precode, engine.pre_bits));
+    return @intCast(tableUsed(&s.decoder.tables.deflate.litlen, engine.lbits) + tableUsed(&s.decoder.tables.deflate.dist, engine.dbits));
 }
 
 fn syncByte(s: *State, byte: u8) void {

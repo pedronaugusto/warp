@@ -54,10 +54,19 @@ pub const Iterator = struct {
     }
 };
 
-/// The input a generator spec names, regenerated.
+/// The input generator specs name, regenerated: one spec, or several
+/// joined with " + ", one after another.
 pub fn input(gpa: std.mem.Allocator, spec_text: []const u8) ![]u8 {
-    const spec = try gen.Spec.parse(spec_text);
-    return gen.alloc(gpa, spec.kind, spec.seed, spec.len);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var it = std.mem.splitSequence(u8, spec_text, " + ");
+    while (it.next()) |part| {
+        const spec = try gen.Spec.parse(part);
+        const at = out.items.len;
+        try out.resize(gpa, at + spec.len);
+        gen.fill(spec.kind, spec.seed, out.items[at..]);
+    }
+    return out.toOwnedSlice(gpa);
 }
 
 pub const sizes = @embedFile("sizes.corpus");

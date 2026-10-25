@@ -101,7 +101,9 @@ pub const State = struct {
 /// Run until the stream ends, a block or member ends, or the output is
 /// full. The output written is in the checksum when this returns; after an
 /// error, `State.sum` brings it up to date.
-pub fn run(t: *inflate.Tables, st: *State, s: *inflate.Stream, source: anytype, options: Options) Error!Status {
+/// `t` is the tables of the alphabet decoded: `inflate.Tables`, or
+/// `inflate.TablesFor(true)` for Deflate64.
+pub fn run(t: anytype, st: *State, s: *inflate.Stream, source: anytype, options: Options) Error!Status {
     st.checked = s.op;
     st.history_replaced = false;
     // Each part goes on to the next by a direct jump: one indirect jump

@@ -223,7 +223,10 @@ and cancellation or an error joins workers before returning.
 `gzip.Bgzf` writes members with the BC extra field, bounds both compressed and
 decoded blocks to 64 KiB, and finishes with the canonical empty EOF member.
 `virtualOffset` gives the member offset and buffered decoded offset.
-`deflate64.Decompressor` decodes raw zip method 9 with a 64 KiB window.
+`deflate64.Decompressor` decodes raw zip method 9 with a 64 KiB window;
+`Inflate` and `Inflate.Reader` with `.format = .deflate64` decode it streamed,
+with a window and buffer of `options.windowLen()` (64 KiB, and 4 KiB more for
+the reader).
 
 ### C and build integration
 

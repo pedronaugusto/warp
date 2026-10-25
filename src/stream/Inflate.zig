@@ -20,8 +20,8 @@ const container = @import("../container.zig");
 const gzip = @import("../gzip.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 
-/// Private: the current block's tables.
-tables: inflate_.Tables = .{},
+/// Private: the current block's tables, of the format's alphabet.
+tables: Tables = .{ .deflate = .{} },
 /// Private: where the stream is.
 state: unwrap.State = .{},
 /// Private: the options given to `init`.
@@ -49,8 +49,27 @@ stop: enum { none, block, trees } = .none,
 error_in_len: usize = 0,
 error_out_len: usize = 0,
 
+const Tables = union {
+    deflate: inflate_.Tables,
+    deflate64: inflate_.TablesFor(true),
+};
+
+/// The alphabet and window a stream is coded with.
+pub const Format = enum {
+    /// DEFLATE (RFC 1951): 2^`window_bits` of history.
+    deflate,
+    /// Zip method 9: DEFLATE's extended length and distance codes and a
+    /// 64 KiB window, in place of `window_bits`'s. Raw streams only
+    /// (`accept = .raw`); checkpoints are DEFLATE's.
+    deflate64,
+};
+
+/// The history a Deflate64 stream keeps.
+pub const deflate64_window_len = 65536;
+
 pub const Options = struct {
     accept: container.Accept = .zlib,
+    format: Format = .deflate,
     /// 8-15: the history kept, 2^window_bits bytes. A distance past it is
     /// refused (`window_exceeded`), as is a zlib header that names a
     /// larger window.
@@ -62,6 +81,14 @@ pub const Options = struct {
     /// Where the first gzip member's header fields are copied, if wanted.
     gzip_fields: ?*gzip.Fields = null,
     diagnostic: ?*Diagnostic = null,
+
+    /// The bytes of history the stream keeps: the window's length.
+    pub fn windowLen(o: Options) usize {
+        return switch (o.format) {
+            .deflate => @as(usize, 1) << o.window_bits,
+            .deflate64 => deflate64_window_len,
+        };
+    }
 };
 
 pub const DecodeError = error{
@@ -76,12 +103,24 @@ pub const DecodeError = error{
     DictionaryMismatch,
 };
 
-/// `window.len >= 1 << options.window_bits`: the caller's memory for the
+/// `window.len >= options.windowLen()`: the caller's memory for the
 /// history.
 pub fn init(window: []u8, options: Options) Inflate {
+    checkOptions(options);
+    std.debug.assert(window.len >= options.windowLen());
+    return .{ .tables = tablesFor(options), .options = options, .window = window[0..options.windowLen()] };
+}
+
+fn checkOptions(options: Options) void {
     std.debug.assert(options.window_bits >= 8);
-    std.debug.assert(window.len >= @as(usize, 1) << options.window_bits);
-    return .{ .options = options, .window = window[0 .. @as(usize, 1) << options.window_bits] };
+    std.debug.assert(options.format == .deflate or options.accept == .raw);
+}
+
+fn tablesFor(options: Options) Tables {
+    return switch (options.format) {
+        .deflate => .{ .deflate = .{} },
+        .deflate64 => .{ .deflate64 = .{} },
+    };
 }
 
 /// Why a call returned.
@@ -164,7 +203,9 @@ pub const Checkpoint = struct {
 pub const CheckpointError = error{NotAtBoundary};
 pub const ResumeError = error{InvalidCheckpoint};
 
+/// A DEFLATE stream's (`format = .deflate`).
 pub fn checkpoint(z: *const Inflate) CheckpointError!Checkpoint {
+    std.debug.assert(z.options.format == .deflate);
     if (!z.at_boundary or z.failed != null) return error.NotAtBoundary;
     var point: Checkpoint = .{
         .in_offset = z.in_total,
@@ -201,7 +242,7 @@ fn restore(z: *Inflate, point: *const Checkpoint) ResumeError!void {
         .zlib_or_raw => point.wrapper != .gzip,
         .gzip_or_zlib => point.wrapper != .raw,
     };
-    if (!compatible or point.window_bits != z.options.window_bits or
+    if (!compatible or z.options.format != .deflate or point.window_bits != z.options.window_bits or
         point.history_len > (@as(usize, 1) << point.window_bits) or
         (@as(u16, point.pending) >> point.bits) != 0) return error.InvalidCheckpoint;
     z.reset(.nothing);
@@ -249,7 +290,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .op = op,
         .start = start,
         .history = history,
-        .window = @as(u32, 1) << z.options.window_bits,
+        .window = @intCast(z.options.windowLen()),
         .partial = true,
         .stop_header = z.stop == .trees,
         .stop_final = z.stop != .none,
@@ -265,7 +306,11 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .fields = z.options.gzip_fields,
         .stop_wrapper = z.stop != .none,
     };
-    const run = unwrap.run(&z.tables, &z.state, &s, &source, machine) catch |err| switch (err) {
+    const ran = switch (z.options.format) {
+        .deflate => unwrap.run(&z.tables.deflate, &z.state, &s, &source, machine),
+        .deflate64 => unwrap.run(&z.tables.deflate64, &z.state, &s, &source, machine),
+    };
+    const run = ran catch |err| switch (err) {
         error.Truncated => {
             source.restore(&s);
             z.state.sum(&s);
@@ -385,14 +430,14 @@ pub const Reader = struct {
         Truncated,
     };
 
-    /// `buffer.len >= (1 << options.window_bits) + 4096`.
+    /// `buffer.len >= options.windowLen() + 4096`.
     pub fn init(input: *Io.Reader, buffer: []u8, options: Options) Reader {
-        std.debug.assert(options.window_bits >= 8);
-        std.debug.assert(buffer.len >= (@as(usize, 1) << options.window_bits) + 4096);
+        checkOptions(options);
+        std.debug.assert(buffer.len >= options.windowLen() + 4096);
         return .{
             .interface = .{ .vtable = &vtable, .buffer = buffer, .seek = 0, .end = 0 },
             .input = input,
-            .inflate = .{ .options = options, .window = &.{} },
+            .inflate = .{ .tables = tablesFor(options), .options = options, .window = &.{} },
         };
     }
 
@@ -450,7 +495,7 @@ pub const Reader = struct {
 
     fn slide(r: *Reader) void {
         const io_r = &r.interface;
-        const window = @as(usize, 1) << r.inflate.options.window_bits;
+        const window = r.inflate.options.windowLen();
         const drop = @min(io_r.seek, io_r.end -| window);
         if (drop == 0) return;
         @memmove(io_r.buffer[0 .. io_r.end - drop], io_r.buffer[drop..io_r.end]);
