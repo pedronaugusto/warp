@@ -213,6 +213,7 @@ pub fn dev(b: *std.Build, tools: type) void {
                 .{ .name = "zstd-bench", .source = "bench/zstd.zig" },
                 .{ .name = "lz4-bench", .source = "bench/lz4.zig" },
                 .{ .name = "brotli-bench", .source = "bench/brotli.zig" },
+                .{ .name = "gdeflate-bench", .source = "bench/gdeflate.zig" },
             },
             .imports = benchImports,
             .target = target,
