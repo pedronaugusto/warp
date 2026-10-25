@@ -63,6 +63,12 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "lz4 frames", .patterns = &.{ "src/lz4/Compressor.zig", "src/lz4/frames.zig" } },
     .{ .name = "lz4 streams", .patterns = &.{ "src/lz4/Compress.zig", "src/lz4/Decompress.zig" } },
     .{ .name = "lz4", .patterns = &.{"src/lz4.zig"} },
+    .{ .name = "brotli parts", .patterns = &.{ "src/brotli/bits.zig", "src/brotli/codes.zig", "src/brotli/context.zig", "src/brotli/dictionary.zig", "src/brotli/Diagnostic.zig" } },
+    .{ .name = "brotli huffman", .patterns = &.{"src/brotli/huffman.zig"} },
+    .{ .name = "brotli engine", .patterns = &.{"src/brotli/decode.zig"} },
+    .{ .name = "brotli frame", .patterns = &.{"src/brotli/Decompressor.zig"} },
+    .{ .name = "brotli stream", .patterns = &.{"src/brotli/Decompress.zig"} },
+    .{ .name = "brotli", .patterns = &.{"src/brotli.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 
@@ -97,6 +103,8 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "lz4-blocks.corpus",
         "lz4-frames.corpus",
         "lz4-invalid.corpus",
+        "brotli-streams.corpus",
+        "brotli-invalid.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

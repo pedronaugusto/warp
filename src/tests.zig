@@ -35,4 +35,6 @@ test {
     _ = @import("testing/api_test.zig");
     _ = @import("lz4.zig");
     _ = @import("testing/lz4_test.zig");
+    _ = @import("brotli.zig");
+    _ = @import("testing/brotli_decode_test.zig");
 }

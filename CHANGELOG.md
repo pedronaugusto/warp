@@ -5,13 +5,16 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Brotli (RFC 7932) decoding, `warp.brotli`: `Decompressor` (whole-buffer, into the caller's output, no allocation) and `Decompress` (resumable at every byte, with a `Reader`), the large-window extension, raw prefix dictionaries (RFC 9842) and concatenated streams. Acceptance is the reference's (google/brotli 1.2.1), each refusal with its reason in `Diagnostic`, pinned by a captured corpus of 500 streams and 1,475 judged cases. A block switch with one block type, the CVE-2026-111497 class, is refused. `brotli-bench` measures it.
+
 ## [0.4.4] - 2026-10-25
 
 ### Added
 
 - Streaming Deflate64 (zip method 9) decoding: `Inflate.Options.format = .deflate64` decodes the extended length and distance codes with a 64 KiB window, through `Inflate.decode` and `Inflate.Reader` on the same engine and state machine as DEFLATE, so a zip entry need not fit in memory. Raw streams only; checkpoints stay DEFLATE's. `Options.windowLen()` gives the window (and, for `Reader`, the buffer less 4096) either format needs. Tested on 48 streams 7-Zip 26.05 writes (`testdata/deflate64.corpus`, captured in trials), whole, streamed at every cut and through the reader, and by a property that the streaming decoder answers as the whole-buffer one on arbitrary and mutated input.
 - LZ4 (`warp.lz4`): the block and frame formats both ways at lz4's levels, -65536 to 12 on lz4frame's scale (the fast parser with acceleration, LZ4MID, hash chains with pattern analysis, optimal parsing, `favor_decompression_speed`); the parses are lz4 1.10's, so a block without history is byte for byte `LZ4_compress_fast`'s or `LZ4_compress_HC`'s on every target. Blocks with a bound dictionary, the previous block (as a prefix when contiguous) or given history, and `destSize` filling. Frames with 64 KiB to 4 MiB linked or independent blocks, block and content checksums, content size, dictionary ID, skippable and concatenated frames, and legacy frames both ways. Stateless decoding (`decompressBlock`, `decompress`), resumable `Compress` and `Decompress` with `std.Io` adapters, frame inspection. Tested on lz4 1.10's own blocks (byte identity at every level and budget), frames (every decoder entry) and verdicts on mutated input (`testdata/lz4-*.corpus`, captured in trials), and fuzzed against a plain decoder.
-
 ### Fixed
 
 - The zstd decoder places a block's trailing literals that overrun the output (`error.OutputTooSmall`) at its sequence bitstream, as its other faults while executing sequences and the parallel decoder do; it named the sequences header, so the two decoders' diagnostics disagreed (`zstd_parallel_test`'s mutations, found by the release gate's fuzzing).

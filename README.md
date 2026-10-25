@@ -1,9 +1,9 @@
 # warp
 
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
-wrappers, Zstandard frames through `warp.zstd`, and LZ4 blocks and frames
-through `warp.lz4`. It computes CRC-32,
-CRC-32C and Adler-32. Whole-buffer and streaming calls use caller memory
+wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
+through `warp.lz4`, and decompresses Brotli streams through `warp.brotli`. It
+computes CRC-32, CRC-32C and Adler-32. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization. Checksum dispatch selects
 a kernel supported by the CPU.
 
@@ -356,6 +356,32 @@ block and one stored block; 8 MiB admits legacy frames.
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
+### Brotli
+
+`warp.brotli.Decompressor.decompress` decodes RFC 7932 streams straight into
+the caller's output; a `Decompressor` holds the prefix-code tables and context
+maps a meta-block can need (about 1.3 MiB, touched only as a stream uses them)
+and allocates nothing. `Options.dictionary` gives a raw prefix dictionary, the
+bytes distances reach before the output (RFC 9842's dictionary-compressed
+Brotli); `large_window` accepts the reference's large-window streams (windows
+past 2^24, not RFC 7932), refused otherwise. `streams = .all` decodes
+concatenated streams, as `brotli -d` reads them, and `.one` leaves what follows
+the first unread. `Diagnostic` records the refusal's bit offset and reason.
+
+`Decompress.decode` is resumable at every input and output byte; its window is
+the caller's, `windowLength(bits)` bytes for streams of up to 2^bits (a
+larger stream is `WindowTooLarge`). Call `Decompress.finish` at end of input
+to check truncation. `Decompress.Reader` uses the same decoder, reserving 4
+KiB of its buffer for reader buffering.
+
+What the reference decoder (google/brotli 1.2.1) accepts, warp accepts, and
+what it refuses, warp refuses for the same reason; a captured corpus of its
+streams and verdicts checks it.
+
+## Scope
+
+Raw DEFLATE, the RFC 1950 wrapper, gzip and Zstandard compression and decompression;
+Brotli decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

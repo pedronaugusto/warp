@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, Brotli decoding and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 
@@ -22,6 +22,17 @@ Zstandard has independent bits, entropy, match search, block engines and frame
 owners beneath `warp.zstd`. It imports no DEFLATE engine. Dictionaries own parsed
 entropy tables and borrow their content bytes; compressors index that content
 once. Training is an allocation-taking operation outside codec calls.
+
+Brotli has its own bit reader, prefix-code tables, static dictionary and
+transforms, and context modes beneath `warp.brotli`; it imports no other codec.
+One engine decodes a meta-block's header and commands, generic at comptime over
+its reader (unchecked while a 32-byte margin of input remains, checked byte by
+byte after it) and its history (the caller's output, or the caller's window
+copied out). Units are small enough to restart: one that runs out of input
+rolls back to its start with its bytes kept in a 64-byte carry, so streaming
+resumes at any byte with no second decoder. The command loop keeps its state in
+locals and copies 16 bytes at a time; a long literal block's trees are looked
+up by the two bytes before each literal in one table.
 
 Each whole-buffer decoder owns its tables; its output supplies history. Each
 streaming decoder owns progress and borrows its caller window. Encoders own
