@@ -208,3 +208,59 @@ export fn warpZstdPipeline(io: *const std.Io, in: [*]const u8, in_len: usize, ou
     const result = d.decompress(io.*, in[0..in_len], out[0..out_len], .{ .partial = partial }) catch return -1;
     return @intCast(result.out_len);
 }
+
+var lz4_window: [warp.lz4.Decompress.memory(.literal("64KiB")) + 4096]u8 = undefined;
+
+/// An LZ4 block at `level` with each history, filled to a budget, and decoded.
+export fn warpLz4Block(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, level: i32, dict: [*]const u8, dict_len: usize) isize {
+    const options: warp.lz4.Compressor.Options = .{ .level = level, .max_level = 12, .dictionary = dict[0..dict_len] };
+    const size = warp.lz4.Compressor.memory(options);
+    if (size > memory.len) return -1;
+    var c: warp.lz4.Compressor = .initBuffer(memory[0..size], options);
+    defer c.deinit();
+    c.setLevel(level);
+    for ([_]warp.lz4.Compressor.History{ .none, .dictionary, .previous, .{ .bytes = dict[0..dict_len] } }) |h| {
+        _ = c.compressBlock(in[0..in_len], out[0..out_len], .{ .history = h }) catch return -1;
+    }
+    const filled = c.compressBlockDestSize(in[0..in_len], out[0 .. out_len / 2], .{});
+    const d = warp.lz4.decompressBlock(out[0..filled.out_len], out[out_len / 2 .. out_len], .{ .history = dict[0..dict_len], .partial = true }) catch return -1;
+    return @intCast(d.out_len);
+}
+
+/// LZ4 frames written and read: standard and legacy, skippable, inspected.
+export fn warpLz4Frame(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, decoded: [*]u8, decoded_len: usize, legacy: bool) isize {
+    const options: warp.lz4.Compressor.Options = .{ .level = 9 };
+    const size = warp.lz4.Compressor.memory(options);
+    if (size > memory.len) return -1;
+    var c: warp.lz4.Compressor = .initBuffer(memory[0..size], options);
+    defer c.deinit();
+    const frame: warp.lz4.Compressor.Frame = .{ .format = if (legacy) .legacy else .standard, .independent = false, .block_checksum = true };
+    var n = warp.lz4.writeSkippable(out[0..out_len], 5, "skip") catch return -1;
+    n += c.compress(in[0..in_len], out[n..out_len], frame) catch return -1;
+    _ = warp.lz4.frameHeader(out[0..n]) catch return -1;
+    const r = warp.lz4.decompress(out[0..n], decoded[0..decoded_len], .{ .max_block_size = .literal("8MiB") }) catch return -1;
+    return @intCast(r.out_len);
+}
+
+/// LZ4 frames streamed both ways, through the reader and writer adapters.
+export fn warpLz4Stream(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usize, decoded: [*]u8, decoded_len: usize) isize {
+    const options: warp.lz4.Compress.Options = .{ .compressor = .{ .level = 2 }, .frame = .{ .block_size = .@"64KiB", .independent = false } };
+    const size = warp.lz4.Compress.memory(options);
+    if (size > memory.len) return -1;
+    var s: warp.lz4.Compress = .initBuffer(memory[0..size], options);
+    defer s.deinit();
+    var sink: std.Io.Writer = .fixed(out[0..out_len]);
+    var buffer: [256]u8 = undefined;
+    var w: warp.lz4.Compress.Writer = .init(&s, &sink, &buffer);
+    w.interface.writeAll(in[0..in_len]) catch return -1;
+    w.interface.flush() catch return -1;
+    w.finish() catch return -1;
+    var d: warp.lz4.Decompress = .init(lz4_window[0..warp.lz4.Decompress.memory(.literal("64KiB"))], .{ .max_block_size = .literal("64KiB") });
+    const step = d.decode(sink.buffered(), decoded[0..decoded_len]) catch return -1;
+    d.finish() catch return -1;
+    var source: std.Io.Reader = .fixed(sink.buffered());
+    var reader: warp.lz4.Decompress.Reader = .init(&source, &lz4_window, .{ .max_block_size = .literal("64KiB") });
+    const read = reader.interface.readSliceShort(decoded[0..decoded_len]) catch return -1;
+    if (read != step.out_len) return -1;
+    return @intCast(step.out_len);
+}

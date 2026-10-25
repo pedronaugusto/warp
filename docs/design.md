@@ -58,6 +58,19 @@ windows retain explicit distance checks.
 Parallel values own worker storage and ordered job state. CPU detection owns the
 single cached feature choice. There is no shared mutable codec state.
 
+LZ4 has its own block engine, parsers and frame owners beneath `warp.lz4`, and
+no entropy stage: it imports neither the bit layer nor the Huffman builders.
+The block decoder holds no state, so the whole-buffer frame decoder is a
+function over the caller's output. One `Compressor` owns the match state of its
+level band (the fast table, LZ4MID's two tables, the hash chains and the
+optimal parser's costs share one `Chains`), a bound dictionary's tables, and
+the last block's input for linked blocks. Positions are virtual and continue
+across calls: an entry older than the call stands for its first byte, as a
+cleared table's zero does for lz4, so the parses are lz4's and a call clears
+nothing. The fast loop of the block decoder takes a sequence whole only while
+its 16- and 32-byte stores stay inside both buffers, and otherwise leaves it
+to a careful loop that checks every bound, one sequence at a time.
+
 ## Invariants
 
 - Fast loops run only with checked input and output margins. Tail loops check

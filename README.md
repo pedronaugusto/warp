@@ -1,7 +1,8 @@
 # warp
 
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
-wrappers, and Zstandard frames through `warp.zstd`. It computes CRC-32,
+wrappers, Zstandard frames through `warp.zstd`, and LZ4 blocks and frames
+through `warp.lz4`. It computes CRC-32,
 CRC-32C and Adler-32. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization. Checksum dispatch selects
 a kernel supported by the CPU.
@@ -312,9 +313,49 @@ bay zstd-cli -Doptimize=ReleaseFast -- decompress < output.zst > restored
 
 The optional argument to `decompress` is the maximum window log (27 by default).
 
+### LZ4
+
+`warp.lz4.Compressor` writes LZ4 blocks and frames at lz4's levels, on
+lz4frame's scale: 1 and below the fast parser (acceleration `1 - level` below
+0), 2 LZ4MID, 3-9 hash chains (pattern analysis at 9), 10-12 optimal parsing,
+above 12 meaning 12. The parsers are lz4 1.10's, so a block without history
+comes out byte for byte as `LZ4_compress_fast` or `LZ4_compress_HC` writes it,
+on every target. `init` takes the state of `max_level`'s band once (32 KiB for
+the fast levels to about 320 KiB at 10-12); `initBuffer` uses caller memory of
+`memory(options)` bytes; calls allocate and clear nothing.
+
+`compressBlock(in, out, .{ .history = h })` writes one block; `h` is `.none`,
+`.dictionary` (the one given at `init`, indexed once), `.previous` (the last
+block, still in place: lz4's `_continue`, as one prefix when it lies just
+before `in`) or `.bytes` (any bytes before the block). `blockBound(len)`
+reserves enough output. `compressBlockDestSize` fills a budget instead and
+says how much input it took. `compress(in, out, frame)` writes a frame:
+`Frame` selects 64 KiB to 4 MiB blocks, linked or independent, block and
+content checksums, the content size, a dictionary ID, or the legacy format
+`lz4 -l` writes; `bound(len, frame)` reserves its output. The defaults are
+the `lz4` command's: 4 MiB independent blocks and a content checksum.
+
+`warp.lz4.decompressBlock(in, out, .{ .history = h })` and
+`warp.lz4.decompress(in, out, options)` decode with no state at all: the
+output is the history. `decompress` reads concatenated, skippable and legacy
+frames, checks every checksum and the content size, refuses a frame naming
+a dictionary it was not given, and with `partial` returns the output's
+prefix. A block is refused only where the format leaves no decoding: an
+offset of zero (lz4 fills zeros), an offset before the history, an input cut
+inside a sequence, an output too small. Blocks that break the encoder's
+end-of-block rules decode, which the format allows; what is refused never
+depends on spare output, and `decompress_margin` more bytes only let the fast
+loop run to the end. `Diagnostic` records the refusal's byte and reason.
+
+`Compress` and `Decompress` resume at any input and output byte, with
+`Compress.Writer` and `Decompress.Reader` over `std.Io`; streamed
+compression writes the bytes `compress` does however the input arrives.
+`Decompress.memory(max_block_size)` is its window: 64 KiB of history, one
+block and one stored block; 8 MiB admits legacy frames.
+
 ## Scope
 
-Raw DEFLATE, the RFC 1950 wrapper, gzip and Zstandard compression and decompression;
+Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

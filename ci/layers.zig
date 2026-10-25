@@ -58,6 +58,11 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "zstd parallel decode", .patterns = &.{"src/zstd/parallel/Decompressor.zig"} },
     .{ .name = "zstd parallel", .patterns = &.{"src/zstd/parallel.zig"} },
     .{ .name = "zstd", .patterns = &.{"src/zstd.zig"} },
+    .{ .name = "lz4 sequences", .patterns = &.{ "src/lz4/sequence.zig", "src/lz4/Diagnostic.zig" } },
+    .{ .name = "lz4 engines", .patterns = &.{ "src/lz4/block.zig", "src/lz4/fast.zig", "src/lz4/hc.zig", "src/lz4/frame.zig" } },
+    .{ .name = "lz4 frames", .patterns = &.{ "src/lz4/Compressor.zig", "src/lz4/frames.zig" } },
+    .{ .name = "lz4 streams", .patterns = &.{ "src/lz4/Compress.zig", "src/lz4/Decompress.zig" } },
+    .{ .name = "lz4", .patterns = &.{"src/lz4.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 
@@ -89,6 +94,9 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "zstd-invalid.corpus",
         "zstd-dictionaries.corpus",
         "deflate64.corpus",
+        "lz4-blocks.corpus",
+        "lz4-frames.corpus",
+        "lz4-invalid.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };
