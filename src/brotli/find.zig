@@ -35,7 +35,7 @@ inline fn matchSpan(s1: [*]const u8, s2_in: [*]const u8, limit_in: usize) usize 
     while (limit >= 8) : (limit -= 8) {
         const x = std.mem.readInt(u64, s2[0..8], .little) ^ std.mem.readInt(u64, p1[0..8], .little);
         s2 += 8;
-        if (x != 0) return @intFromPtr(p1) - @intFromPtr(s1) + (@ctz(x) >> 3); // aegis: no-danger: p1 steps from s1 within one buffer
+        if (x != 0) return @intFromPtr(p1) - @intFromPtr(s1) + (@ctz(x) >> 3);
         p1 += 8;
     }
     while (limit != 0 and p1[0] == s2[0]) {
@@ -43,7 +43,7 @@ inline fn matchSpan(s1: [*]const u8, s2_in: [*]const u8, limit_in: usize) usize 
         p1 += 1;
         s2 += 1;
     }
-    return @intFromPtr(p1) - @intFromPtr(s1); // aegis: no-danger: p1 steps from s1 within one buffer
+    return @intFromPtr(p1) - @intFromPtr(s1);
 }
 
 pub const SearchResult = struct {

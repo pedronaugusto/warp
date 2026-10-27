@@ -284,7 +284,7 @@ pub const Writer = struct {
     }
 
     fn writeData(interface: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: the embedded interface belongs to Writer
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         var n: usize = 0;
         for (data[0 .. data.len - 1]) |part| {
             try w.writeSlice(part);
@@ -296,7 +296,7 @@ pub const Writer = struct {
     }
 
     fn flushInput(interface: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: the embedded interface belongs to Writer
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         if (w.have != 0) try w.emit();
     }
 

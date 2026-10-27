@@ -279,7 +279,7 @@ pub const Reader = struct {
     }
 
     fn stream(interface: *Io.Reader, writer: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
-        const r: *Reader = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Reader field
+        const r: *Reader = @alignCast(@fieldParentPtr("interface", interface));
         _ = writer;
         if (limit == .nothing) return 0;
         const n = try r.readInto(limit.slice(interface.buffer));
@@ -289,7 +289,7 @@ pub const Reader = struct {
     }
 
     fn readVec(interface: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
-        const r: *Reader = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Reader field
+        const r: *Reader = @alignCast(@fieldParentPtr("interface", interface));
         if (data[0].len != 0) return r.readInto(data[0]);
         const n = try r.readInto(interface.buffer[interface.end..]);
         interface.end += n;

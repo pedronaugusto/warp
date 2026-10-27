@@ -128,7 +128,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     var active = @min(p.workers.len, (input.len - 1) / p.options.searchLen());
     while (true) {
         try io.checkCancel();
-        const bit: usize = @intCast(stream.bitOffset()); // aegis: no-danger: consumed bits are within this addressable input
+        const bit: usize = @intCast(stream.bitOffset());
         if (active > 0 and state.phase == .body and state.engine.phase == .header) {
             const w = &p.workers[slot];
             if (bit >= w.from) {
@@ -277,14 +277,14 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
             var count: usize = 0;
             var written: usize = 0;
             while (count < w.blocks.len) {
-                const begin: usize = @intCast(decoder.stream.bitOffset()); // aegis: no-danger: block starts are real bits within input
+                const begin: usize = @intCast(decoder.stream.bitOffset());
                 const status = decoder.block(io) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.OutputTooSmall) w.stats.limited += 1;
                     written += decoder.written;
                     break;
                 };
-                const end: usize = @intCast(decoder.stream.bitOffset()); // aegis: no-danger: successful decode consumed real bits from input
+                const end: usize = @intCast(decoder.stream.bitOffset());
                 w.blocks[count] = .{ .start = begin, .end = end, .token = written, .len = decoder.written, .final = status == .done, .required = decoder.required, .max_distance = decoder.max_distance };
                 written += decoder.written;
                 decoder.written = 0;

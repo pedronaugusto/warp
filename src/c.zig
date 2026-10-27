@@ -82,7 +82,7 @@ fn create(z: *Stream, bytes: usize) ?*State {
         @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: no-danger: allocation callbacks return at least n writable bytes
     else
         std.heap.page_allocator.rawAlloc(n, .@"64", @returnAddress()) orelse return null;
-    const address = std.mem.alignForward(usize, @intFromPtr(original), 64); // aegis: no-danger: 63 padding bytes permit aligning within this allocation
+    const address = std.mem.alignForward(usize, @intFromPtr(original), 64);
     const s: *State = @ptrFromInt(address); // aegis: no-danger: the aligned address and State's size lie within the allocation
     s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode };
     z.state = s;
@@ -702,7 +702,7 @@ fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State 
 
 fn moved(slice: anytype, old: *const State, fresh: *State) @TypeOf(slice) {
     if (slice.len == 0) return slice;
-    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old); // aegis: no-danger: this slice lies within the old state's allocation
+    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old);
     const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // aegis: no-danger: the identical copied layout preserves the slice's alignment and length
     return pointer[0..slice.len];
 }
