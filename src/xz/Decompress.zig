@@ -21,8 +21,6 @@ const engine = @import("../lzma/decode.zig");
 const Diagnostic = @import("../lzma/Diagnostic.zig");
 const Decompressor = @import("Decompressor.zig");
 const Crc32 = @import("../checksum/crc32.zig").Crc32;
-const Crc64Xz = @import("../checksum/crc64xz.zig").Crc64Xz;
-const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const Options = struct {
     streams: Decompressor.Streams = .all,
@@ -84,38 +82,7 @@ const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .stream_header, 
 const pipe_len = 4096;
 
 /// A running check over a block's output.
-const Hasher = union(enum) {
-    none,
-    crc32: Crc32,
-    crc64: Crc64Xz,
-    sha256: Sha256,
-
-    fn init(c: format.Check) Hasher {
-        return switch (c) {
-            .crc32 => .{ .crc32 = .init },
-            .crc64 => .{ .crc64 = .init },
-            .sha256 => .{ .sha256 = .init(.{}) },
-            else => .none,
-        };
-    }
-
-    fn update(h: *Hasher, bytes: []const u8) void {
-        switch (h.*) {
-            .none => {},
-            inline else => |*x| x.update(bytes),
-        }
-    }
-
-    /// Whether the output's check is `stored`.
-    fn matches(h: *Hasher, stored: []const u8) bool {
-        return switch (h.*) {
-            .none => true,
-            .crc32 => |*x| x.final() == std.mem.readInt(u32, stored[0..4], .little),
-            .crc64 => |*x| x.final() == std.mem.readInt(u64, stored[0..8], .little),
-            .sha256 => |*x| std.mem.eql(u8, &x.finalResult(), stored[0..32]),
-        };
-    }
-};
+const Hasher = format.Hasher;
 
 options: Options,
 window: []u8,

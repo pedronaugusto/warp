@@ -18,6 +18,14 @@ pub const max_match = 258;
 /// A match: its length (3-258) and distance.
 pub const Match = struct { length: u16, offset: u16 };
 
+/// A match over a window past 64 KiB (LZMA's): its distance in 32 bits.
+pub const WideMatch = struct { length: u16, offset: u32 };
+
+/// The match a finder over a window of `window_` bytes gives.
+pub fn MatchFor(comptime window_: u32) type {
+    return if (window_ <= 65536) Match else WideMatch;
+}
+
 /// The most matches one search finds: one per length.
 pub const max_matches = max_match - min_match + 1;
 

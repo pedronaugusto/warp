@@ -45,23 +45,23 @@ pub const Properties = struct {
     }
 };
 
-const states = 12;
-const pos_states_max = 16;
-const len_low = 8;
-const len_mid = 8;
-const len_high = 256;
-const match_len_min = 2;
+pub const states = 12;
+pub const pos_states_max = 16;
+pub const len_low = 8;
+pub const len_mid = 8;
+pub const len_high = 256;
+pub const match_len_min = 2;
 /// The longest match.
 pub const match_len_max = match_len_min + len_low + len_mid + len_high - 1;
-const dist_states = 4;
-const dist_slots = 64;
-const dist_model_end = 14;
-const full_distances = 128;
-const align_bits = 4;
+pub const dist_states = 4;
+pub const dist_slots = 64;
+pub const dist_model_end = 14;
+pub const full_distances = 128;
+pub const align_bits = 4;
 /// A literal's 0x300 probabilities, at most 16 of them (lc + lp ≤ 4).
-const literal_coders = 1 << 4;
+pub const literal_coders = 1 << 4;
 
-const LenCoder = struct {
+pub const LenCoder = struct {
     choice: Prob = range.prob_init,
     choice2: Prob = range.prob_init,
     low: [pos_states_max][len_low]Prob = @splat(@splat(range.prob_init)),
@@ -209,18 +209,18 @@ pub fn lzma2Dictionary(byte: u8) ?u64 {
 
 /// Where a symbol leaves the stream. `literal`, `match`, `rep` and
 /// `short_rep` are the state's transitions.
-const State = u4;
+pub const State = u4;
 
-inline fn afterLiteral(s: State) State {
+pub inline fn afterLiteral(s: State) State {
     return if (s < 4) 0 else if (s < 10) s - 3 else s - 6;
 }
-inline fn afterMatch(s: State) State {
+pub inline fn afterMatch(s: State) State {
     return if (s < 7) 7 else 10;
 }
-inline fn afterRep(s: State) State {
+pub inline fn afterRep(s: State) State {
     return if (s < 7) 8 else 11;
 }
-inline fn afterShortRep(s: State) State {
+pub inline fn afterShortRep(s: State) State {
     return if (s < 7) 9 else 11;
 }
 

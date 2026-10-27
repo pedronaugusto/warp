@@ -9,25 +9,48 @@
 //!
 //! The near-optimal parser searches almost every position and wants every
 //! match length, which is what the trees give.
+//!
+//! LZMA's matches start at two bytes: with `shortest` 2 the latest position
+//! per hash of two bytes gives those, and the shortest match found is
+//! extended to its full length before the tree is searched, as liblzma's
+//! bt4 does.
 
 const std = @import("std");
 const match = @import("history.zig");
 
+pub const Config = struct {
+    /// The window, a power of two; over 64 KiB, distances take 32 bits.
+    window: u32,
+    /// The shortest match a search gives: 3, or 2 for LZMA.
+    shortest: u32 = 3,
+};
+
 /// Binary trees over a window of `window` bytes, a power of two.
 pub fn BinaryTreesFor(comptime window: u32) type {
+    return BinaryTreesWith(.{ .window = window });
+}
+
+pub fn BinaryTreesWith(comptime config: Config) type {
+    comptime std.debug.assert(config.shortest == 2 or config.shortest == 3);
+    const window = config.window;
     return struct {
         const BinaryTrees = @This();
         const Pos = match.Position(window);
         const none = match.none(Pos);
         /// A stored position as its slot bits.
         const Unsigned = @Int(.unsigned, @bitSizeOf(Pos));
+        const pairs = config.shortest == 2;
 
-        pub const Match = match.Match;
+        pub const Match = match.MatchFor(window);
         pub const max_matches = match.max_matches;
 
         /// A search needs this many bytes from its position.
         pub const required = 4;
+        /// The latest position per two-byte hash: as liblzma's, 1024 of them.
+        pub const hash2_bits = if (pairs) 10 else 0;
 
+        /// Private: the latest position per two-byte hash (`shortest` 2).
+        hash2: if (pairs) []Pos else void = if (pairs) &.{} else {},
         /// Private: the two latest positions per three-byte hash, newest first.
         hash3: [][2]Pos,
         /// Private: each tree's root per four-byte hash.
@@ -48,7 +71,8 @@ pub fn BinaryTreesFor(comptime window: u32) type {
         /// The memory for tables of `hash3_bits` and `hash4_bits` over a window of
         /// `span` bytes (at most `window`).
         pub fn memory(hash3_bits: u5, hash4_bits: u5, span: usize) usize {
-            return ((@as(usize, 1) << hash3_bits) * 2 + (@as(usize, 1) << hash4_bits) + span * 2) * @sizeOf(Pos);
+            const two: usize = if (pairs) 1 << hash2_bits else 0;
+            return (two + (@as(usize, 1) << hash3_bits) * 2 + (@as(usize, 1) << hash4_bits) + span * 2) * @sizeOf(Pos);
         }
 
         /// Start over for a stream that begins at `first` (negative with a
@@ -59,6 +83,7 @@ pub fn BinaryTreesFor(comptime window: u32) type {
             bt.hash4_bits = hash4_bits;
             @memset(bt.hash3[0 .. @as(usize, 1) << hash3_bits], .{ none, none });
             @memset(bt.hash4[0 .. @as(usize, 1) << hash4_bits], none);
+            if (pairs) @memset(bt.hash2, none);
             bt.base = if (first < 0) -@as(isize, window) else 0;
             bt.prefix_end = null;
         }
@@ -73,6 +98,7 @@ pub fn BinaryTreesFor(comptime window: u32) type {
         pub fn forget(bt: *BinaryTrees) void {
             @memset(bt.hash3[0 .. @as(usize, 1) << bt.hash3_bits], .{ none, none });
             @memset(bt.hash4[0 .. @as(usize, 1) << bt.hash4_bits], none);
+            if (pairs) @memset(bt.hash2, none);
             bt.prefix_end = null;
         }
 
@@ -83,6 +109,7 @@ pub fn BinaryTreesFor(comptime window: u32) type {
                 match.rebase(window, std.mem.bytesAsSlice(Pos, std.mem.sliceAsBytes(bt.hash3[0 .. @as(usize, 1) << bt.hash3_bits])));
                 match.rebase(window, bt.hash4[0 .. @as(usize, 1) << bt.hash4_bits]);
                 match.rebase(window, bt.child);
+                if (pairs) match.rebase(window, bt.hash2);
                 bt.base += window;
             }
         }
@@ -134,7 +161,16 @@ pub fn BinaryTreesFor(comptime window: u32) type {
                 @prefetch(&bt.hash3[match.hash(next & 0xff_ffff, bt.hash3_bits)], .{ .rw = .write });
                 @prefetch(&bt.hash4[match.hash(next, bt.hash4_bits)], .{ .rw = .write });
             }
-            if (record) {
+            var best_len: u32 = 3;
+            if (pairs) {
+                const h2 = match.hash(word & 0xffff, hash2_bits);
+                const c2 = bt.hash2[h2];
+                bt.hash2[h2] = cur;
+                if (record) {
+                    n = shortMatches(dictionary, h, p, base, cutoff, c2, two, word, max_len, out);
+                    if (n != 0) best_len = @max(best_len, out[n - 1].length);
+                }
+            } else if (record) {
                 // A three-byte match from the newer of the two, else the older.
                 for (two) |c3| {
                     if (c3 <= cutoff) break;
@@ -154,7 +190,6 @@ pub fn BinaryTreesFor(comptime window: u32) type {
                 child[larger] = none;
                 return n;
             }
-            var best_len: u32 = 3;
             var smaller_len: u32 = 0;
             var larger_len: u32 = 0;
             var len: u32 = 0;
@@ -164,17 +199,15 @@ pub fn BinaryTreesFor(comptime window: u32) type {
                 const node_at = bt.slot(full_window, node);
                 if (byteAt(dictionary, h, m + match.offset(len)) == byteAt(dictionary, h, p + match.offset(len))) {
                     len = h.matchLengthOf(dictionary, m, p, len + 1, max_len);
-                    if (!record or len > best_len) {
-                        if (record) {
-                            best_len = len;
-                            out[n] = .{ .length = @intCast(len), .offset = @intCast(p - m) };
-                            n += 1;
-                        }
-                        if (len >= nice_len) {
-                            child[smaller] = child[node_at];
-                            child[larger] = child[node_at + 1];
-                            return n;
-                        }
+                    if (record and len > best_len) {
+                        best_len = len;
+                        out[n] = .{ .length = @intCast(len), .offset = @intCast(p - m) };
+                        n += 1;
+                    }
+                    if (len >= nice_len) {
+                        child[smaller] = child[node_at];
+                        child[larger] = child[node_at + 1];
+                        return n;
                     }
                 }
                 if (byteAt(dictionary, h, m + match.offset(len)) < byteAt(dictionary, h, p + match.offset(len))) {
@@ -199,6 +232,28 @@ pub fn BinaryTreesFor(comptime window: u32) type {
                     return n;
                 }
             }
+        }
+
+        /// liblzma's bt4 start: a two-byte match from the latest position
+        /// with those two bytes, a three-byte one from the latest with the
+        /// hash of three (another position), the later of them extended to
+        /// its full length. Their count.
+        inline fn shortMatches(comptime dictionary: bool, h: match.History, p: isize, base: isize, cutoff: i32, c2: Pos, two: [2]Pos, word: u32, max_len: u32, out: [*]Match) usize {
+            var n: usize = 0;
+            var last: isize = undefined;
+            if (c2 > cutoff and h.load32Of(dictionary, base + c2) & 0xffff == word & 0xffff) {
+                last = base + c2;
+                out[0] = .{ .length = 2, .offset = @intCast(p - last) };
+                n = 1;
+            }
+            const c3 = two[0];
+            if (c3 != c2 and c3 > cutoff and h.load32Of(dictionary, base + c3) & 0xff_ffff == word & 0xff_ffff) {
+                last = base + c3;
+                out[n] = .{ .length = 3, .offset = @intCast(p - last) };
+                n += 1;
+            }
+            if (n != 0) out[n - 1].length = @intCast(h.matchLengthOf(dictionary, last, p, out[n - 1].length, max_len));
+            return n;
         }
 
         /// The byte at `pos`, straight from the input when there is no dictionary.

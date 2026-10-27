@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate, bzip2 and xz/LZMA decoding and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate and xz/LZMA, bzip2 decoding, and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 
@@ -135,6 +135,25 @@ decoder and through a pipe in the resumable one, where each converter holds
 back the tail it cannot convert yet, as liblzma's do. Every check is
 liblzma's, in its order, including its dictionary (at least 4 KiB, rounded
 to 16 bytes), which decides which distances are valid.
+
+The LZMA encoder has no matchfinder of its own: warp's binary trees and hash
+chains take a configuration (a window up to 2 GiB with 32-bit distances, and
+matches from two bytes found through a table of the latest position per two
+bytes, as liblzma's bt4, hc4 and hc3 find them), and DEFLATE's instances are
+unchanged. Over them run liblzma's price-based optimal parser and its fast
+parser, line for line, with its price tables refreshed as it refreshes them;
+a path position no path has reached reads as on liblzma's first stream, so
+the output never depends on an earlier one. The range coder writes the
+caller's output in place and counts what does not fit, so an LZMA2 chunk is
+coded where it will stand, its header written once its sizes are known (or
+the chunk stored where coding does not shrink it), and a `.xz` block's
+LZMA2 is written after room for its header, moved up if the header is
+shorter; the index is read back from the headers. The resumable encoders
+keep a window of the dictionary and a stage, run the parser only while its
+lookahead is in the window, and count a chunk by the coder's position, not
+the window's, so a slide never moves what the chunk header says; they write
+the whole-buffer encoder's bytes. The parallel encoder gives each worker a
+block and its own buffer and writes the blocks in order.
 
 LZ4 has its own block engine, parsers and frame owners beneath `warp.lz4`, and
 no entropy stage: it imports neither the bit layer nor the Huffman builders.

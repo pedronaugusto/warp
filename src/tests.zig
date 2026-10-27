@@ -45,4 +45,5 @@ test {
     _ = @import("lzma.zig");
     _ = @import("xz.zig");
     _ = @import("testing/lzma_test.zig");
+    _ = @import("testing/lzma_encode_test.zig");
 }

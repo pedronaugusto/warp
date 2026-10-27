@@ -472,13 +472,31 @@ of the output, and answers anything else as the whole-buffer decoder does.
 
 What liblzma 5.8.4 decodes, warp decodes, and what it refuses, warp refuses
 for the same reason; a captured corpus of its streams and verdicts checks it.
-`xz-bench` measures the three decoders. Encoding comes next.
+
+`xz.Compressor.compress(in, out)` writes a `.xz` stream: LZMA2 at liblzma's
+presets (`lzma = .preset(6, false)`, 0-9 and `-e`, or every setting apart),
+the filters before it applied forward, any check, and blocks of `block_size`
+(one by default). Every block header names both sizes, so the parallel
+decoders split what warp writes. `lzma.Compressor` writes raw LZMA (with or
+without an end marker), raw LZMA2 and `.lzma` files. The encoder is warp's own
+on warp's matchfinders, with liblzma's parsers and presets: its streams are
+not liblzma's byte for byte, and they are the same size, give or take a few
+hundredths of a percent. Tables are taken once, sized by the dictionary or a
+`max_input`.
+
+`lzma.Compress` and `xz.Compress` (each with a `Writer`) encode input that
+comes in pieces, writing the whole-buffer encoder's bytes however it arrives.
+`xz.Compress` writes one block whose header names no sizes, as `xz` does, or,
+with `block_size`, staged blocks that name them. `xz.parallel.Compressor`
+encodes blocks of three dictionaries in workers, as `xz -T` cuts them,
+writing the whole-buffer encoder's stream for the same block size.
+`xz-bench` measures the decoders and encoders.
 
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
 Brotli compression and decompression; GDeflate compression and decompression on the CPU;
-bzip2 decompression; xz, `.lzma` and raw LZMA/LZMA2 decompression;
+bzip2 decompression; xz, `.lzma` and raw LZMA/LZMA2 compression and decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

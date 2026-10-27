@@ -10,16 +10,44 @@
 const std = @import("std");
 const match = @import("history.zig");
 
+pub const Config = struct {
+    /// The window, a power of two; over 64 KiB, distances take 32 bits.
+    window: u32,
+    /// The shortest match `matches` gives: 2 for LZMA, from the latest
+    /// position per hash of two bytes. 3: `longestMatch` alone.
+    shortest: u32 = 3,
+    /// The bytes the chains hash: 4, or 3 (liblzma's hc3; the hash of
+    /// three bytes is then the chains').
+    chain: u32 = 4,
+};
+
 /// Hash chains over a window of `window` bytes, a power of two.
 pub fn HashChainsFor(comptime window: u32) type {
+    return HashChainsWith(.{ .window = window });
+}
+
+pub fn HashChainsWith(comptime config: Config) type {
+    comptime std.debug.assert(config.chain == 3 or config.chain == 4);
+    comptime std.debug.assert(config.shortest == 2 or (config.shortest == 3 and config.chain == 4));
+    const window = config.window;
     return struct {
         const HashChains = @This();
         const Pos = match.Position(window);
         const none = match.none(Pos);
         /// A stored position as its slot bits.
         const Unsigned = @Int(.unsigned, @bitSizeOf(Pos));
+        const pairs = config.shortest == 2;
+        /// The bytes of a word the chains hash.
+        const chain_mask: u32 = if (config.chain == 4) 0xffff_ffff else 0xff_ffff;
 
-        /// Private: the latest position per four-byte hash.
+        pub const Match = match.MatchFor(window);
+        /// The latest position per two-byte hash: as liblzma's, 1024 of them.
+        pub const hash2_bits = if (pairs) 10 else 0;
+
+        /// Private: the latest position per two-byte hash (`shortest` 2).
+        hash2: if (pairs) []Pos else void = if (pairs) &.{} else {},
+        /// Private: the latest position per four-byte hash (three with
+        /// `chain` 3): the chains' heads.
         hash4: []Pos,
         /// Private: the latest position per three-byte hash.
         hash3: []Pos,
@@ -31,11 +59,15 @@ pub fn HashChainsFor(comptime window: u32) type {
         hash3_bits: u5 = 0,
         /// Private: positions are stored relative to this.
         base: isize = 0,
+        /// The farthest a match from `matches` reaches back (at most the
+        /// chains' length).
+        reach: u32 = window,
 
         /// The memory for tables of at most `hash4_bits` and `hash3_bits`, over a
         /// window of `span` bytes (at most `window`).
         pub fn memory(hash4_bits: u5, hash3_bits: u5, span: usize) usize {
-            return ((@as(usize, 1) << hash4_bits) + (@as(usize, 1) << hash3_bits) + span) * @sizeOf(Pos);
+            const two: usize = if (pairs) 1 << hash2_bits else 0;
+            return (two + (@as(usize, 1) << hash4_bits) + (@as(usize, 1) << hash3_bits) + span) * @sizeOf(Pos);
         }
 
         /// Start over for a stream that begins at `first` (negative with a
@@ -46,6 +78,7 @@ pub fn HashChainsFor(comptime window: u32) type {
             hc.hash3_bits = hash3_bits;
             @memset(hc.hash4[0 .. @as(usize, 1) << hash4_bits], none);
             @memset(hc.hash3[0 .. @as(usize, 1) << hash3_bits], none);
+            if (pairs) @memset(hc.hash2, none);
             // A multiple of the window: a dictionary's positions start a window
             // before the input.
             hc.base = if (first < 0) -@as(isize, window) else 0;
@@ -67,6 +100,7 @@ pub fn HashChainsFor(comptime window: u32) type {
         pub fn forget(hc: *HashChains) void {
             @memset(hc.hash4[0 .. @as(usize, 1) << hc.hash4_bits], none);
             @memset(hc.hash3[0 .. @as(usize, 1) << hc.hash3_bits], none);
+            if (pairs) @memset(hc.hash2, none);
         }
 
         /// Keep positions storable: once `p` is a window past the base, move it.
@@ -76,6 +110,7 @@ pub fn HashChainsFor(comptime window: u32) type {
                 match.rebase(window, hc.hash4[0 .. @as(usize, 1) << hc.hash4_bits]);
                 match.rebase(window, hc.hash3[0 .. @as(usize, 1) << hc.hash3_bits]);
                 match.rebase(window, hc.prev);
+                if (pairs) match.rebase(window, hc.hash2);
                 hc.base += window;
             }
         }
@@ -175,6 +210,72 @@ pub fn HashChainsFor(comptime window: u32) type {
             return best_len;
         }
 
+        /// Every match at `p` (`p >= 0`) longer than the last found, as
+        /// liblzma's hc3 and hc4 find them (`shortest` 2): two bytes from the
+        /// latest position with those two, three from the hash of three
+        /// (with `chain` 4), the later of them extended to its full length,
+        /// then the chain for longer ones, at most `depth` links and to
+        /// `max_len` (`p + max(max_len, 4) <= in.len`), stopping at
+        /// one of `max_len`; inserts `p`. The matches go to `out` by
+        /// increasing length; their count is returned. No dictionary.
+        pub fn matches(hc: *HashChains, h: match.History, p: isize, max_len: u32, depth: u32, out: [*]Match) usize {
+            comptime std.debug.assert(pairs);
+            hc.advance(p);
+            const base = hc.base;
+            const prev = hc.prev.ptr;
+            const mask = hc.prev.len - 1;
+            const cur: Pos = @intCast(p - base);
+            const cutoff: i32 = @as(i32, cur) - @as(i32, @intCast(hc.reach));
+            const word = h.load32Of(false, p);
+            const h2 = match.hash(word & 0xffff, hash2_bits);
+            const c2 = hc.hash2[h2];
+            hc.hash2[h2] = cur;
+            const hk = match.hash(word & chain_mask, hc.hash4_bits);
+            var cand = hc.hash4[hk];
+            hc.hash4[hk] = cur;
+            prev[slot(cur, mask)] = cand;
+            var n: usize = 0;
+            var last: isize = undefined;
+            if (c2 > cutoff and h.load32Of(false, base + c2) & 0xffff == word & 0xffff) {
+                last = base + c2;
+                out[0] = .{ .length = 2, .offset = @intCast(p - last) };
+                n = 1;
+            }
+            if (config.chain == 4) {
+                const h3 = match.hash(word & 0xff_ffff, hc.hash3_bits);
+                const c3 = hc.hash3[h3];
+                hc.hash3[h3] = cur;
+                if (c3 != c2 and c3 > cutoff and h.load32Of(false, base + c3) & 0xff_ffff == word & 0xff_ffff) {
+                    last = base + c3;
+                    out[n] = .{ .length = 3, .offset = @intCast(p - last) };
+                    n += 1;
+                }
+            }
+            var best_len: u32 = 2;
+            if (n != 0) {
+                best_len = h.matchLengthOf(false, last, p, out[n - 1].length, max_len);
+                out[n - 1].length = @intCast(best_len);
+                if (best_len == max_len) return n;
+            }
+            // The chains: four-byte ones give matches past three bytes.
+            if (config.chain == 4) best_len = @max(best_len, 3);
+            var left = depth;
+            while (left != 0 and cand > cutoff) : (left -= 1) {
+                const c = base + cand;
+                cand = prev[slot(cand, mask)];
+                const at = match.offset(best_len);
+                if (h.in[@intCast(c + at)] != h.in[@intCast(p + at)] or h.in[@intCast(c)] != h.in[@intCast(p)]) continue;
+                const len = h.matchLengthOf(false, c, p, 1, max_len);
+                if (len > best_len) {
+                    best_len = len;
+                    out[n] = .{ .length = @intCast(len), .offset = @intCast(p - c) };
+                    n += 1;
+                    if (len == max_len) break;
+                }
+            }
+            return n;
+        }
+
         /// Insert `count` positions from `p` (`p >= 0`) without searching (`p +
         /// count + 3 <= in.len`).
         pub inline fn skip(hc: *HashChains, comptime full_window: bool, h: match.History, p: isize, count: u32) void {
@@ -215,8 +316,9 @@ pub fn HashChainsFor(comptime window: u32) type {
                 while (q < stop) : (q += 1) {
                     const cur: Pos = @intCast(q - base);
                     const word = h.load32Of(dictionary, q);
-                    hash3[match.hash(word & 0xff_ffff, bits3)] = cur;
-                    const h4 = match.hash(word, bits4);
+                    if (pairs) hc.hash2[match.hash(word & 0xffff, hash2_bits)] = cur;
+                    if (config.chain == 4) hash3[match.hash(word & 0xff_ffff, bits3)] = cur;
+                    const h4 = match.hash(word & chain_mask, bits4);
                     prev[slot(cur, mask)] = hash4[h4];
                     hash4[h4] = cur;
                 }

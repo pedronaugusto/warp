@@ -1,5 +1,6 @@
 //! `.xz`: streams of blocks of LZMA2, with Delta and the branch
-//! converters before it, decoded as liblzma 5.8.4 reads them.
+//! converters before it, decoded as liblzma 5.8.4 reads them and encoded
+//! as it writes them.
 
 /// Where a stream was refused, and why (shared with `warp.lzma`).
 pub const Diagnostic = @import("lzma/Diagnostic.zig");
@@ -7,6 +8,14 @@ pub const Diagnostic = @import("lzma/Diagnostic.zig");
 pub const Decompressor = @import("xz/Decompressor.zig");
 /// Resumable decoding.
 pub const Decompress = @import("xz/Decompress.zig");
+/// Whole-buffer encoding.
+pub const Compressor = @import("xz/Compressor.zig");
+/// Resumable encoding.
+pub const Compress = @import("xz/Compress.zig");
+/// A block's check.
+pub const Check = Compressor.Check;
+/// A filter before LZMA2.
+pub const Filter = Compressor.Filter;
 /// Whole-buffer decoding with blocks decoded in parallel.
 pub const parallel = @import("xz/parallel.zig");
 /// How many streams a decoder reads.
