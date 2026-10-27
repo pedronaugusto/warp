@@ -22,6 +22,12 @@ All notable changes to warp are documented here. The format follows
 
 - Re-pinned onto preflight 0.18.0, aegis 0.1.18, shakedown 0.4.18 and ensign 0.3.0, with aegis's safety rules at gate but A009 and A010 (reported). The decoders' states are `aegis.state.Machine`s (DEFLATE's blocks and wrappers, the gzip header, LZ4 and zstd frames, Brotli), each phase changed in one place along an edge checked at compile time; LZ4's and zstd's streaming decoders keep a refusal in `failure` alone. CPU detection keeps its cell in `aegis.Atomic`, contracts on input are `aegis.assert.invariant`, and the benchmarks and the size gate read files through `aegis.own.readFile` with a limit.
 
+## [0.4.5] - 2026-10-27
+
+### Security
+
+- zstd: two table descriptions stopped the program in a safe build and were undefined behaviour in ReleaseFast, reachable from any frame, compressed dictionary or Huffman literals section a peer sends. (1) An FSE description whose zero-count repeat codes run into its last seven bytes (eight bytes suffice: `10 fe ff ff ff ff ff ff`): the distance zstd subtracts there is negative, and warp took it unsigned, an integer overflow. (2) A description of log 15 whose one count fills the table (`fa ff 0f`): the count, 32768, was narrowed into 16 bits. The first now reads as zstd 1.5.7's `FSE_readNCount` reads it; the second is refused, the answer zstd's callers give it. Both have tests, and a fuzz target now reads FSE and Huffman descriptions that end their input, the shape the frame-level targets missed.
+
 ## [0.4.4] - 2026-10-25
 
 ### Added
