@@ -191,7 +191,7 @@ fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
         : [leaf] "{eax}" (leaf),
           [subleaf] "{ecx}" (subleaf),
     );
-    return .{ eax, ebx, ecx, edx }; // aegis: no-danger: the asm above writes all four
+    return .{ eax, ebx, ecx, edx };
 }
 
 fn xgetbv() u32 {

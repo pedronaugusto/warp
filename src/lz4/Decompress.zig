@@ -439,7 +439,7 @@ pub const Reader = struct {
                 r.failure = failure;
                 return error.ReadFailed;
             };
-            r.input.toss(step.in_len); // aegis: no-danger: decode counts bytes of `input`, which the reader holds buffered
+            r.input.toss(step.in_len);
             if (step.out_len != 0) return step.out_len;
             if (step.status == .done) return error.EndOfStream;
             input = r.input.peekGreedy(1) catch |failure| {
