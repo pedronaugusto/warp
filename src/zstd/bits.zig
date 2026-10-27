@@ -54,7 +54,7 @@ pub const Reader = struct {
     /// The next `n` bits (1 to 63) without taking them; zeros past the
     /// stream's start.
     pub inline fn peek(r: *const Reader, n: u6) u64 {
-        return (r.container << @intCast(r.consumed & 63)) >> @intCast(@as(u7, 64) - n);
+        return (r.container << @as(u6, @truncate(r.consumed))) >> @intCast(@as(u7, 64) - n);
     }
 
     /// Take `n` bits (`peek` has looked at them).
@@ -72,7 +72,7 @@ pub const Reader = struct {
     /// Take the next `n` bits, 0 to 63.
     pub inline fn read(r: *Reader, n: u6) u64 {
         const start: u32 = 64 -% r.consumed -% n;
-        const v = (r.container >> @intCast(start & 63)) & ((@as(u64, 1) << n) - 1);
+        const v = (r.container >> @as(u6, @truncate(start))) & ((@as(u64, 1) << n) - 1);
         r.consumed += n;
         return v;
     }

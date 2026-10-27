@@ -71,7 +71,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
                     bit_count &= 31;
                     ip = iend - 4;
                 }
-                bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @intCast(bit_count);
+                bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @as(u5, @truncate(bit_count));
                 repeats = @ctz(~bit_stream | 0x8000_0000) >> 1;
             }
             charnum += 3 * repeats;
@@ -88,16 +88,19 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
                 bit_count &= 31;
                 ip = iend - 4;
             }
-            bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @intCast(bit_count);
+            bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @as(u5, @truncate(bit_count));
         }
         const max: i32 = (2 * threshold - 1) - remaining;
         var count: i32 = undefined;
         const low_mask: u32 = @intCast(threshold - 1);
-        if (@as(i64, bit_stream & low_mask) < max) {
-            count = @intCast(bit_stream & low_mask);
+        // `threshold` is at most 2^15: the low bits fit 15, a full read 16.
+        const low: u15 = @truncate(bit_stream & low_mask);
+        if (@as(i64, low) < max) {
+            count = low;
             bit_count += nb_bits - 1;
         } else {
-            count = @intCast(bit_stream & @as(u32, @intCast(2 * threshold - 1)));
+            const full: u16 = @truncate(bit_stream & @as(u32, @intCast(2 * threshold - 1)));
+            count = full;
             if (count >= threshold) count -= max;
             bit_count += nb_bits;
         }
@@ -123,7 +126,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
             bit_count &= 31;
             ip = iend - 4;
         }
-        bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @intCast(bit_count);
+        bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @as(u5, @truncate(bit_count));
     }
     if (remaining != 1) return error.InvalidStream;
     if (charnum > symbols) return error.InvalidStream;
