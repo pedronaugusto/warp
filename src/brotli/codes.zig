@@ -78,31 +78,32 @@ pub const max_allowed_distance = 0x7ffffffc;
 /// The distance alphabet's size for the stream's parameters; for a
 /// large-window stream, the symbols a simple code's widths count (`max`)
 /// and the ones it may use (`limit`), the format reference's rule.
-pub fn distanceAlphabet(npostfix: u32, ndirect: u32, large_window: bool) struct { max: u32, limit: u32 } {
+pub fn distanceAlphabet(npostfix: u2, ndirect: u7, large_window: bool) struct { max: u32, limit: u32 } {
+    const shift = @as(u5, npostfix) + 1;
     if (!large_window) {
-        const n = short_distance_codes + ndirect + (@as(u32, max_distance_bits) << @intCast(npostfix + 1));
+        const n = short_distance_codes + @as(u32, ndirect) + (@as(u32, max_distance_bits) << shift);
         return .{ .max = n, .limit = n };
     }
-    return .{ .max = short_distance_codes + ndirect + (@as(u32, large_max_distance_bits) << @intCast(npostfix + 1)), .limit = largeLimit(npostfix, ndirect) };
+    return .{ .max = short_distance_codes + @as(u32, ndirect) + (@as(u32, large_max_distance_bits) << shift), .limit = largeLimit(npostfix, ndirect) };
 }
 
 /// The distance symbols a large-window stream may use: complete groups of
 /// 2^NPOSTFIX symbols whose distances stay within `max_allowed_distance`.
-fn largeLimit(npostfix: u32, ndirect: u32) u32 {
+fn largeLimit(npostfix: u2, ndirect: u7) u32 {
     const max_distance: u32 = max_allowed_distance;
     if (max_distance <= ndirect) return max_distance + short_distance_codes;
     var offset = max_distance + 1 - ndirect - 1;
-    const postfix = (@as(u32, 1) << @intCast(npostfix)) - 1;
-    offset = (offset >> @intCast(npostfix)) + 4;
+    const postfix = (@as(u32, 1) << npostfix) - 1;
+    offset = (offset >> npostfix) + 4;
     var ndistbits: u32 = 0;
     var tmp = offset / 2;
     while (tmp != 0) : (tmp >>= 1) ndistbits += 1;
     ndistbits -= 1;
     const half = (offset >> @intCast(ndistbits)) & 1;
     var group = ((ndistbits - 1) << 1) | half;
-    if (group == 0) return ndirect + short_distance_codes;
+    if (group == 0) return @as(u32, ndirect) + short_distance_codes;
     group -= 1;
-    return ((group << @intCast(npostfix)) | postfix) + ndirect + short_distance_codes + 1;
+    return ((group << npostfix) | postfix) + ndirect + short_distance_codes + 1;
 }
 
 /// The largest distance alphabet any stream can have, for table sizes.
@@ -112,8 +113,8 @@ pub const max_distance_limit = blk: {
     for (0..max_npostfix + 1) |p| {
         var d: u32 = 0;
         while (d <= 15) : (d += 1) {
-            const a = distanceAlphabet(p, d << p, true);
-            m = @max(m, a.limit, distanceAlphabet(p, d << p, false).limit);
+            const a = distanceAlphabet(@intCast(p), @intCast(d << p), true);
+            m = @max(m, a.limit, distanceAlphabet(@intCast(p), @intCast(d << p), false).limit);
         }
     }
     break :blk m;
@@ -121,15 +122,15 @@ pub const max_distance_limit = blk: {
 
 /// A distance symbol at or past `16 + NDIRECT` stands for `offset` plus
 /// `extra` bits shifted by NPOSTFIX.
-pub fn distanceRange(symbol: u32, npostfix: u32, ndirect: u32) Range {
-    if (symbol < short_distance_codes + ndirect) return .{ .offset = symbol - short_distance_codes + 1, .extra = 0 };
+pub fn distanceRange(symbol: u32, npostfix: u2, ndirect: u7) Range {
+    if (symbol < short_distance_codes + @as(u32, ndirect)) return .{ .offset = symbol - short_distance_codes + 1, .extra = 0 };
     const x = symbol - ndirect - short_distance_codes;
-    const ndistbits = 1 + (x >> @intCast(npostfix + 1));
-    const half = (x >> @intCast(npostfix)) & 1;
-    const postfix = x & ((@as(u32, 1) << @intCast(npostfix)) - 1);
+    const ndistbits = 1 + (x >> (@as(u5, npostfix) + 1));
+    const half = (x >> npostfix) & 1;
+    const postfix = x & ((@as(u32, 1) << npostfix) - 1);
     // Large-window offsets past 2^32 cannot be reached within the limit.
     const start: u64 = ((@as(u64, 2) + half) << @intCast(ndistbits)) - 4;
-    return .{ .offset = @intCast(((start << @intCast(npostfix)) + postfix + ndirect + 1) & 0xffff_ffff), .extra = @intCast(ndistbits) };
+    return .{ .offset = @truncate(((start << npostfix) + postfix + ndirect + 1) & 0xffff_ffff), .extra = @intCast(ndistbits) };
 }
 
 test "commands match RFC 7932's table" {

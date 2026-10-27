@@ -214,8 +214,9 @@ pub const State = struct {
     // The meta-block header as it is read.
     category: u2 = 0,
     num_types: [3]u32 = .{ 1, 1, 1 },
-    npostfix: u32 = 0,
-    ndirect: u32 = 0,
+    /// NPOSTFIX, 2 bits; NDIRECT, 4 bits shifted by NPOSTFIX: at most 120.
+    npostfix: u2 = 0,
+    ndirect: u7 = 0,
     distance_max: u32 = 0,
     distance_limit: u32 = 0,
     mode_index: u32 = 0,
@@ -389,8 +390,8 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         },
         .distance_params => {
             const v = try r.bits(careful, 6);
-            s.npostfix = v & 3;
-            s.ndirect = (v >> 2) << @intCast(s.npostfix);
+            s.npostfix = @truncate(v);
+            s.ndirect = @as(u7, @as(u4, @truncate(v >> 2))) << s.npostfix;
             const a = codes.distanceAlphabet(s.npostfix, s.ndirect, s.large);
             s.distance_max = a.max;
             s.distance_limit = a.limit;
@@ -913,7 +914,7 @@ inline fn readDistance(comptime careful: bool, s: *State, t: *Tables, r: *Reader
     if (symbol < codes.short_distance_codes) return .{ .distance = shortDistance(&s.distances, symbol), .push = symbol != 0 };
     const range = t.distance_ranges[symbol];
     const extra = try r.bits(careful, range.extra);
-    return .{ .distance = range.offset +% (extra << @intCast(s.npostfix)), .push = true };
+    return .{ .distance = range.offset +% (extra << s.npostfix), .push = true };
 }
 
 /// Output room the fast loop keeps past a command: a 16-byte wild copy's
@@ -1005,7 +1006,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             } else {
                 const range = t.distance_ranges[symbol];
                 f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger: fast reads never fail
-                d = range.offset +% (@as(u32, @intCast(f.br.peek(range.extra))) << @intCast(npostfix));
+                d = range.offset +% (@as(u32, @intCast(f.br.peek(range.extra))) << npostfix);
                 f.br.drop(range.extra);
             }
         }
