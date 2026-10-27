@@ -554,11 +554,14 @@ pub const Frame = struct {
             prefetchMatch(out, o, prefix, offset);
             const ml_extra = SequenceCells.extra(cell.ml);
             const ll_extra = SequenceCells.extra(cell.ll);
-            var ml: usize = SequenceCells.base(cell.ml);
-            if (ml_extra > 0) ml += @intCast(r.readFast(ml_extra));
+            // Lengths: a base below 2^17 and at most 16 extra bits.
+            const ml_base: u17 = @truncate(SequenceCells.base(cell.ml));
+            const ml_bits: u16 = if (ml_extra > 0) @truncate(r.readFast(ml_extra)) else 0;
+            const ml: usize = @as(u32, ml_base) + ml_bits;
             if (@as(u32, of_extra) + ml_extra + ll_extra >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
-            var ll: usize = SequenceCells.base(cell.ll);
-            if (ll_extra > 0) ll += @intCast(r.readFast(ll_extra));
+            const ll_base: u17 = @truncate(SequenceCells.base(cell.ll));
+            const ll_bits: u16 = if (ll_extra > 0) @truncate(r.readFast(ll_extra)) else 0;
+            const ll: usize = @as(u32, ll_base) + ll_bits;
             if (n > 1) {
                 ll_state = SequenceCells.nextState(LlState, cell.ll, &r);
                 ml_state = SequenceCells.nextState(MlState, cell.ml, &r);
@@ -716,7 +719,10 @@ const SequenceCells = struct {
     inline fn offset(cells: SequenceCells, r: *bits.Reader, rep: *[3]u32) u32 {
         const of_extra = extra(cells.of);
         if (of_extra > 1) {
-            const value = base(cells.of) + @as(u32, @intCast(r.readFast(of_extra)));
+            // A base below 2^31 and fewer than 31 extra bits: the sum fits.
+            const of_base: u31 = @truncate(base(cells.of));
+            const of_bits: u31 = @truncate(r.readFast(of_extra));
+            const value = @as(u32, of_base) + of_bits;
             rep[2] = rep[1];
             rep[1] = rep[0];
             rep[0] = value;
@@ -731,7 +737,10 @@ const SequenceCells = struct {
             return value;
         }
         // Repeat 2 or 3, or after no literals repeat 3 or repeat 1 less one.
-        const index = base(cells.of) + @intFromBool(ll0) + @as(u32, @intCast(r.readFast(1)));
+        // A repeat code's base is 0 or 1: the index is 0 to 3.
+        const rep_base: u1 = @truncate(base(cells.of));
+        const rep_bit: u1 = @truncate(r.readFast(1));
+        const index = @as(u32, rep_base) + @intFromBool(ll0) + rep_bit;
         var value: u32 = switch (index) {
             1 => rep[1],
             2 => rep[2],
@@ -764,7 +773,7 @@ const SequenceCells = struct {
     }
 
     inline fn base(cell: u64) u32 {
-        return @intCast(cell >> 32);
+        return @truncate(cell >> 32);
     }
 };
 
@@ -817,12 +826,20 @@ pub const Prepared = struct {
             const llc = ll_cells[ll_state];
             const mlc = ml_cells[ml_state];
             const ofc = of_cells[of_state];
-            const off = if (ofc.extra_bits > 1) ofc.base + @as(u32, @intCast(r.readFast(@intCast(ofc.extra_bits)))) + 3 else if (ofc.extra_bits == 1) 2 + @as(u32, @intCast(r.readFast(1))) else 1;
-            var ml = mlc.base;
-            if (mlc.extra_bits > 0) ml += @intCast(r.readFast(@intCast(mlc.extra_bits)));
+            // An offset code's base below 2^31 and fewer than 31 extra bits;
+            // a length code's base below 2^17 and at most 16.
+            const off = if (ofc.extra_bits > 1) blk: {
+                const of_base: u31 = @truncate(ofc.base);
+                const of_bits: u31 = @truncate(r.readFast(@truncate(ofc.extra_bits)));
+                break :blk @as(u32, of_base) + of_bits + 3;
+            } else if (ofc.extra_bits == 1) 2 + @as(u32, @as(u1, @truncate(r.readFast(1)))) else 1;
+            const ml_base: u17 = @truncate(mlc.base);
+            const ml_bits: u16 = if (mlc.extra_bits > 0) @truncate(r.readFast(@truncate(mlc.extra_bits))) else 0;
+            const ml = @as(u32, ml_base) + ml_bits;
             if (@as(u32, ofc.extra_bits) + mlc.extra_bits + llc.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
-            var ll = llc.base;
-            if (llc.extra_bits > 0) ll += @intCast(r.readFast(@intCast(llc.extra_bits)));
+            const ll_base: u17 = @truncate(llc.base);
+            const ll_bits: u16 = if (llc.extra_bits > 0) @truncate(r.readFast(@truncate(llc.extra_bits))) else 0;
+            const ll = @as(u32, ll_base) + ll_bits;
             sequence.* = .{ .ll = ll, .ml = ml, .off = off };
             if (i + 1 < prepared.count) {
                 ll_state = SequenceCells.nextState(LlState, @bitCast(llc), &r);

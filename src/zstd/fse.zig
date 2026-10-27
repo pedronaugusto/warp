@@ -183,7 +183,10 @@ fn decodeCells(comptime T: type, comptime Context: type, comptime make: fn (Cont
         const n = next[s];
         next[s] = n + 1;
         const nb: u32 = log - std.math.log2_int(u32, n);
-        c.* = make(context, s, @intCast(nb), @intCast((n << @intCast(nb)) - size));
+        // `n << nb` lies in [size, 2 * size): less `size` is its low bits,
+        // a state of the table.
+        const base_state: CellIndex = @truncate((n << @intCast(nb)) & (size -% 1));
+        c.* = make(context, s, @intCast(nb), base_state);
     }
 }
 
