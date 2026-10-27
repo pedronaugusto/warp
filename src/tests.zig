@@ -40,4 +40,6 @@ test {
     _ = @import("gdeflate.zig");
     _ = @import("testing/gdeflate_test.zig");
     _ = @import("testing/brotli_encode_test.zig");
+    _ = @import("bzip2.zig");
+    _ = @import("testing/bzip2_test.zig");
 }

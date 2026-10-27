@@ -1,6 +1,6 @@
-//! DEFLATE, zlib, gzip, zstd and LZ4: compression and decompression; Brotli
-//! decompression; GDeflate compression and decompression on the CPU; CRC-32,
-//! CRC-32C and Adler-32.
+//! DEFLATE, zlib, gzip, zstd, LZ4 and Brotli: compression and decompression;
+//! bzip2 decompression; GDeflate compression and decompression on the CPU;
+//! CRC-32, CRC-32C, Adler-32 and bzip2's CRC-32.
 
 const checksum = @import("checksum.zig");
 const flate = @import("flate.zig");
@@ -10,8 +10,10 @@ pub const zstd = @import("zstd.zig");
 
 /// LZ4 blocks and frames, compression at lz4's levels and decompression.
 pub const lz4 = @import("lz4.zig");
-/// Brotli streams, decompression.
+/// Brotli streams, compression and decompression.
 pub const brotli = @import("brotli.zig");
+/// bzip2 streams, decompression.
+pub const bzip2 = @import("bzip2.zig");
 /// GDeflate pages and DirectStorage tile streams, compressed at DEFLATE's levels
 /// and decoded on the CPU.
 pub const gdeflate = @import("gdeflate.zig");
@@ -43,6 +45,10 @@ pub const Adler32 = checksum.Adler32;
 pub const adler32 = checksum.adler32;
 /// The Adler-32 of A ++ B from those of A and B and B's length.
 pub const adler32Combine = checksum.adler32Combine;
+/// bzip2's CRC-32 (MSB first), the check of its blocks.
+pub const Crc32Bzip2 = checksum.Crc32Bzip2;
+/// `crc` continued over the bytes; 0 starts one.
+pub const crc32Bzip2 = checksum.crc32Bzip2;
 /// Which kernel each checksum runs on this CPU.
 pub const kernels = checksum.kernels;
 /// The kernel of each checksum.

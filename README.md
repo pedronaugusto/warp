@@ -2,8 +2,8 @@
 
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
-through `warp.lz4`, and Brotli streams through `warp.brotli`. It
-computes CRC-32, CRC-32C and Adler-32. Whole-buffer and streaming calls use caller memory
+through `warp.lz4`, Brotli streams through `warp.brotli`, and decodes bzip2
+through `warp.bzip2`. It computes CRC-32, CRC-32C, Adler-32 and bzip2's CRC-32. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
 as the reference does. Checksum dispatch selects
 a kernel supported by the CPU.
@@ -415,10 +415,44 @@ warp's lane writer, given the blocks and symbols of the reference's pages,
 writes them byte for byte: a captured corpus of its tile streams checks all
 three.
 
+### bzip2
+
+`warp.bzip2` decodes bzip2 (decoding only: nothing writes new bzip2, and old
+files and archive entries are what is read). `Decompressor.decompress(in, out,
+.{})` decodes straight into the caller's output; a `Decompressor` holds the
+largest block's BWT vector (3.5 MiB, `memory`) and its code tables, taken once
+(`init`) or in caller memory (`initBuffer`), and allocates nothing.
+`streams = .all` decodes concatenated streams as `bzip2 -d` does, stopping
+before anything that is not a stream header; `.one` leaves what follows the
+first unread. `Diagnostic` records the refusal's bit offset and reason.
+
+`Decompress.decode` is resumable at every input and output byte, in the
+caller's `memory` bytes; it reads the input in place and takes only the bytes
+it read, so the streams' end is exact however the input is cut. At the end
+of input, up to three bytes that may begin another stream's header are
+given back (`need_input` with `in_len` short of the input), to give again
+with what follows; call `finish` at end of input to check truncation.
+`Decompress.Reader` uses the same decoder, reserving 4 KiB of its buffer for
+reader buffering, and leaves what follows the streams in its source.
+
+`parallel.Decompressor` decodes blocks in workers: blocks are found by their
+48-bit magic, each decoded on its own, and joined in order on the caller's
+thread where the one before ended, so its output, errors and diagnostics are
+the whole-buffer decoder's. Each worker holds a BWT vector and `block_out`
+bytes of output (4 MiB by default; a longer block finishes on the caller's
+thread).
+
+What libbz2 1.0.8 decodes, warp decodes, and what it refuses, warp refuses
+for the same reason, randomised blocks and its 18,002-selector limit
+included; where 1.0.8's answer depends on memory it never wrote (a code that
+names a symbol past the alphabet), warp refuses. A captured corpus of its
+streams and verdicts checks it. `bzip2-bench` measures the three decoders.
+
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
 Brotli compression and decompression; GDeflate compression and decompression on the CPU;
+bzip2 decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

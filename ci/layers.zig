@@ -16,7 +16,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "diagnostic", .patterns = &.{"src/Diagnostic.zig"} },
     .{ .name = "checksum kernel names", .patterns = &.{"src/checksum/kernel.zig"} },
     .{ .name = "crc", .patterns = &.{"src/checksum/crc.zig"} },
-    .{ .name = "checksums", .patterns = &.{ "src/checksum/crc32.zig", "src/checksum/crc32c.zig", "src/checksum/adler32.zig" } },
+    .{ .name = "checksums", .patterns = &.{ "src/checksum/crc32.zig", "src/checksum/crc32c.zig", "src/checksum/adler32.zig", "src/checksum/crc32bzip2.zig" } },
     .{ .name = "checksum", .patterns = &.{"src/checksum.zig"} },
     .{ .name = "bits", .patterns = &.{"src/bits.zig"} },
     .{ .name = "huffman codes", .patterns = &.{ "src/huffman/decode.zig", "src/huffman/encode.zig" } },
@@ -80,6 +80,13 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "brotli encode frame", .patterns = &.{"src/brotli/Compressor.zig"} },
     .{ .name = "brotli encode stream", .patterns = &.{"src/brotli/Compress.zig"} },
     .{ .name = "brotli", .patterns = &.{"src/brotli.zig"} },
+    .{ .name = "bzip2 parts", .patterns = &.{ "src/bzip2/bits.zig", "src/bzip2/huffman.zig", "src/bzip2/Diagnostic.zig" } },
+    .{ .name = "bzip2 engine", .patterns = &.{"src/bzip2/decode.zig"} },
+    .{ .name = "bzip2 frame", .patterns = &.{"src/bzip2/Decompressor.zig"} },
+    .{ .name = "bzip2 stream", .patterns = &.{"src/bzip2/Decompress.zig"} },
+    .{ .name = "bzip2 parallel decode", .patterns = &.{"src/bzip2/parallel/Decompressor.zig"} },
+    .{ .name = "bzip2 parallel", .patterns = &.{"src/bzip2/parallel.zig"} },
+    .{ .name = "bzip2", .patterns = &.{"src/bzip2.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 
@@ -117,6 +124,8 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "brotli-streams.corpus",
         "brotli-invalid.corpus",
         "gdeflate.corpus",
+        "bzip2-streams.corpus",
+        "bzip2-invalid.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

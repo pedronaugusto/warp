@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate, bzip2 decoding and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 
@@ -102,6 +102,23 @@ its round loop, with a pending match per lane, is GDeflate's own. A pending
 match's source always lies before its place, and every other pending match's
 place after it, so a copy reads only written output. The tile stream and its
 offsets are checked before any page is decoded.
+
+bzip2 has its own MSB-first bit reader, code tables and engine beneath
+`warp.bzip2`, and imports only its CRC from the checksum layer. The code
+tables are libbz2 1.0.8's limits, bases and permutation, built as it builds
+them, with a 10-bit root table that replays its decode loop, so a code
+decodes or is refused as there whatever its lengths. The engine is an
+`aegis.state.Machine` of small units (a header field, a selector, a step of
+a code length, one symbol); a unit that runs out of input rolls back, so the
+whole-buffer, resumable and parallel decoders run one engine. The resumable
+decoder reads its input in place and stages only a unit cut short (at most
+57 bits), so it never takes a byte past the streams. A block depends on
+nothing before it but where it starts, so the parallel decoder's workers
+decode candidates found by the block magic, and the caller's thread joins a
+block only where the previous one ended, checking the bounds of the stream's
+level the worker could not know; headers, ends and refused blocks are
+decoded there by the same engine. The block's CRC is a slicing-by-8 pass
+over its output, not folded per byte.
 
 LZ4 has its own block engine, parsers and frame owners beneath `warp.lz4`, and
 no entropy stage: it imports neither the bit layer nor the Huffman builders.
