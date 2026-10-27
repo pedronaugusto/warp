@@ -137,25 +137,34 @@ pub inline fn step(size: u32) u32 {
     return (size >> 1) + (size >> 3) + 3;
 }
 
-/// Lay the symbols of `norm` over a table of `2^log` cells as the format
-/// spreads them; `symbols[cell]` receives each cell's symbol. Symbols of
-/// count -1 take the last cells, highest first.
-fn spread(norm: []const i16, log: u4, symbols: []u8) void {
+/// The cells of the largest table zstd spreads: a log of 9.
+const max_cells = 1 << 9;
+/// A cell of such a table; positions step through it modulo its size.
+const CellIndex = u9;
+
+/// Lay the symbols of `norm` over a table of `2^log` cells (`log` at most
+/// 9) as the format spreads them; `symbols[cell]` receives each cell's
+/// symbol. Symbols of count -1 take the last cells, highest first.
+fn spread(norm: []const i16, log: u4, symbols: *[max_cells]u8) void {
+    aegis.assert.invariant(log <= 9, "log <= 9");
     const size: u32 = @as(u32, 1) << log;
-    const mask = size - 1;
-    var high: u32 = size - 1;
+    // `size` is at least 1: the mask never wraps.
+    const mask: CellIndex = @truncate(size -% 1);
+    var high: CellIndex = mask;
     for (norm, 0..) |n, s| if (n == -1) {
         symbols[high] = @intCast(s);
         high -%= 1;
     };
-    var position: u32 = 0;
-    const st = step(size);
+    var position: CellIndex = 0;
+    // A step below the table's size; the wrap of a 9-bit add is a
+    // multiple of every size, so masking after it is the format's modulo.
+    const st: CellIndex = @truncate(step(size));
     for (norm, 0..) |n, s| {
         var i: i32 = 0;
         while (i < n) : (i += 1) {
             symbols[position] = @intCast(s);
-            position = (position + st) & mask;
-            while (position > high) position = (position + st) & mask;
+            position = (position +% st) & mask;
+            while (position > high) position = (position +% st) & mask;
         }
     }
 }
@@ -166,8 +175,8 @@ fn spread(norm: []const i16, log: u4, symbols: []u8) void {
 /// loop is the only other pass.
 fn decodeCells(comptime T: type, comptime Context: type, comptime make: fn (Context, symbol: u8, nb_bits: u8, next_state: u16) T, norm: []const i16, log: u4, cells: []T, context: Context) void {
     const size: u32 = @as(u32, 1) << log;
-    var symbols: [512]u8 = undefined;
-    spread(norm, log, symbols[0..size]);
+    var symbols: [max_cells]u8 = undefined;
+    spread(norm, log, &symbols);
     var next: [256]u32 = undefined;
     for (norm, 0..) |n, s| next[s] = if (n == -1) 1 else @intCast(n);
     for (cells[0..size], symbols[0..size]) |*c, s| {
@@ -503,8 +512,8 @@ pub fn EncodeTable(comptime table_log: u4, comptime max_symbol: u8) type {
             var cumul: [@as(usize, max_symbol) + 2]u32 = undefined;
             cumul[0] = 0;
             for (norm, 1..) |n, u| cumul[u] = cumul[u - 1] + (if (n == -1) 1 else @as(u32, @intCast(n)));
-            var symbol_of: [1 << table_log]u8 = undefined;
-            spread(norm, log, symbol_of[0..size]);
+            var symbol_of: [max_cells]u8 = undefined;
+            spread(norm, log, &symbol_of);
             for (symbol_of[0..size], 0..) |sym, u| {
                 t.states[cumul[sym]] = @intCast(size + u);
                 cumul[sym] += 1;
