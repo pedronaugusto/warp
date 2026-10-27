@@ -2,7 +2,7 @@
 
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
-through `warp.lz4`, Snappy and S2 blocks through `warp.snappy`, Brotli
+through `warp.lz4`, Snappy and S2 blocks and streams through `warp.snappy`, Brotli
 streams through `warp.brotli`, and decodes bzip2
 through `warp.bzip2` and xz and LZMA through `warp.xz` and `warp.lzma`. It
 computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
@@ -511,18 +511,40 @@ parsers and format) blocks also copy from it, indexed once at `init`.
 `compressBlock(in, out)` writes one block into `blockBound(in.len)` bytes.
 
 `warp.snappy.decompressBlock(in, out, .{ .format = f })` decodes a whole
-block into `decodedLen(in, f)` bytes of output, with no state. What google's
+block into `decodedLen(in)` bytes of output, with no state. What google's
 decoder (for `.snappy`) or S2's (for `.s2`) accepts, warp accepts, and what
 they refuse, warp refuses; `Diagnostic` records the refusal's byte and
 reason. `Dict.parse` reads a serialized S2 dictionary, `Dict.make` builds
 one as S2's `MakeDict` does, and `concatBlocks` joins blocks as S2's
-`ConcatBlocks` does. The framing formats are not here yet.
-`snappy-bench` measures it.
+`ConcatBlocks` does.
+
+Streams are the framing format: chunks behind an `sNaPpY` (Snappy, blocks
+of 64 KiB at most) or `S2sTwO` (S2, up to 4 MiB) identifier, each block
+with a masked CRC-32C. `Compressor.compress(in, out, stream)` writes one
+into `streamBound` bytes; `Stream` sets the block size (S2's defaults: 1
+MiB, or 64 KiB less 8 for Snappy), padding to a multiple with a chunk of
+zeros, S2's seek index (appended or apart) and storing uncompressed. The
+stream is S2's writer's byte for byte, index and padding included (S2 pads
+with random bytes, warp with zeros). `Compress` writes the same stream from
+input in pieces, with flushes and skippable chunks, and a `Writer`;
+`parallel.Compressor` encodes blocks in workers, writing the same bytes.
+
+`warp.snappy.decompress(in, out, .{})` decodes a stream of either
+identifier as S2's reader does: its blocks by S2's rules, `max_block_size`
+bounding them, checksums checked, padding, the index and skippable chunks
+read past, unskippable reserved chunks refused. `Decompress` is resumable at
+every byte, with a `Reader`; `parallel.Decompressor` decodes blocks in
+workers straight into their output ranges, answering as the whole-buffer
+decoder. `Index.load` and `Index.loadFromEnd` read an index and `find`
+answers where to start for an offset: start a `Decompress` there with
+`from_chunk`, and `skip` the rest of the way. `indexStream` indexes an
+existing stream, as S2's `IndexStream`. `snappy-bench` measures blocks,
+streams, workers and seeks.
 
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
-Snappy and S2 block compression and decompression;
+Snappy and S2 blocks and streams, compression and decompression;
 Brotli compression and decompression; GDeflate compression and decompression on the CPU;
 bzip2 decompression; xz, `.lzma` and raw LZMA/LZMA2 compression and decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,

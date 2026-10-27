@@ -102,7 +102,11 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "xz", .patterns = &.{"src/xz.zig"} },
     .{ .name = "snappy elements", .patterns = &.{ "src/snappy/Diagnostic.zig", "src/snappy/Dict.zig", "src/snappy/emit.zig" } },
     .{ .name = "snappy engines", .patterns = &.{ "src/snappy/block.zig", "src/snappy/reference.zig", "src/snappy/fast.zig", "src/snappy/better.zig", "src/snappy/best.zig" } },
-    .{ .name = "snappy compressor", .patterns = &.{"src/snappy/Compressor.zig"} },
+    .{ .name = "snappy framing", .patterns = &.{ "src/snappy/frame.zig", "src/snappy/Index.zig" } },
+    .{ .name = "snappy frames", .patterns = &.{ "src/snappy/Compressor.zig", "src/snappy/streams.zig" } },
+    .{ .name = "snappy streams", .patterns = &.{ "src/snappy/Compress.zig", "src/snappy/Decompress.zig" } },
+    .{ .name = "snappy parallel coders", .patterns = &.{ "src/snappy/parallel/Compressor.zig", "src/snappy/parallel/Decompressor.zig" } },
+    .{ .name = "snappy parallel", .patterns = &.{"src/snappy/parallel.zig"} },
     .{ .name = "snappy", .patterns = &.{"src/snappy.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
@@ -147,6 +151,8 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "xz-invalid.corpus",
         "snappy-blocks.corpus",
         "snappy-invalid.corpus",
+        "snappy-streams.corpus",
+        "snappy-stream-invalid.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

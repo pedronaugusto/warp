@@ -29,4 +29,18 @@ pub const Reason = enum {
     dictionary_copy,
     /// Bytes after the block's last element.
     trailing_data,
+    /// A stream's first chunk is not its identifier.
+    no_identifier,
+    /// An identifier chunk of another length or name.
+    bad_identifier,
+    /// A data chunk shorter than its checksum, or longer than a block of
+    /// the largest size and its bound.
+    bad_chunk_length,
+    /// A block past the stream's largest: 64 KiB after a Snappy
+    /// identifier, `max_block_size` in any.
+    block_too_large,
+    /// A chunk type the format reserves and does not let a reader skip.
+    reserved_chunk,
+    /// A data chunk's checksum is not its data's.
+    checksum,
 };

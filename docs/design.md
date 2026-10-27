@@ -186,6 +186,19 @@ bytes at once and copies through LZ4's `copyMatch` (shared in `match/copy`)
 where the output has room, every element's bounds checked before it is
 written.
 
+Streams sit above blocks: `frame` (chunks, identifiers, masked CRC-32C,
+S2's bounds) and `Index` (S2's seek index: gathered as S2's writer gathers
+it, written, loaded, searched) beneath the `Compressor`'s whole-buffer
+stream, `streams` (the chunk reading of S2's reader, in S2's order of
+checks, shared by every decoder) and the resumable and parallel coders. A
+stream's blocks are independent, so the resumable encoder stages one block
+and the parallel one hands blocks to workers, both writing the whole-buffer
+stream; the parallel decoder reads the chunks on the caller's thread and
+decodes each block into its range of the output, falling back to the
+whole-buffer decoder for any refusal so the answer is always its own. The
+index of a whole-buffer stream is gathered by reading back its own chunks,
+so no entry storage is held; the resumable encoder keeps its entries.
+
 ## Invariants
 
 - Fast loops run only with checked input and output margins. Tail loops check

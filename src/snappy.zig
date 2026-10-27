@@ -1,9 +1,11 @@
 //! Snappy and S2: Snappy's block format, and S2's, its extension (repeat
-//! offsets, dictionaries, larger blocks). Every Snappy block is an S2 one,
-//! so one decoder reads both; `format` says whose rules a block is read
-//! by.
+//! offsets, dictionaries, larger blocks), and their streams (the framing
+//! format: `sNaPpY` and `S2sTwO`). Every Snappy block and stream is an S2
+//! one, so one decoder reads both; `format` says whose rules a block is
+//! read by.
 const block = @import("snappy/block.zig");
 const emit = @import("snappy/emit.zig");
+const streams = @import("snappy/streams.zig");
 
 /// Where a block or stream was refused, and why.
 pub const Diagnostic = @import("snappy/Diagnostic.zig");
@@ -43,6 +45,32 @@ pub fn decompressBlock(in: []const u8, out: []u8, options: DecompressOptions) Er
     if (options.dictionary != null and options.format == .snappy) return error.InvalidOptions;
     return block.decode(in, out, .{ .format = options.format, .dictionary = options.dictionary, .diagnostic = options.diagnostic });
 }
+
+/// A stream's settings: block size, padding, index, storing.
+pub const Stream = Compressor.Stream;
+pub const IndexPlace = Compressor.IndexPlace;
+/// The longest stream of `len` bytes for a compressor's options.
+pub const streamBound = Compressor.streamBound;
+/// S2's seek index: written with a stream, loaded, searched.
+pub const Index = @import("snappy/Index.zig");
+/// The index of an existing stream, as S2's `IndexStream` writes it.
+pub const indexStream = Index.ofStream;
+
+/// Resumable stream compression, with a `std.Io.Writer`.
+pub const Compress = @import("snappy/Compress.zig");
+
+/// Resumable stream decoding, with a `std.Io.Reader`.
+pub const Decompress = @import("snappy/Decompress.zig");
+
+/// Streams over workers, both ways.
+pub const parallel = @import("snappy/parallel.zig");
+
+pub const StreamOptions = streams.Options;
+pub const StreamError = streams.Error;
+/// Decode a whole stream (either identifier) into the caller's output.
+pub const decompress = streams.decompress;
+/// A whole stream's output, from its blocks' lengths.
+pub const decompressedLen = streams.decodedLen;
 
 pub const ConcatError = error{
     /// A block whose length does not read as S2's varint.
@@ -99,4 +127,6 @@ test {
     _ = @import("snappy/fast.zig");
     _ = @import("snappy/better.zig");
     _ = @import("snappy/best.zig");
+    _ = @import("snappy/frame.zig");
+    _ = Index;
 }

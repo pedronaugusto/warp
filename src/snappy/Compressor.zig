@@ -1,11 +1,12 @@
-//! Block compression with one parser: google's levels 1 and 2, or S2's
-//! fast, better and best. The compressor owns the parser's tables, taken
-//! once; a call clears only what the input's size uses, and allocates
-//! nothing.
+//! Block and stream compression with one parser: google's levels 1 and 2,
+//! or S2's fast, better and best. The compressor owns the parser's tables,
+//! taken once; a call clears only what the input's size uses, and
+//! allocates nothing. Streams are S2's writer's, byte for byte.
 
 const Compressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const block = @import("block.zig");
 const emit = @import("emit.zig");
@@ -14,6 +15,8 @@ const fast = @import("fast.zig");
 const better = @import("better.zig");
 const best = @import("best.zig");
 const Dict = @import("Dict.zig");
+const frame = @import("frame.zig");
+const Index = @import("Index.zig");
 
 /// The parsers: google/snappy 1.3.1's levels, and klauspost/compress s2
 /// v1.20.3's modes.
@@ -168,49 +171,187 @@ pub fn compressBlock(c: *Compressor, in: []const u8, out: []u8) Error!usize {
     if (out.len < bound(in.len)) return error.OutputTooSmall;
     const at = emit.length(out, 0, @intCast(in.len));
     if (in.len == 0) return at;
+    // S2's parsers give up on input they cannot shrink enough, and the
+    // block is then one literal.
+    return c.parse(in, out, at) orelse emit.literal(out, at, in, 0, in.len);
+}
+
+/// The block's elements after its length at `out[at..]`: where they end,
+/// or null where an S2 parser gives up (input shorter than it parses, or
+/// that it cannot shrink by its margin).
+fn parse(c: *Compressor, in: []const u8, out: []u8, at: usize) ?usize {
     const snappy = c.options.format == .snappy;
     return switch (c.options.parser()) {
         .snappy_1 => reference.compress(.one, in, out, at, c.tables(u16)),
         .snappy_2 => reference.compress(.two, in, out, at, c.tables(u16)),
-        // S2's parsers give up on input they cannot shrink enough, and
-        // the block is then one literal.
-        .fast => (if (in.len < fast.min_len)
+        .fast => if (in.len < fast.min_len)
             null
         else if (c.options.dictionary) |dict|
             fast.encodeDict(dict.content, dict.repeat, c.dictTables(u16), in, out, at, c.tables(u32))
         else if (snappy)
             fast.encode(true, in, out, at, c.tables(u32))
         else
-            fast.encode(false, in, out, at, c.tables(u32))) orelse emit.literal(out, at, in, 0, in.len),
+            fast.encode(false, in, out, at, c.tables(u32)),
         .better => blk: {
+            if (in.len < fast.min_len) break :blk null;
             const t = c.tables(u32);
             const long = t[0..better.max_long];
             const short = t[better.max_long..][0..better.max_short];
-            break :blk (if (in.len < fast.min_len)
-                null
-            else if (c.options.dictionary) |dict| dict: {
+            if (c.options.dictionary) |dict| {
                 const d = c.dictTables(u16);
-                break :dict better.encodeDict(dict.content, dict.repeat, d[0..better.dict_long], d[better.dict_long..][0..better.dict_short], in, out, at, long, short);
-            } else if (snappy)
-                better.encode(true, in, out, at, long, short)
-            else
-                better.encode(false, in, out, at, long, short)) orelse emit.literal(out, at, in, 0, in.len);
+                break :blk better.encodeDict(dict.content, dict.repeat, d[0..better.dict_long], d[better.dict_long..][0..better.dict_short], in, out, at, long, short);
+            }
+            break :blk if (snappy) better.encode(true, in, out, at, long, short) else better.encode(false, in, out, at, long, short);
         },
         .best => blk: {
+            if (in.len < fast.min_len) break :blk null;
             const t = c.tables(u64);
             const long = t[0..best.max_long];
             const short = t[best.max_long..][0..best.max_short];
-            break :blk (if (in.len < fast.min_len)
-                null
-            else if (c.options.dictionary) |dict| dict: {
+            if (c.options.dictionary) |dict| {
                 const d = c.dictTables(u32);
-                break :dict best.encode(.dict, in, out, at, long, short, .{ .content = dict.content, .repeat = dict.repeat, .long = d[0..best.max_long], .short = d[best.max_long..][0..best.max_short] });
-            } else if (snappy)
-                best.encode(.snappy, in, out, at, long, short, null)
-            else
-                best.encode(.s2, in, out, at, long, short, null)) orelse emit.literal(out, at, in, 0, in.len);
+                break :blk best.encode(.dict, in, out, at, long, short, .{ .content = dict.content, .repeat = dict.repeat, .long = d[0..best.max_long], .short = d[best.max_long..][0..best.max_short] });
+            }
+            break :blk if (snappy) best.encode(.snappy, in, out, at, long, short, null) else best.encode(.s2, in, out, at, long, short, null);
         },
     };
+}
+
+/// A stream's settings, S2's writer's.
+pub const Stream = struct {
+    /// The output each block holds (4 KiB to 4 MiB; 64 KiB at most in a
+    /// Snappy stream). Null for S2's writer's: 1 MiB in an S2 stream, 64
+    /// KiB less 8 in a Snappy one.
+    block_size: ?aegis.units.Bytes(usize) = null,
+    /// Pad the stream with a chunk of zeros to a multiple of this many
+    /// bytes, at most 4 MiB, as S2's `WriterPadding` (whose padding is
+    /// random); 0 and 1 pad nothing. An index records no compressed total
+    /// then.
+    padding: aegis.units.Bytes(usize) = .fromRaw(0),
+    /// S2's seek index: none, appended to the stream (after the padding),
+    /// or apart, written after it in the output.
+    index: IndexPlace = .none,
+    /// Every block stored uncompressed, as S2's `WriterUncompressed`.
+    store: bool = false,
+};
+
+pub const IndexPlace = enum { none, append, apart };
+
+pub const StreamResult = struct {
+    /// The stream's length, its appended index included.
+    len: usize,
+    /// The index kept apart, at `out[len..][0..index_len]`.
+    index_len: usize = 0,
+};
+
+pub const StreamError = error{
+    /// A block size or padding out of range, or a dictionary: streams
+    /// have none.
+    InvalidOptions,
+    /// The output is shorter than `streamBound`.
+    OutputTooSmall,
+};
+
+/// The output each block of a stream holds.
+pub fn blockSize(options: Options, stream: Stream) usize {
+    if (stream.block_size) |b| return b.raw();
+    return switch (options.format) {
+        .s2 => 1 << 20,
+        .snappy => frame.max_snappy_block_size - 8,
+    };
+}
+
+pub fn validStream(options: Options, stream: Stream) bool {
+    const b = blockSize(options, stream);
+    const padding = stream.padding.raw();
+    return options.dictionary == null and b >= frame.min_block_size and b <= frame.maxBlock(options.format) and padding <= frame.max_block_size;
+}
+
+/// The longest stream of `len` bytes, with its index apart.
+pub fn streamBound(options: Options, len: usize, stream: Stream) usize {
+    const b = blockSize(options, stream);
+    const blocks = std.math.divCeil(usize, len, b) catch unreachable;
+    const index = if (stream.index == .none) 0 else Index.bound(blocks + 1);
+    const padding = stream.padding.raw();
+    return frame.identifier_len + blocks * chunkBound(b) + padding + frame.header_len + index;
+}
+
+/// The longest chunk of a block of `len` bytes.
+pub fn chunkBound(len: usize) usize {
+    return frame.header_len + frame.checksum_len + bound(len);
+}
+
+/// Write `in` as a stream into `out` (at least `streamBound` bytes), cut
+/// into blocks of the stream's block size from its start, as S2's writer
+/// writes input given whole. Empty input is an empty stream (and its
+/// index), as S2's.
+pub fn compress(c: *Compressor, in: []const u8, out: []u8, stream: Stream) StreamError!StreamResult {
+    if (!validStream(c.options, stream)) return error.InvalidOptions;
+    if (out.len < streamBound(c.options, in.len, stream)) return error.OutputTooSmall;
+    const b = blockSize(c.options, stream);
+    var op: usize = 0;
+    if (in.len > 0) {
+        @memcpy(out[0..frame.identifier_len], frame.identifier(c.options.format));
+        op = frame.identifier_len;
+    }
+    var ip: usize = 0;
+    while (ip < in.len) : (ip += b) op += c.chunk(in[ip..][0..@min(b, in.len - ip)], out[op..], stream.store);
+    return finish(out, op, in.len, b, stream);
+}
+
+/// The stream's end after its chunks (`out[0..len]`, `total` bytes of
+/// input): the index and padding as S2's writer's `Close` writes them.
+pub fn finish(out: []u8, len: usize, total: u64, block_size: usize, stream: Stream) StreamResult {
+    const padding = stream.padding.raw();
+    const padded = padding > 1;
+    var index_len: usize = 0;
+    if (stream.index != .none) {
+        var chunks: Index.Chunks = .{ .stream = out[0..len] };
+        var count: u64 = 0;
+        while (chunks.next()) |_| count += 1;
+        index_len = Index.write(out[len..], &chunks, count, block_size, if (padded) null else len, total);
+    }
+    var op = len;
+    if (padded) {
+        const counted = len + if (stream.index == .append) index_len else 0;
+        const pad: usize = @intCast(frame.paddingLen(counted, padding));
+        if (pad > 0) {
+            @memmove(out[len + pad ..][0..index_len], out[len..][0..index_len]);
+            frame.writeHeader(out[len..][0..frame.header_len], frame.Type.padding, pad - frame.header_len);
+            @memset(out[len + frame.header_len ..][0 .. pad - frame.header_len], 0);
+            op += pad;
+        }
+    }
+    return switch (stream.index) {
+        .append => .{ .len = op + index_len },
+        .none, .apart => .{ .len = op, .index_len = index_len },
+    };
+}
+
+/// One block's chunk at the start of `out` (`chunkBound(in.len)` bytes):
+/// compressed, or stored where storing is asked for, where an S2 parser
+/// gives up, or where google's parse saves less than an eighth (as
+/// golang/snappy and snap decide); its length.
+pub fn chunk(c: *Compressor, in: []const u8, out: []u8, store: bool) usize {
+    std.debug.assert(in.len > 0);
+    std.debug.assert(in.len <= frame.max_block_size);
+    const head = frame.header_len + frame.checksum_len;
+    std.mem.writeInt(u32, out[frame.header_len..][0..4], frame.checksum(in), .little);
+    const body = if (store) null else body: {
+        const at = emit.length(out[head..], 0, @intCast(in.len));
+        const end = c.parse(in, out[head..], at) orelse break :body null;
+        break :body switch (c.options.parser()) {
+            .snappy_1, .snappy_2 => if (end >= in.len - in.len / 8) null else end,
+            .fast, .better, .best => end,
+        };
+    };
+    if (body) |n| {
+        frame.writeHeader(out[0..frame.header_len], frame.Type.compressed, frame.checksum_len + n);
+        return head + n;
+    }
+    frame.writeHeader(out[0..frame.header_len], frame.Type.uncompressed, frame.checksum_len + in.len);
+    @memcpy(out[head..][0..in.len], in);
+    return head + in.len;
 }
 
 fn tables(c: *Compressor, comptime T: type) []T {

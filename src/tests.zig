@@ -46,6 +46,7 @@ test {
     _ = @import("xz.zig");
     _ = @import("snappy.zig");
     _ = @import("testing/snappy_test.zig");
+    _ = @import("testing/snappy_stream_test.zig");
     _ = @import("testing/lzma_test.zig");
     _ = @import("testing/lzma_encode_test.zig");
 }
