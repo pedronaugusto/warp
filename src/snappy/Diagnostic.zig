@@ -12,8 +12,8 @@ pub const Reason = enum {
     /// The input ended inside the block's length, an element or a chunk,
     /// or before the block's output was all there.
     truncated,
-    /// The block's length is not a varint of the format's (five bytes at
-    /// most for Snappy, ten for S2) or passes 2^32 - 1.
+    /// The block's length is not a varint of at most five bytes, or passes
+    /// 2^32 - 1.
     bad_length,
     /// An element writes past the length the block declares.
     too_long,

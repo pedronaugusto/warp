@@ -119,7 +119,7 @@ test "mutated and constructed blocks get google's verdict as Snappy and S2's as 
         const dict = try dictionary(gpa, r.fields[2], &content);
         const stored = r.fields[3];
         const verdict = r.fields[4];
-        const len = snappy.decodedLen(stored, format) catch 0;
+        const len = snappy.decodedLen(stored) catch 0;
         const out = try gpa.alloc(u8, len);
         defer gpa.free(out);
         const ours = snappy.decompressBlock(stored, out, .{ .format = format, .dictionary = dict });
@@ -197,7 +197,7 @@ test "S2's ConcatBlocks: one block of the parts' blocks, as S2 joins them" {
 /// A plain decoder, element by element, as the formats say: the decoded
 /// length, or null for a block it refuses.
 fn plainDecode(in: []const u8, out: []u8, format: snappy.Format, dict: ?snappy.Dict) ?usize {
-    const h_len = snappy.decodedLen(in, format) catch return null;
+    const h_len = snappy.decodedLen(in) catch return null;
     if (h_len > out.len) return null;
     var ip: usize = 0;
     while (in[ip] >= 0x80) ip += 1;
@@ -313,7 +313,7 @@ fn blocksAgree(_: void, case: *shakedown.Case) !void {
     const plain_out = try case.gpa.alloc(u8, 1 << 17);
     for ([_]snappy.Format{ .snappy, .s2 }) |format| {
         if (format == .snappy and with_dict) continue;
-        const len = snappy.decodedLen(input, format) catch null;
+        const len = snappy.decodedLen(input) catch null;
         const ours = snappy.decompressBlock(input, out, .{ .format = format, .dictionary = dict });
         const want = plainDecode(input, plain_out, format, dict);
         if (want) |n| {

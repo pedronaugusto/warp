@@ -30,9 +30,10 @@ pub const DecompressOptions = struct {
     diagnostic: ?*Diagnostic = null,
 };
 
-/// The length the block `in` decodes to, from the varint it starts with.
-pub fn decodedLen(in: []const u8, format: Format) error{ InvalidStream, Truncated }!usize {
-    return (try block.header(in, format)).len;
+/// The length the block `in` decodes to, from the varint it starts with
+/// (the same in both formats).
+pub fn decodedLen(in: []const u8) error{ InvalidStream, Truncated }!usize {
+    return (try block.header(in)).len;
 }
 
 /// Decode the block `in`, the whole of it, into `out` (at least
@@ -59,7 +60,7 @@ pub fn concatBound(blocks: []const []const u8) ConcatError!usize {
     var total: u64 = 0;
     var bodies: usize = 0;
     for (blocks) |b| {
-        const h = try block.header(b, .s2);
+        const h = try block.header(b);
         total += h.len;
         bodies += b.len - h.size;
     }
@@ -76,14 +77,14 @@ pub fn concatBound(blocks: []const []const u8) ConcatError!usize {
 pub fn concatBlocks(blocks: []const []const u8, out: []u8) ConcatError!usize {
     if (out.len < try concatBound(blocks)) return error.OutputTooSmall;
     var total: u64 = 0;
-    for (blocks) |b| total += (try block.header(b, .s2)).len;
+    for (blocks) |b| total += (try block.header(b)).len;
     if (total == 0) {
         out[0] = 0;
         return 1;
     }
     var o = emit.length(out, 0, @intCast(total));
     for (blocks) |b| {
-        const body = b[(try block.header(b, .s2)).size..];
+        const body = b[(try block.header(b)).size..];
         @memcpy(out[o..][0..body.len], body);
         o += body.len;
     }

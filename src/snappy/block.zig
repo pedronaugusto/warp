@@ -49,20 +49,14 @@ pub const Header = struct {
     size: u8,
 };
 
-/// The varint of the decoded length at the start of a block: Snappy's (at
-/// most five bytes, as google's `Varint::Parse32`) or S2's (Go's `Uvarint`,
-/// at most ten); either below 2^32.
-pub fn header(in: []const u8, format: Format) error{ InvalidStream, Truncated }!Header {
-    const limit: usize = switch (format) {
-        .snappy => 5,
-        .s2 => 10,
-    };
+/// The varint of the decoded length at the start of a block: at most five
+/// bytes and below 2^32, in both formats (google's `Varint::Parse32`, S2's
+/// `decodedLen`).
+pub fn header(in: []const u8) error{ InvalidStream, Truncated }!Header {
     var v: u64 = 0;
-    for (0..limit) |i| {
+    for (0..5) |i| {
         if (i == in.len) return error.Truncated;
         const b = in[i];
-        if (i == 4 and format == .snappy and b >= 16) return error.InvalidStream;
-        if (i == 9 and b > 1) return error.InvalidStream;
         v |= @as(u64, b & 0x7f) << @intCast(7 * i);
         if (b < 0x80) {
             if (v > max_len) return error.InvalidStream;
@@ -75,7 +69,7 @@ pub fn header(in: []const u8, format: Format) error{ InvalidStream, Truncated }!
 /// Decode the block `in` into `out` (at least its declared length); the
 /// decoded length. Bytes of `out` past it may have been written.
 pub fn decode(in: []const u8, out: []u8, options: Options) Error!usize {
-    const h = header(in, options.format) catch |err| {
+    const h = header(in) catch |err| {
         if (options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(options.in_base), .reason = if (err == error.Truncated) .truncated else .bad_length };
         return err;
     };
@@ -235,10 +229,10 @@ test "a literal, a copy and an S2 repeat" {
     try std.testing.expectEqual(@as(u64, 5), diag.offset.raw());
 }
 
-test "lengths: five bytes for Snappy, Go's ten for S2" {
-    try std.testing.expectEqual(Header{ .len = 1, .size = 6 }, try header("\x81\x80\x80\x80\x80\x00", .s2));
-    try std.testing.expectError(error.InvalidStream, header("\x81\x80\x80\x80\x80\x00", .snappy));
-    try std.testing.expectError(error.InvalidStream, header("\x80\x80\x80\x80\x10", .snappy));
-    try std.testing.expectEqual(Header{ .len = max_len, .size = 5 }, try header("\xff\xff\xff\xff\x0f", .snappy));
-    try std.testing.expectError(error.Truncated, header("\x80", .s2));
+test "lengths: five bytes at most, below 2^32, in both formats" {
+    try std.testing.expectEqual(Header{ .len = 1, .size = 5 }, try header("\x81\x80\x80\x80\x00"));
+    try std.testing.expectError(error.InvalidStream, header("\x81\x80\x80\x80\x80\x00"));
+    try std.testing.expectError(error.InvalidStream, header("\x80\x80\x80\x80\x10"));
+    try std.testing.expectEqual(Header{ .len = max_len, .size = 5 }, try header("\xff\xff\xff\xff\x0f"));
+    try std.testing.expectError(error.Truncated, header("\x80"));
 }
