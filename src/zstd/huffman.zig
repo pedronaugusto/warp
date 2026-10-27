@@ -246,8 +246,8 @@ fn fillSingle(w: *const Weights, log: u4, cells: *[1 << max_log]u16) void {
 /// Whether two symbols per lookup decode faster than one, from the
 /// section's sizes: the format's reference decoder's measured costs, so a
 /// table is built the same way, and treeless sections after it decode the
-/// same way.
-pub fn chooseDouble(len: usize, csize: usize) bool {
+/// same way. Both sizes are 18-bit fields of a literals section's header.
+pub fn chooseDouble(len: u18, csize: u18) bool {
     const Cost = struct { table: u32, per256: u32 };
     const costs = [16][2]Cost{
         .{ .{ .table = 0, .per256 = 0 }, .{ .table = 1, .per256 = 1 } },
@@ -267,10 +267,11 @@ pub fn chooseDouble(len: usize, csize: usize) bool {
         .{ .{ .table = 1377, .per256 = 185 }, .{ .table = 1731, .per256 = 202 } },
         .{ .{ .table = 1412, .per256 = 185 }, .{ .table = 1695, .per256 = 202 } },
     };
-    const q: usize = if (csize >= len) 15 else csize * 16 / len;
-    const d256: u32 = @intCast(len >> 8);
-    const one = costs[q][0].table + costs[q][0].per256 * d256;
-    var two = costs[q][1].table + costs[q][1].per256 * d256;
+    // Below 16 sixteenths where `csize < len`: a 4-bit quantile.
+    const q: u4 = if (csize >= len) 15 else @truncate(@as(u22, csize) * 16 / len);
+    const d256: u10 = @truncate(len >> 8);
+    const one = costs[q][0].table + costs[q][0].per256 * @as(u32, d256);
+    var two = costs[q][1].table + costs[q][1].per256 * @as(u32, d256);
     two += two >> 5;
     return two < one;
 }

@@ -249,7 +249,7 @@ pub const Frame = struct {
                 lits.* = f.literalStorage(len, op);
                 const dst = @constCast(lits.bytes[0..len]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
                 if (kind == 2) {
-                    try f.huffmanTable(src, header, !single and huffman.chooseDouble(len, csize));
+                    try f.huffmanTable(src, header, !single and huffman.chooseDouble(@truncate(len), @truncate(csize)));
                     const used = f.tables.weights.len;
                     if (used >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
                     try f.huffmanDecode(src[used..], dst, single, header);
@@ -386,7 +386,7 @@ pub const Frame = struct {
         // The literals' table, as the core decodes them with it.
         switch (prepared.cursor) {
             .huffman => |*symbols| {
-                if (symbols.table == &f.tables.huffman and symbols.table.kind == .single and huffman.chooseDouble(section.len, symbols.source.len)) f.tables.huffman.buildDouble(&f.tables.weights);
+                if (symbols.table == &f.tables.huffman and symbols.table.kind == .single and huffman.chooseDouble(@truncate(section.len), @truncate(symbols.source.len))) f.tables.huffman.buildDouble(&f.tables.weights);
                 prepared.tables.huffman = symbols.table.*;
                 symbols.table = &prepared.tables.huffman;
             },
