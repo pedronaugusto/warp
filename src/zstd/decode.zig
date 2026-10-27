@@ -524,9 +524,9 @@ pub const Frame = struct {
     /// registers to it and runs 7-9% slower (measured on large frames).
     noinline fn execute(f: *Frame, comptime partial: bool, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
-        var ll_state = readState(&r, f.entropy.ll.log);
-        var of_state = readState(&r, f.entropy.of.log);
-        var ml_state = readState(&r, f.entropy.ml.log);
+        var ll_state = readState(LlState, &r, f.entropy.ll.log);
+        var of_state = readState(OfState, &r, f.entropy.of.log);
+        var ml_state = readState(MlState, &r, f.entropy.ml.log);
         // The repeat offsets, most recent first, kept in registers.
         var rep = f.entropy.reps;
         const out = f.out;
@@ -545,7 +545,7 @@ pub const Frame = struct {
         const tables: SequenceCells.Lookup = .init(&f.entropy);
         const lits_limit = lits.limit;
         const in_out = lits.in_out orelse 0;
-        var next = SequenceCells.read(tables, .{ ll_state, ml_state, of_state });
+        var next = SequenceCells.read(tables, ll_state, ml_state, of_state);
         while (n > 0) : (n -= 1) {
             // ---- decode ----
             const cell = next;
@@ -560,11 +560,11 @@ pub const Frame = struct {
             var ll: usize = SequenceCells.base(cell.ll);
             if (ll_extra > 0) ll += @intCast(r.readFast(ll_extra));
             if (n > 1) {
-                ll_state = SequenceCells.nextState(cell.ll) + @as(u32, @intCast(r.read(SequenceCells.stateBits(cell.ll))));
-                ml_state = SequenceCells.nextState(cell.ml) + @as(u32, @intCast(r.read(SequenceCells.stateBits(cell.ml))));
-                of_state = SequenceCells.nextState(cell.of) + @as(u32, @intCast(r.read(SequenceCells.stateBits(cell.of))));
+                ll_state = SequenceCells.nextState(LlState, cell.ll, &r);
+                ml_state = SequenceCells.nextState(MlState, cell.ml, &r);
+                of_state = SequenceCells.nextState(OfState, cell.of, &r);
                 _ = r.reload();
-                next = SequenceCells.read(tables, .{ ll_state, ml_state, of_state });
+                next = SequenceCells.read(tables, ll_state, ml_state, of_state);
             }
 
             // ---- execute ----
@@ -671,6 +671,19 @@ pub const Frame = struct {
 };
 
 /// The three independent lookups for one sequence, each cell whole.
+/// A state of a sequence-code table: an index sized to the largest table
+/// of its code (literal and match lengths 2^9 cells, offsets 2^8), so a
+/// cell's next state plus the bits read after it, always below the table's
+/// size, is an index into it by its type.
+const LlState = u9;
+const MlState = u9;
+const OfState = u8;
+comptime {
+    std.debug.assert(codes.max_ll_log == @bitSizeOf(LlState));
+    std.debug.assert(codes.max_ml_log == @bitSizeOf(MlState));
+    std.debug.assert(codes.max_of_log == @bitSizeOf(OfState));
+}
+
 const SequenceCells = struct {
     ll: u64,
     ml: u64,
@@ -689,11 +702,11 @@ const SequenceCells = struct {
         }
     };
 
-    inline fn read(tables: Lookup, states: [3]u32) SequenceCells {
+    inline fn read(tables: Lookup, ll: LlState, ml: MlState, of: OfState) SequenceCells {
         return .{
-            .ll = @bitCast(tables.ll[states[0]]),
-            .ml = @bitCast(tables.ml[states[1]]),
-            .of = @bitCast(tables.of[states[2]]),
+            .ll = @bitCast(tables.ll[ll]),
+            .ml = @bitCast(tables.ml[ml]),
+            .of = @bitCast(tables.of[of]),
         };
     }
 
@@ -732,8 +745,12 @@ const SequenceCells = struct {
         return value;
     }
 
-    inline fn nextState(cell: u64) u32 {
-        return @as(u16, @truncate(cell));
+    /// The cell's next state after its `stateBits` bits: below the
+    /// table's size, so it fits the table's state type.
+    inline fn nextState(comptime State: type, cell: u64, r: *bits.Reader) State {
+        const base_state: State = @truncate(cell);
+        const bits_read: State = @truncate(r.read(stateBits(cell)));
+        return base_state +% bits_read;
     }
 
     inline fn extra(cell: u64) u6 {
@@ -793,9 +810,9 @@ pub const Prepared = struct {
         const ll_cells = &prepared.tables.ll.cells;
         const ml_cells = &prepared.tables.ml.cells;
         const of_cells = &prepared.tables.of.cells;
-        var ll_state = readState(&r, prepared.tables.ll.log);
-        var of_state = readState(&r, prepared.tables.of.log);
-        var ml_state = readState(&r, prepared.tables.ml.log);
+        var ll_state = readState(LlState, &r, prepared.tables.ll.log);
+        var of_state = readState(OfState, &r, prepared.tables.of.log);
+        var ml_state = readState(MlState, &r, prepared.tables.ml.log);
         for (prepared.seqs[0..prepared.count], 0..) |*sequence, i| {
             const llc = ll_cells[ll_state];
             const mlc = ml_cells[ml_state];
@@ -808,9 +825,9 @@ pub const Prepared = struct {
             if (llc.extra_bits > 0) ll += @intCast(r.readFast(@intCast(llc.extra_bits)));
             sequence.* = .{ .ll = ll, .ml = ml, .off = off };
             if (i + 1 < prepared.count) {
-                ll_state = llc.next_state + @as(u32, @intCast(r.read(@intCast(llc.nb_bits))));
-                ml_state = mlc.next_state + @as(u32, @intCast(r.read(@intCast(mlc.nb_bits))));
-                of_state = ofc.next_state + @as(u32, @intCast(r.read(@intCast(ofc.nb_bits))));
+                ll_state = SequenceCells.nextState(LlState, @bitCast(llc), &r);
+                ml_state = SequenceCells.nextState(MlState, @bitCast(mlc), &r);
+                of_state = SequenceCells.nextState(OfState, @bitCast(ofc), &r);
                 _ = r.reload();
             }
         }
@@ -908,8 +925,9 @@ fn repeat(dst: [*]u8, src: [*]const u8, len: usize) void {
     for (0..len) |i| dst[i] = src[i];
 }
 
-inline fn readState(r: *bits.Reader, log: u4) u32 {
-    const state: u32 = @intCast(r.read(log));
+/// A first state: `log` bits, the table's log, which its state type holds.
+inline fn readState(comptime State: type, r: *bits.Reader, log: u4) State {
+    const state: State = @truncate(r.read(log));
     _ = r.reload();
     return state;
 }
