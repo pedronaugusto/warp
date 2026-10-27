@@ -353,3 +353,30 @@ test "the parallel decoder joins a stream's blocks from its workers" {
     }
     return error.TestUnexpectedResult;
 }
+
+test "a false block magic inside a block is never where a block is taken from" {
+    // Each block's in-use map spells the magic, 105 bits after the real
+    // one: the scan finds it, a worker decodes from it, and the join drops
+    // it, since no block ends there.
+    const gpa = testing.allocator;
+    var d: bzip2.Decompressor = try .init(gpa);
+    defer d.deinit();
+    const c = try corpus.Corpus.parse(invalid_corpus);
+    var it = c.records();
+    while (it.next()) |r| {
+        if (!std.mem.eql(u8, r.fields[0], "constructed: a false block magic in every block's in-use map")) continue;
+        const out = try gpa.alloc(u8, 300_000);
+        defer gpa.free(out);
+        const back = try gpa.alloc(u8, out.len);
+        defer gpa.free(back);
+        for ([_]u16{ 1, 2, 4 }) |k| {
+            var stats: bzip2.parallel.Decompressor.Statistics = .{};
+            var p: bzip2.parallel.Decompressor = try .init(gpa, .{ .concurrency = k, .statistics = &stats });
+            defer p.deinit();
+            try agreesInParallel(&d, &p, r.fields[1], out, back);
+            try testing.expectEqual(bzip2.parallel.Decompressor.Statistics{ .joined = 3, .dropped = 3 }, stats);
+        }
+        return;
+    }
+    return error.TestUnexpectedResult;
+}
