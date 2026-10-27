@@ -79,12 +79,13 @@ pub const max_allowed_distance = 0x7ffffffc;
 /// large-window stream, the symbols a simple code's widths count (`max`)
 /// and the ones it may use (`limit`), the format reference's rule.
 pub fn distanceAlphabet(npostfix: u2, ndirect: u7, large_window: bool) struct { max: u32, limit: u32 } {
-    const shift = @as(u5, npostfix) + 1;
+    // At most 62 << 4: 10 bits.
+    const shift = @as(u4, npostfix) + 1;
     if (!large_window) {
-        const n = short_distance_codes + @as(u32, ndirect) + (@as(u32, max_distance_bits) << shift);
+        const n = short_distance_codes + @as(u32, ndirect) + (@as(u10, max_distance_bits) << shift);
         return .{ .max = n, .limit = n };
     }
-    return .{ .max = short_distance_codes + @as(u32, ndirect) + (@as(u32, large_max_distance_bits) << shift), .limit = largeLimit(npostfix, ndirect) };
+    return .{ .max = short_distance_codes + @as(u32, ndirect) + (@as(u10, large_max_distance_bits) << shift), .limit = largeLimit(npostfix, ndirect) };
 }
 
 /// The distance symbols a large-window stream may use: complete groups of

@@ -222,7 +222,7 @@ pub const State = struct {
     mode_index: u32 = 0,
     num_literal_trees: u32 = 1,
     num_distance_trees: u32 = 1,
-    map: struct { distance: bool = false, size: u32 = 0, trees: u32 = 0, rlemax: u32 = 0, index: u32 = 0 } = .{},
+    map: struct { distance: bool = false, size: u32 = 0, trees: u9 = 0, rlemax: u5 = 0, index: u32 = 0 } = .{},
     group: u2 = 0,
     tree: u32 = 0,
     group_used: u32 = 0,
@@ -374,13 +374,13 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 s.go(.block_types, .read);
                 return null;
             }
-            const n = try varLenUint8(careful, r) + 1;
+            const n = @as(u9, try varLenUint8(careful, r)) + 1;
             s.num_types[s.category] = n;
             if (n < 2) {
                 s.category +%= 1;
                 return null;
             }
-            startCode(s, .block_types, .block_type, n + 2, n + 2);
+            startCode(s, .block_types, .block_type, @as(u32, n) + 2, @as(u32, n) + 2);
         },
         .block_count_code => startCode(s, .block_count_code, .block_count, 26, 26),
         .block_count => {
@@ -404,11 +404,11 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 s.go(.modes, .read);
                 return null;
             }
-            t.modes[s.mode_index] = @fromBackingInt(@intCast(try r.bits(careful, 2)));
+            t.modes[s.mode_index] = @fromBackingInt(@as(u2, @truncate(try r.bits(careful, 2))));
             s.mode_index += 1;
         },
         .context_map_trees => {
-            const n = try varLenUint8(careful, r) + 1;
+            const n = @as(u9, try varLenUint8(careful, r)) + 1;
             s.map.trees = n;
             s.map.index = 0;
             if (s.map.distance) s.num_distance_trees = n else s.num_literal_trees = n;
@@ -420,8 +420,8 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
             s.go(.context_map_trees, .read);
         },
         .context_map_rle => {
-            s.map.rlemax = if (try r.bits(careful, 1) == 1) try r.bits(careful, 4) + 1 else 0;
-            const alphabet = s.map.trees + s.map.rlemax;
+            s.map.rlemax = if (try r.bits(careful, 1) == 1) @as(u5, @as(u4, @truncate(try r.bits(careful, 4)))) + 1 else 0;
+            const alphabet = @as(u32, s.map.trees) + s.map.rlemax;
             startCode(s, .context_map_rle, .map_code, alphabet, alphabet);
         },
         .context_map_entries => {
@@ -438,7 +438,7 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 } else {
                     // `code` is at most `rlemax`, 16 or less.
                     const bits: u5 = @intCast(code);
-                    const reps = (@as(u32, 1) << bits) + try r.bits(careful, bits);
+                    const reps = @as(u32, @as(u17, 1) << bits) + @as(u16, @truncate(try r.bits(careful, bits)));
                     if (s.map.index + reps > map.len) return s.fail(.context_map_repeat, r.bitOffset());
                     @memset(map[s.map.index..][0..reps], 0);
                     s.map.index += reps;
@@ -540,11 +540,11 @@ noinline fn streamHeader(comptime careful: bool, s: *State, r: *Reader, at: u64)
     if (try r.bits(careful, 1) == 0) {
         s.window_bits = 16;
     } else {
-        const n = try r.bits(careful, 3);
+        const n: u3 = @truncate(try r.bits(careful, 3));
         if (n != 0) {
-            s.window_bits = @intCast(17 + n);
+            s.window_bits = 17 + @as(u5, n);
         } else {
-            const m = try r.bits(careful, 3);
+            const m: u3 = @truncate(try r.bits(careful, 3));
             if (m == 1) {
                 if (!s.large_window) return s.fail(.window_bits, at);
                 if (try r.bits(careful, 1) == 1) return s.fail(.window_bits, at);
@@ -553,7 +553,7 @@ noinline fn streamHeader(comptime careful: bool, s: *State, r: *Reader, at: u64)
                 s.window_bits = @intCast(w);
                 s.large = true;
             } else if (m != 0) {
-                s.window_bits = @intCast(8 + m);
+                s.window_bits = 8 + @as(u5, m);
             } else s.window_bits = 17;
         }
     }
@@ -569,28 +569,28 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
         s.go(.metablock_header, .last);
         return;
     }
-    const nibbles = try r.bits(careful, 2);
+    const nibbles: u2 = @truncate(try r.bits(careful, 2));
     if (nibbles == 3) {
         if (try r.bits(careful, 1) != 0) return s.fail(.reserved, at);
-        const nbytes = try r.bits(careful, 2);
-        var len: u32 = 0;
-        for (0..nbytes) |i| {
-            const b = try r.bits(careful, 8);
-            if (i + 1 == nbytes and nbytes > 1 and b == 0) return s.fail(.exuberant_metadata, at);
-            len |= b << @intCast(8 * i);
+        const nbytes: u2 = @truncate(try r.bits(careful, 2));
+        var bytes: [3]u8 = @splat(0);
+        for (bytes[0..nbytes], 0..) |*b, i| {
+            b.* = @truncate(try r.bits(careful, 8));
+            if (i + 1 == nbytes and nbytes > 1 and b.* == 0) return s.fail(.exuberant_metadata, at);
         }
+        const len = std.mem.readInt(u24, &bytes, .little);
         if (!r.alignByte()) return s.fail(.padding, at);
         s.last = last;
         s.remaining = if (nbytes == 0) 0 else @as(i64, len) + 1;
         s.go(.metablock_header, .metadata);
         return;
     }
-    const n = nibbles + 4;
-    var len: u32 = 0;
+    const n = @as(u3, nibbles) + 4;
+    var len: u24 = 0;
     for (0..n) |i| {
-        const nib = try r.bits(careful, 4);
+        const nib: u4 = @truncate(try r.bits(careful, 4));
         if (i + 1 == n and n > 4 and nib == 0) return s.fail(.exuberant_nibble, at);
-        len |= nib << @intCast(4 * i);
+        len |= @as(u24, nib) << @intCast(4 * i);
     }
     const uncompressed = !last and try r.bits(careful, 1) == 1;
     if (uncompressed and !r.alignByte()) return s.fail(.padding, at);
@@ -610,11 +610,12 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
 }
 
 /// A number 0-255 in 1 to 11 bits.
-fn varLenUint8(comptime careful: bool, r: *Reader) bits_.NeedInput!u32 {
+fn varLenUint8(comptime careful: bool, r: *Reader) bits_.NeedInput!u8 {
     if (try r.bits(careful, 1) == 0) return 0;
     const n: u3 = @truncate(try r.bits(careful, 3));
     if (n == 0) return 1;
-    return (@as(u32, 1) << n) + try r.bits(careful, n);
+    // `n` bits below the bit `n` sets.
+    return (@as(u8, 1) << n) | @as(u7, @truncate(try r.bits(careful, n)));
 }
 
 fn blockCount(comptime careful: bool, r: *Reader, table: []const Entry) bits_.NeedInput!u32 {
@@ -755,7 +756,7 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         // The header: HSKIP, then a simple code or the code length code.
         const hskip = try r.bits(careful, 2);
         if (hskip == 1) {
-            const nsym = try r.bits(careful, 2) + 1;
+            const nsym = @as(u3, @as(u2, @truncate(try r.bits(careful, 2)))) + 1;
             const width = std.math.log2_int(u32, c.max - 1) + 1;
             var symbols: [4]u16 = undefined;
             for (symbols[0..nsym]) |*sym| {
@@ -781,7 +782,7 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         for (order[hskip..]) |symbol| {
             if (careful) {
                 r.fillAvailable(4);
-                const ix = r.peek(@min(4, r.count));
+                const ix: u4 = @truncate(r.peek(@min(4, r.count)));
                 if (prefix_len[ix] > r.count) return error.NeedInput;
             } else try r.fill(false, 4);
             const ix: u4 = @truncate(r.peek(4));
@@ -892,9 +893,10 @@ inline fn readCommand(comptime careful: bool, s: *State, t: *Tables, r: *Reader,
     const symbol = try huffman.decode(r, careful, t.command[s.blocks.command_tree..].ptr);
     const c = codes.commands[symbol];
     try r.fill(careful, @as(u6, c.insert_extra) + c.copy_extra);
-    const insert = c.insert_offset + @as(u32, @intCast(r.peek(c.insert_extra)));
+    // Extras are at most 24 bits.
+    const insert = @as(u32, c.insert_offset) + @as(u24, @truncate(r.peek(c.insert_extra)));
     r.drop(c.insert_extra);
-    const copy = c.copy_offset + @as(u32, @intCast(r.peek(c.copy_extra)));
+    const copy = @as(u32, c.copy_offset) + @as(u24, @truncate(r.peek(c.copy_extra)));
     r.drop(c.copy_extra);
     s.blocks.counts[1] -= 1;
     s.insert = insert;
@@ -948,9 +950,9 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         }
         const c = codes.commands[decodeOk(&f.br, command_table)];
         f.br.fill(false, @as(u6, c.insert_extra) + c.copy_extra) catch unreachable; // unreachable: fast reads never fail
-        const insert = c.insert_offset + @as(u32, @intCast(f.br.peek(c.insert_extra)));
+        const insert = @as(u32, c.insert_offset) + @as(u24, @truncate(f.br.peek(c.insert_extra)));
         f.br.drop(c.insert_extra);
-        const copy = c.copy_offset + @as(u32, @intCast(f.br.peek(c.copy_extra)));
+        const copy = @as(u32, c.copy_offset) + @as(u24, @truncate(f.br.peek(c.copy_extra)));
         f.br.drop(c.copy_extra);
         f.counts[1] -= 1;
         f.remaining -= insert;
@@ -1006,7 +1008,8 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             } else {
                 const range = t.distance_ranges[symbol];
                 f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger: fast reads never fail
-                d = range.offset +% (@as(u32, @intCast(f.br.peek(range.extra))) << npostfix);
+                // `extra` is 5 bits: at most 31 of them.
+                d = range.offset +% (@as(u32, @as(u31, @truncate(f.br.peek(range.extra)))) << npostfix);
                 f.br.drop(range.extra);
             }
         }

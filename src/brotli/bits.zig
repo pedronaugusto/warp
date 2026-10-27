@@ -80,7 +80,7 @@ pub const Reader = struct {
 
     /// The next `n` (< 64) loaded bits, not taken.
     pub inline fn peek(r: *const Reader, n: u6) u64 {
-        return r.buf & ((@as(u64, 1) << n) - 1);
+        return r.buf & ~(~@as(u64, 0) << n);
     }
 
     pub inline fn drop(r: *Reader, n: u6) void {
@@ -88,11 +88,10 @@ pub const Reader = struct {
         r.count -= n;
     }
 
-    /// Take `n` (≤ 56) bits.
-    pub inline fn bits(r: *Reader, comptime careful: bool, n: u6) NeedInput!u32 {
+    /// Take `n` (≤ 31) bits.
+    pub inline fn bits(r: *Reader, comptime careful: bool, n: u5) NeedInput!u32 {
         try r.fill(careful, n);
-        // At most 56 bits are taken, and no caller takes more than 32.
-        const v: u32 = @intCast(r.peek(n));
+        const v: u31 = @truncate(r.peek(n));
         r.drop(n);
         return v;
     }
@@ -168,7 +167,7 @@ test "fast and careful reads agree, and careful reads stop at the end" {
     const in = [_]u8{ 0b1010_1100, 0xff, 0x01, 0x80 } ++ @as([32]u8, @splat(0));
     var fast: Reader = .{ .in = &in };
     var careful: Reader = .{ .in = in[0..4] };
-    for ([_]u6{ 3, 5, 9, 1, 13 }) |n| {
+    for ([_]u5{ 3, 5, 9, 1, 13 }) |n| {
         try std.testing.expectEqual(try fast.bits(false, n), try careful.bits(true, n));
     }
     try std.testing.expectEqual(31, careful.bitOffset());

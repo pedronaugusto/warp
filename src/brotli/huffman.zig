@@ -42,8 +42,9 @@ pub inline fn decode(r: *Reader, comptime careful: bool, table: [*]const Entry) 
     var len: u4 = @truncate(e & 15);
     if (len > root_bits) {
         if (careful and r.count <= root_bits) return error.NeedInput;
-        const sub: u32 = @intCast((b >> root_bits) & ((@as(u64, 1) << @intCast(len - root_bits)) - 1));
-        e = table[(e >> 4) + sub];
+        // The second level is at most 7 bits wide.
+        const sub: u7 = @truncate(b >> root_bits);
+        e = table[(e >> 4) + (sub & ~(~@as(u8, 0) << @intCast(len - root_bits)))];
         len = root_bits + @as(u4, @truncate(e & 15));
     }
     if (careful and len > r.count) return error.NeedInput;
