@@ -215,6 +215,7 @@ pub fn dev(b: *std.Build, tools: type) void {
                 .{ .name = "brotli-bench", .source = "bench/brotli.zig" },
                 .{ .name = "gdeflate-bench", .source = "bench/gdeflate.zig" },
                 .{ .name = "bzip2-bench", .source = "bench/bzip2.zig" },
+                .{ .name = "xz-bench", .source = "bench/xz.zig" },
             },
             .imports = benchImports,
             .target = target,
@@ -244,7 +245,7 @@ fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lan
 /// captured once from other implementations (pedronaugusto/trials, warp/),
 /// the inputs it names, and the benchmarks' input generator.
 fn addTestImports(b: *std.Build, p: *std.Build, module: *std.Build.Module) void {
-    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries", "deflate64", "lz4-blocks", "lz4-frames", "lz4-invalid", "brotli-streams", "brotli-invalid", "gdeflate", "bzip2-streams", "bzip2-invalid" }) |name| {
+    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries", "deflate64", "lz4-blocks", "lz4-frames", "lz4-invalid", "brotli-streams", "brotli-invalid", "gdeflate", "bzip2-streams", "bzip2-invalid", "xz-streams", "xz-invalid" }) |name| {
         module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = p.path(b.fmt("testdata/{s}.corpus", .{name})) });
     }
     module.addAnonymousImport("gen", .{ .root_source_file = p.path("bench/gen.zig") });
@@ -305,6 +306,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "ensign", .module = ensign },
         .{ .name = "brotli-streams.corpus", .module = b.createModule(.{ .root_source_file = p.path("testdata/brotli-streams.corpus") }) },
         .{ .name = "bzip2-streams.corpus", .module = b.createModule(.{ .root_source_file = p.path("testdata/bzip2-streams.corpus") }) },
+        .{ .name = "xz-streams.corpus", .module = b.createModule(.{ .root_source_file = p.path("testdata/xz-streams.corpus") }) },
     }) catch @panic("OOM");
 }
 

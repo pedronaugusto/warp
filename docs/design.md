@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate, bzip2 decoding and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate, bzip2 and xz/LZMA decoding and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 
@@ -119,6 +119,22 @@ block only where the previous one ended, checking the bounds of the stream's
 level the worker could not know; headers, ends and refused blocks are
 decoded there by the same engine. The block's CRC is a slicing-by-8 pass
 over its output, not folded per byte.
+
+LZMA has its range decoder, engine and streaming core beneath `warp.lzma`, and
+`warp.xz` the container, its filters and its parallel decoder above it; both
+import only CRC-32 and CRC-64 from the checksum layer. The engine is generic
+over its window: the whole-buffer decoders write into the caller's output,
+which is the dictionary, and the resumable ones into a ring of the dictionary
+in the caller's memory. A symbol runs unchecked while 20 input bytes remain
+(the most one reads) and the window has room for the longest match; past
+either it runs careful, logging the probabilities it changes so a symbol the
+input cuts short is undone whole, and a match the output cuts short waits.
+The resumable decoders read input in place and stage only such a symbol, so
+a stream's end is exact. Filters undo blocks in place in the whole-buffer
+decoder and through a pipe in the resumable one, where each converter holds
+back the tail it cannot convert yet, as liblzma's do. Every check is
+liblzma's, in its order, including its dictionary (at least 4 KiB, rounded
+to 16 bytes), which decides which distances are valid.
 
 LZ4 has its own block engine, parsers and frame owners beneath `warp.lz4`, and
 no entropy stage: it imports neither the bit layer nor the Huffman builders.

@@ -14,6 +14,10 @@ pub const lz4 = @import("lz4.zig");
 pub const brotli = @import("brotli.zig");
 /// bzip2 streams, decompression.
 pub const bzip2 = @import("bzip2.zig");
+/// LZMA and LZMA2 raw streams and `.lzma` files.
+pub const lzma = @import("lzma.zig");
+/// `.xz` streams.
+pub const xz = @import("xz.zig");
 /// GDeflate pages and DirectStorage tile streams, compressed at DEFLATE's levels
 /// and decoded on the CPU.
 pub const gdeflate = @import("gdeflate.zig");
@@ -49,6 +53,10 @@ pub const adler32Combine = checksum.adler32Combine;
 pub const Crc32Bzip2 = checksum.Crc32Bzip2;
 /// `crc` continued over the bytes; 0 starts one.
 pub const crc32Bzip2 = checksum.crc32Bzip2;
+/// xz's CRC-64 (ECMA-182, reflected), the check its streams name 0x04.
+pub const Crc64Xz = checksum.Crc64Xz;
+/// `crc` continued over the bytes; 0 starts one.
+pub const crc64Xz = checksum.crc64Xz;
 /// Which kernel each checksum runs on this CPU.
 pub const kernels = checksum.kernels;
 /// The kernel of each checksum.

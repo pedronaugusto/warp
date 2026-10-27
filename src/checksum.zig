@@ -1,5 +1,5 @@
-//! CRC-32, CRC-32C and Adler-32, with the kernels each runs on, and bzip2's
-//! CRC-32.
+//! CRC-32, CRC-32C and Adler-32, with the kernels each runs on, bzip2's
+//! CRC-32 and xz's CRC-64.
 
 pub const Crc32 = crc32_.Crc32;
 pub const crc32 = crc32_.crc32;
@@ -12,6 +12,8 @@ pub const adler32 = adler32_.adler32;
 pub const adler32Combine = adler32_.adler32Combine;
 pub const Crc32Bzip2 = crc32bzip2_.Crc32Bzip2;
 pub const crc32Bzip2 = crc32bzip2_.crc32Bzip2;
+pub const Crc64Xz = crc64xz_.Crc64Xz;
+pub const crc64Xz = crc64xz_.crc64Xz;
 pub const Kernel = @import("checksum/kernel.zig").Kernel;
 
 const crc_ = @import("checksum/crc.zig");
@@ -19,6 +21,7 @@ const crc32_ = @import("checksum/crc32.zig");
 const crc32c_ = @import("checksum/crc32c.zig");
 const adler32_ = @import("checksum/adler32.zig");
 const crc32bzip2_ = @import("checksum/crc32bzip2.zig");
+const crc64xz_ = @import("checksum/crc64xz.zig");
 
 /// The kernel each checksum runs on.
 pub const Kernels = struct { crc32: Kernel, crc32c: Kernel, adler32: Kernel };
@@ -35,4 +38,5 @@ test {
     _ = crc32c_;
     _ = adler32_;
     _ = crc32bzip2_;
+    _ = crc64xz_;
 }

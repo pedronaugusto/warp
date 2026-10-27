@@ -42,4 +42,7 @@ test {
     _ = @import("testing/brotli_encode_test.zig");
     _ = @import("bzip2.zig");
     _ = @import("testing/bzip2_test.zig");
+    _ = @import("lzma.zig");
+    _ = @import("xz.zig");
+    _ = @import("testing/lzma_test.zig");
 }

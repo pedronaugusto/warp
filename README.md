@@ -3,7 +3,8 @@
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
 through `warp.lz4`, Brotli streams through `warp.brotli`, and decodes bzip2
-through `warp.bzip2`. It computes CRC-32, CRC-32C, Adler-32 and bzip2's CRC-32. Whole-buffer and streaming calls use caller memory
+through `warp.bzip2` and xz and LZMA through `warp.xz` and `warp.lzma`. It
+computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
 as the reference does. Checksum dispatch selects
 a kernel supported by the CPU.
@@ -448,11 +449,36 @@ included; where 1.0.8's answer depends on memory it never wrote (a code that
 names a symbol past the alphabet), warp refuses. A captured corpus of its
 streams and verdicts checks it. `bzip2-bench` measures the three decoders.
 
+### xz and LZMA
+
+`warp.xz.Decompressor.decompress(in, out, .{})` decodes `.xz` streams straight
+into the caller's output: blocks of LZMA2 with Delta and the branch converters
+(x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, RISC-V) before it, CRC-32,
+CRC-64 and SHA-256 checks, indexes, stream padding and concatenated streams
+(`streams = .one` leaves what follows the first unread). `warp.lzma` decodes
+raw LZMA with its properties given apart (`decompressLzma1`: a known size with
+or without an end marker, or the marker alone, as 7z and zip store it), raw
+LZMA2 (`decompressLzma2`) and `.lzma` files (`decompressAlone`). A whole-buffer
+decoder holds one coder's probabilities (about 30 KiB) and allocates nothing;
+`Diagnostic` records the refusal's offset and reason.
+
+`xz.Decompress` and `lzma.Decompress` are resumable at every input and output
+byte; the window is the caller's, `windowLength(dictionary)` bytes (a stream
+naming a larger dictionary is `WindowTooLarge`). They read input in place and
+stage only a symbol or header cut short, so a stream's end is exact. Each has
+a `Reader`. `xz.parallel.Decompressor` decodes the blocks whose headers carry
+their sizes (as `xz -T` writes them) in workers, each straight into its range
+of the output, and answers anything else as the whole-buffer decoder does.
+
+What liblzma 5.8.4 decodes, warp decodes, and what it refuses, warp refuses
+for the same reason; a captured corpus of its streams and verdicts checks it.
+`xz-bench` measures the three decoders. Encoding comes next.
+
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
 Brotli compression and decompression; GDeflate compression and decompression on the CPU;
-bzip2 decompression;
+bzip2 decompression; xz, `.lzma` and raw LZMA/LZMA2 decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and
