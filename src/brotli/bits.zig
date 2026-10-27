@@ -29,9 +29,10 @@ pub const Reader = struct {
     /// Loaded bits, the next one lowest. Bits above `count` are zero or
     /// the stream's own next bits (a fast load leaves part of a byte there).
     buf: u64 = 0,
-    count: u32 = 0,
+    /// At most 63: loads stop at 56 bits and add at most 7 more.
+    count: u6 = 0,
 
-    pub const Mark = struct { pos: usize, buf: u64, count: u32 };
+    pub const Mark = struct { pos: usize, buf: u64, count: u6 };
 
     pub inline fn mark(r: *const Reader) Mark {
         return .{ .pos = r.pos, .buf = r.buf, .count = r.count };
@@ -55,11 +56,12 @@ pub const Reader = struct {
 
     /// At least `n` (≤ 56) bits loaded. Careful mode loads what the input
     /// has and fails if that is short.
-    pub inline fn fill(r: *Reader, comptime careful: bool, n: u32) NeedInput!void {
+    pub inline fn fill(r: *Reader, comptime careful: bool, n: u6) NeedInput!void {
         if (r.count >= n) return;
         if (!careful) {
-            r.buf |= std.mem.readInt(u64, r.in[r.pos..][0..8], .little) << @intCast(r.count);
-            r.pos += (63 - r.count) >> 3;
+            r.buf |= std.mem.readInt(u64, r.in[r.pos..][0..8], .little) << r.count;
+            // `~count` is 63 less the count: the whole bytes that fit.
+            r.pos += ~r.count >> 3;
             r.count |= 56;
             return;
         }
@@ -68,27 +70,28 @@ pub const Reader = struct {
     }
 
     /// Load bytes until `n` bits are loaded or the input ends.
-    pub inline fn fillAvailable(r: *Reader, n: u32) void {
+    pub inline fn fillAvailable(r: *Reader, n: u6) void {
         while (r.count < n and r.pos < r.in.len) {
-            r.buf |= @as(u64, r.in[r.pos]) << @intCast(r.count);
+            r.buf |= @as(u64, r.in[r.pos]) << r.count;
             r.pos += 1;
             r.count += 8;
         }
     }
 
     /// The next `n` (< 64) loaded bits, not taken.
-    pub inline fn peek(r: *const Reader, n: u32) u64 {
-        return r.buf & ((@as(u64, 1) << @intCast(n)) - 1);
+    pub inline fn peek(r: *const Reader, n: u6) u64 {
+        return r.buf & ((@as(u64, 1) << n) - 1);
     }
 
-    pub inline fn drop(r: *Reader, n: u32) void {
-        r.buf >>= @intCast(n);
+    pub inline fn drop(r: *Reader, n: u6) void {
+        r.buf >>= n;
         r.count -= n;
     }
 
     /// Take `n` (≤ 56) bits.
-    pub inline fn bits(r: *Reader, comptime careful: bool, n: u32) NeedInput!u32 {
+    pub inline fn bits(r: *Reader, comptime careful: bool, n: u6) NeedInput!u32 {
         try r.fill(careful, n);
+        // At most 56 bits are taken, and no caller takes more than 32.
         const v: u32 = @intCast(r.peek(n));
         r.drop(n);
         return v;
@@ -165,7 +168,7 @@ test "fast and careful reads agree, and careful reads stop at the end" {
     const in = [_]u8{ 0b1010_1100, 0xff, 0x01, 0x80 } ++ @as([32]u8, @splat(0));
     var fast: Reader = .{ .in = &in };
     var careful: Reader = .{ .in = in[0..4] };
-    for ([_]u32{ 3, 5, 9, 1, 13 }) |n| {
+    for ([_]u6{ 3, 5, 9, 1, 13 }) |n| {
         try std.testing.expectEqual(try fast.bits(false, n), try careful.bits(true, n));
     }
     try std.testing.expectEqual(31, careful.bitOffset());

@@ -29,7 +29,7 @@ options: Options,
 carry: [64]u8 = undefined,
 carry_len: usize = 0,
 bit_buf: u64 = 0,
-bit_count: u32 = 0,
+bit_count: u6 = 0,
 /// Private: input bytes taken since the stream started (carried ones
 /// included).
 taken: u64 = 0,

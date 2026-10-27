@@ -38,12 +38,13 @@ pub inline fn decode(r: *Reader, comptime careful: bool, table: [*]const Entry) 
     if (careful) r.fillAvailable(max_length) else try r.fill(false, max_length);
     const b = r.buf;
     var e = table[@as(u8, @truncate(b))];
-    var len: u32 = e & 15;
+    // A code's length is 4 bits of its entry, 15 at most.
+    var len: u4 = @truncate(e & 15);
     if (len > root_bits) {
         if (careful and r.count <= root_bits) return error.NeedInput;
         const sub: u32 = @intCast((b >> root_bits) & ((@as(u64, 1) << @intCast(len - root_bits)) - 1));
         e = table[(e >> 4) + sub];
-        len = root_bits + (e & 15);
+        len = root_bits + @as(u4, @truncate(e & 15));
     }
     if (careful and len > r.count) return error.NeedInput;
     r.drop(len);

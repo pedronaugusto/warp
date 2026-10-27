@@ -435,7 +435,9 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                     map[s.map.index] = @intCast(code - s.map.rlemax);
                     s.map.index += 1;
                 } else {
-                    const reps = (@as(u32, 1) << @intCast(code)) + try r.bits(careful, code);
+                    // `code` is at most `rlemax`, 16 or less.
+                    const bits: u5 = @intCast(code);
+                    const reps = (@as(u32, 1) << bits) + try r.bits(careful, bits);
                     if (s.map.index + reps > map.len) return s.fail(.context_map_repeat, r.bitOffset());
                     @memset(map[s.map.index..][0..reps], 0);
                     s.map.index += reps;
@@ -609,9 +611,9 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
 /// A number 0-255 in 1 to 11 bits.
 fn varLenUint8(comptime careful: bool, r: *Reader) bits_.NeedInput!u32 {
     if (try r.bits(careful, 1) == 0) return 0;
-    const n = try r.bits(careful, 3);
+    const n: u3 = @truncate(try r.bits(careful, 3));
     if (n == 0) return 1;
-    return (@as(u32, 1) << @intCast(n)) + try r.bits(careful, n);
+    return (@as(u32, 1) << n) + try r.bits(careful, n);
 }
 
 fn blockCount(comptime careful: bool, r: *Reader, table: []const Entry) bits_.NeedInput!u32 {
@@ -769,7 +771,7 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         }
         const order = [18]u8{ 1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
         // The code length code lengths' own fixed code, by the next 4 bits.
-        const prefix_len = [16]u8{ 2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4 };
+        const prefix_len = [16]u3{ 2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4 };
         const prefix_value = [16]u8{ 0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5 };
         var lengths: [18]u8 = @splat(0);
         var count: [6]u16 = @splat(0);
@@ -781,7 +783,7 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 const ix = r.peek(@min(4, r.count));
                 if (prefix_len[ix] > r.count) return error.NeedInput;
             } else try r.fill(false, 4);
-            const ix = r.peek(4);
+            const ix: u4 = @truncate(r.peek(4));
             const v = prefix_value[ix];
             r.drop(prefix_len[ix]);
             lengths[symbol] = v;
@@ -821,7 +823,8 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
 inline fn codeLengthSymbol(comptime careful: bool, c: *Code, t: *Tables, r: *Reader) StepError!void {
     if (careful) r.fillAvailable(8) else try r.fill(false, 8);
     const e = t.code_lengths[@as(u5, @truncate(r.buf))];
-    const len = e & 15;
+    // A length of 4 bits, a code-length symbol of the rest.
+    const len: u4 = @truncate(e & 15);
     if (careful and len > r.count) return error.NeedInput;
     const code: u8 = @intCast(e >> 4);
     if (code < 16) {
@@ -837,10 +840,10 @@ inline fn codeLengthSymbol(comptime careful: bool, c: *Code, t: *Tables, r: *Rea
         c.symbol += 1;
         return;
     }
-    const extra: u32 = if (code == 16) 2 else 3;
-    if (careful and len + extra > r.count) return error.NeedInput;
+    const extra: u2 = if (code == 16) 2 else 3;
+    if (careful and @as(u6, len) + extra > r.count) return error.NeedInput;
     r.drop(len);
-    const delta: u32 = @intCast(r.peek(extra));
+    const delta: u32 = @as(u3, @truncate(r.peek(extra)));
     r.drop(extra);
     const new_len: u8 = if (code == 16) c.prev_len else 0;
     if (c.repeat_len != new_len) {
@@ -887,7 +890,7 @@ inline fn readCommand(comptime careful: bool, s: *State, t: *Tables, r: *Reader,
     if (s.blocks.counts[1] == 0) try blockSwitch(careful, s, t, r, 1, at);
     const symbol = try huffman.decode(r, careful, t.command[s.blocks.command_tree..].ptr);
     const c = codes.commands[symbol];
-    try r.fill(careful, @as(u32, c.insert_extra) + c.copy_extra);
+    try r.fill(careful, @as(u6, c.insert_extra) + c.copy_extra);
     const insert = c.insert_offset + @as(u32, @intCast(r.peek(c.insert_extra)));
     r.drop(c.insert_extra);
     const copy = c.copy_offset + @as(u32, @intCast(r.peek(c.copy_extra)));
@@ -943,7 +946,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             command_table = t.command[s.blocks.command_tree..].ptr;
         }
         const c = codes.commands[decodeOk(&f.br, command_table)];
-        f.br.fill(false, @as(u32, c.insert_extra) + c.copy_extra) catch unreachable; // unreachable: fast reads never fail
+        f.br.fill(false, @as(u6, c.insert_extra) + c.copy_extra) catch unreachable; // unreachable: fast reads never fail
         const insert = c.insert_offset + @as(u32, @intCast(f.br.peek(c.insert_extra)));
         f.br.drop(c.insert_extra);
         const copy = c.copy_offset + @as(u32, @intCast(f.br.peek(c.copy_extra)));
