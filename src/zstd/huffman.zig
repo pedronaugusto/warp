@@ -9,6 +9,11 @@ const bits = @import("bits.zig");
 const fse = @import("fse.zig");
 
 pub const max_log = 12;
+/// A decoding table's cell: `log` bits peeked, at most `max_log`.
+const Index = u12;
+comptime {
+    std.debug.assert(@bitSizeOf(Index) == max_log);
+}
 pub const max_symbols = 256;
 
 pub const Error = error{InvalidStream};
@@ -83,9 +88,10 @@ fn decodeWeights(in: []const u8, out: []u8) Error!usize {
     var table: fse.Table(6) = undefined;
     table.build(counts.norm[0 .. @as(usize, counts.max_symbol) + 1], counts.log);
     var r = try bits.Reader.init(in[counts.len..]);
-    var s1: u32 = @intCast(r.read(counts.log));
+    // The weights' table has a log of 6 at most: its states fit 6 bits.
+    var s1: WeightState = @truncate(r.read(counts.log));
     _ = r.reload();
-    var s2: u32 = @intCast(r.read(counts.log));
+    var s2: WeightState = @truncate(r.read(counts.log));
     _ = r.reload();
     if (r.reload() == .overflow) return error.InvalidStream;
     const cells = &table.cells;
@@ -118,9 +124,14 @@ fn decodeWeights(in: []const u8, out: []u8) Error!usize {
     return op;
 }
 
-inline fn weightSymbol(cells: []const fse.Cell, state: *u32, r: *bits.Reader) u8 {
+const WeightState = u6;
+
+inline fn weightSymbol(cells: *const [1 << 6]fse.Cell, state: *WeightState, r: *bits.Reader) u8 {
     const c = cells[state.*];
-    state.* = c.next_state + @as(u32, @intCast(r.read(@intCast(c.nb_bits))));
+    // The next state and the bits after it stay below the table's size.
+    const next: WeightState = @truncate(c.next_state);
+    const bits_read: WeightState = @truncate(r.read(@truncate(c.nb_bits)));
+    state.* = next +% bits_read;
     return c.symbol;
 }
 
@@ -308,7 +319,7 @@ pub fn decode4(t: *const Table, in: []const u8, out: []u8) Error!void {
 }
 
 inline fn lookupSingle(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader) u8 {
-    const c = cells[@intCast(r.peek(log))];
+    const c = cells[@as(Index, @truncate(r.peek(log)))];
     r.skip(c >> 8);
     return @truncate(c);
 }
@@ -316,7 +327,7 @@ inline fn lookupSingle(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader
 /// Two symbols' bytes written (the second may be overwritten next); the
 /// count returned.
 inline fn lookupDouble(cells: *const [1 << max_log]u32, log: u4, r: *bits.Reader, out: [*]u8) u32 {
-    const c = cells[@intCast(r.peek(log))];
+    const c = cells[@as(Index, @truncate(r.peek(log)))];
     std.mem.writeInt(u16, out[0..2], @truncate(c), .little);
     r.skip((c >> 16) & 0xff);
     return c >> 24;
@@ -394,7 +405,7 @@ fn streamDouble(t: *const Table, r: *bits.Reader, out: []u8) void {
     if (p < end) {
         // The last symbol: a lookup may hold two, of which one is wanted;
         // its bits are taken up to the stream's start and no further.
-        const c = cells[@intCast(r.peek(log))];
+        const c = cells[@as(Index, @truncate(r.peek(log)))];
         out[p] = @truncate(c);
         if (c >> 24 == 1) {
             r.skip((c >> 16) & 0xff);
@@ -1022,7 +1033,7 @@ pub const Symbols = struct {
                 switch (s.table.kind) {
                     .single => byte.* = lookupSingle(&s.table.cells.single, s.table.log, r),
                     .double => {
-                        const cell = s.table.cells.double[@intCast(r.peek(s.table.log))];
+                        const cell = s.table.cells.double[@as(Index, @truncate(r.peek(s.table.log)))];
                         byte.* = @truncate(cell);
                         r.skip((cell >> 16) & 0xff);
                         if (cell >> 24 == 2) {
