@@ -21,7 +21,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "bits", .patterns = &.{"src/bits.zig"} },
     .{ .name = "huffman codes", .patterns = &.{ "src/huffman/decode.zig", "src/huffman/encode.zig" } },
     .{ .name = "huffman", .patterns = &.{"src/huffman.zig"} },
-    .{ .name = "match history", .patterns = &.{"src/match/history.zig"} },
+    .{ .name = "match history", .patterns = &.{ "src/match/history.zig", "src/match/copy.zig" } },
     .{ .name = "matchfinders", .patterns = &.{ "src/match/HashChains.zig", "src/match/HashTable.zig", "src/match/BinaryTrees.zig" } },
     .{ .name = "match", .patterns = &.{"src/match.zig"} },
     .{ .name = "encode parts", .patterns = &.{ "src/deflate/block.zig", "src/deflate/split.zig" } },
@@ -100,6 +100,10 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "xz parallel decode", .patterns = &.{ "src/xz/parallel/Decompressor.zig", "src/xz/parallel/Compressor.zig" } },
     .{ .name = "xz parallel", .patterns = &.{"src/xz/parallel.zig"} },
     .{ .name = "xz", .patterns = &.{"src/xz.zig"} },
+    .{ .name = "snappy elements", .patterns = &.{ "src/snappy/Diagnostic.zig", "src/snappy/Dict.zig", "src/snappy/emit.zig" } },
+    .{ .name = "snappy engines", .patterns = &.{ "src/snappy/block.zig", "src/snappy/reference.zig", "src/snappy/fast.zig", "src/snappy/better.zig", "src/snappy/best.zig" } },
+    .{ .name = "snappy compressor", .patterns = &.{"src/snappy/Compressor.zig"} },
+    .{ .name = "snappy", .patterns = &.{"src/snappy.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 
@@ -141,6 +145,8 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "bzip2-invalid.corpus",
         "xz-streams.corpus",
         "xz-invalid.corpus",
+        "snappy-blocks.corpus",
+        "snappy-invalid.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

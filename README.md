@@ -2,7 +2,8 @@
 
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
-through `warp.lz4`, Brotli streams through `warp.brotli`, and decodes bzip2
+through `warp.lz4`, Snappy and S2 blocks through `warp.snappy`, Brotli
+streams through `warp.brotli`, and decodes bzip2
 through `warp.bzip2` and xz and LZMA through `warp.xz` and `warp.lzma`. It
 computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
@@ -493,9 +494,35 @@ encodes blocks of three dictionaries in workers, as `xz -T` cuts them,
 writing the whole-buffer encoder's stream for the same block size.
 `xz-bench` measures the decoders and encoders.
 
+### Snappy and S2
+
+`warp.snappy.Compressor` writes Snappy and S2 blocks. `format` is `.snappy`
+(google's elements, which S2 also reads) or `.s2` (S2's repeats and 4-byte
+offsets as well); `level` picks the parser: `snappy_1` and `snappy_2`,
+google/snappy 1.3.1's levels, or `fast`, `better` and `best`,
+klauspost/compress s2 v1.20.3's modes, in either format. Each writes the
+reference's block byte for byte: google's level 1 as its portable build
+hashes (an SSE4.2 or ARM CRC build hashes with CRC32C and parses
+differently), S2's as its assembly encoders write on amd64 and arm64, each
+block size class included. With an S2 dictionary (`dictionary`, S2's
+parsers and format) blocks also copy from it, indexed once at `init`.
+`init` takes the parser's tables once (`memory(options)`, about 4.5 MiB for
+`best`); `initBuffer` uses caller memory; calls allocate nothing.
+`compressBlock(in, out)` writes one block into `blockBound(in.len)` bytes.
+
+`warp.snappy.decompressBlock(in, out, .{ .format = f })` decodes a whole
+block into `decodedLen(in, f)` bytes of output, with no state. What google's
+decoder (for `.snappy`) or S2's (for `.s2`) accepts, warp accepts, and what
+they refuse, warp refuses; `Diagnostic` records the refusal's byte and
+reason. `Dict.parse` reads a serialized S2 dictionary, `Dict.make` builds
+one as S2's `MakeDict` does, and `concatBlocks` joins blocks as S2's
+`ConcatBlocks` does. The framing formats are not here yet.
+`snappy-bench` measures it.
+
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
+Snappy and S2 block compression and decompression;
 Brotli compression and decompression; GDeflate compression and decompression on the CPU;
 bzip2 decompression; xz, `.lzma` and raw LZMA/LZMA2 compression and decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,

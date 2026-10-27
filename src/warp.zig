@@ -18,6 +18,8 @@ pub const bzip2 = @import("bzip2.zig");
 pub const lzma = @import("lzma.zig");
 /// `.xz` streams.
 pub const xz = @import("xz.zig");
+/// Snappy and S2 blocks.
+pub const snappy = @import("snappy.zig");
 /// GDeflate pages and DirectStorage tile streams, compressed at DEFLATE's levels
 /// and decoded on the CPU.
 pub const gdeflate = @import("gdeflate.zig");

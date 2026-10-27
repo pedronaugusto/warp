@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Brotli, GDeflate and xz/LZMA, bzip2 decoding, and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Snappy and S2 blocks, Brotli, GDeflate and xz/LZMA, bzip2 decoding, and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 
@@ -172,6 +172,19 @@ cleared table's zero does for lz4, so the parses are lz4's and a call clears
 nothing. The fast loop of the block decoder takes a sequence whole only while
 its 16- and 32-byte stores stay inside both buffers, and otherwise leaves it
 to a careful loop that checks every bound, one sequence at a time.
+
+Snappy and S2 share one block decoder and one set of element writers beneath
+`warp.snappy`; S2 is Snappy with more elements, so the format is an option of
+each, not a codec apart. The parsers are one file each: google's two levels
+(`reference`) and S2's three modes (`fast`, `better`, `best`), each S2 mode
+with its dictionary parse beside its plain one. google and S2 split long
+copies and choose copy forms differently, and S2's assembly encoders differ by
+block size class, so `emit` keeps each reference's writers, the class a
+comptime parameter. One `Compressor` owns its parser's tables and a
+dictionary's, made once. The decoder is one checked loop: literals stored 16
+bytes at once and copies through LZ4's `copyMatch` (shared in `match/copy`)
+where the output has room, every element's bounds checked before it is
+written.
 
 ## Invariants
 
