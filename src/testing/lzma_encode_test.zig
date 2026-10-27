@@ -225,8 +225,8 @@ test "resumable encoding slides its window: a small dictionary over a long input
 }
 
 /// `in` through the resumable .xz encoder in pieces of `piece` bytes into
-/// outputs of `room` bytes, flushed after the first piece.
-fn streamedXz(gpa: std.mem.Allocator, options: xz.Compress.Options, in: []const u8, piece: usize, room: usize) ![]u8 {
+/// outputs of `room` bytes, flushed after the first piece if `flush_first`.
+fn streamedXz(gpa: std.mem.Allocator, options: xz.Compress.Options, in: []const u8, piece: usize, room: usize, flush_first: bool) ![]u8 {
     var s: xz.Compress = try .init(gpa, options);
     defer s.deinit();
     var out: std.ArrayList(u8) = .empty;
@@ -245,7 +245,7 @@ fn streamedXz(gpa: std.mem.Allocator, options: xz.Compress.Options, in: []const 
             if (part.len == 0 and step.out_len < buf.len) break;
         }
         at += n;
-        if (first) while (true) {
+        if (first and flush_first) while (true) {
             const d = try s.flush(buf);
             try out.appendSlice(gpa, buf[0..d.out_len]);
             if (d.done) break;
@@ -268,7 +268,7 @@ test "resumable .xz encoding: streams decode to their inputs, with and without b
             for (chains, 0..) |chain, i| for ([_]?u64{ null, 7000 }) |block_size| for ([_][2]usize{ .{ 1 << 30, 1 << 20 }, .{ 999, 17 } }) |cut| {
                 const options: xz.Compress.Options = .{ .lzma = presets[1 + 5 * i], .check = if (i == 0) .crc32 else .sha256, .filters = chain, .block_size = block_size, .pledged_size = .fromRaw(in.len) };
                 errdefer std.debug.print("chain {d} block {?d} pieces {d}\n", .{ i, block_size, cut[0] });
-                const got = try streamedXz(gpa, options, in, cut[0], cut[1]);
+                const got = try streamedXz(gpa, options, in, cut[0], cut[1], true);
                 defer gpa.free(got);
                 const back = try gpa.alloc(u8, in.len + 1);
                 defer gpa.free(back);
@@ -386,4 +386,72 @@ test "std's .xz decoder reads warp's streams: one block or many, each check" {
             }
         }
     }{});
+}
+
+/// A preset named in a record's parameters: "-6", "-6e", "-0".
+fn presetIn(params: []const u8) !Options {
+    const at = (std.mem.findScalar(u8, params, '-') orelse return error.BadCorpus) + 1;
+    var end = at;
+    while (end < params.len and std.ascii.isDigit(params[end])) end += 1;
+    const level = try std.fmt.parseInt(u4, params[at..end], 10);
+    return .preset(level, end < params.len and params[end] == 'e');
+}
+
+/// The filters a record's parameters name before "lzma2".
+fn filtersIn(params: []const u8, buf: *[3]xz.Filter) ![]const xz.Filter {
+    const at = (std.mem.find(u8, params, "filters ") orelse return &.{}) + "filters ".len;
+    var n: usize = 0;
+    var it = std.mem.splitSequence(u8, params[at..], ", ");
+    while (it.next()) |f| {
+        if (std.mem.eql(u8, f, "lzma2")) break;
+        var words = std.mem.splitScalar(u8, f, ' ');
+        const name = words.next().?;
+        const arg = words.next();
+        const value: u32 = if (arg) |a| try std.fmt.parseInt(u32, a[std.mem.findScalar(u8, a, '=').? + 1 ..], 10) else 0;
+        buf[n] = if (std.mem.eql(u8, name, "delta")) .{ .delta = @intCast(value) } else .{ .bcj = .{ .kind = std.meta.stringToEnum(xz.Bcj, name) orelse return error.BadCorpus, .start = value } };
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+test "warp's encoder writes liblzma's streams byte for byte: .lzma, raw LZMA and LZMA2, and .xz" {
+    const gpa = testing.allocator;
+    const c = try corpus.Corpus.parse(streams_corpus);
+    var it = c.records();
+    var count: usize = 0;
+    while (it.next()) |r| {
+        const format = r.fields[1];
+        const params = r.fields[2];
+        const want = r.fields[4];
+        errdefer std.debug.print("{s} ({s}): {s}\n", .{ format, params, r.fields[3] });
+        const in = if (r.fields[3].len == 0) try gpa.alloc(u8, 0) else try corpus.input(gpa, r.fields[3]);
+        defer gpa.free(in);
+        var got: []u8 = undefined;
+        if (std.mem.eql(u8, format, "xz")) {
+            if (std.mem.startsWith(u8, params, "two streams")) continue;
+            var filters: [3]xz.Filter = undefined;
+            const check: xz.Check = if (std.mem.find(u8, params, "check ")) |at| std.meta.stringToEnum(xz.Check, params[at + 6 ..]).? else .crc64;
+            const block: ?u64 = if (std.mem.find(u8, params, "block ")) |at| try std.fmt.parseInt(u64, params[at + 6 ..], 10) else null;
+            got = try streamedXz(gpa, .{ .lzma = try presetIn(params), .check = check, .filters = try filtersIn(params, &filters), .block_size = block }, in, 1 << 30, 1 << 20, false);
+        } else if (std.mem.eql(u8, format, "lzma")) {
+            got = try streamed(gpa, .{ .lzma = try presetIn(params), .format = .{ .alone = .{ .size_known = false } } }, in, 1 << 30, 1 << 20);
+        } else if (std.mem.startsWith(u8, format, "lzma2 ")) {
+            got = try streamed(gpa, .{ .lzma = try presetIn(params) }, in, 1 << 30, 1 << 20);
+        } else if (std.mem.startsWith(u8, format, "lzma1 ")) {
+            var o: Options = .preset(6, false);
+            o.dictionary = 1 << 20;
+            o.properties = .{ .lc = @intCast(try number(format, "lc")), .lp = @intCast(try number(format, "lp")), .pb = @intCast(try number(format, "pb")) };
+            got = try streamed(gpa, .{ .lzma = o, .format = .{ .lzma1 = .{ .end_marker = !std.mem.eql(u8, params, "known") } } }, in, 1 << 30, 1 << 20);
+        } else continue;
+        defer gpa.free(got);
+        try testing.expectEqualSlices(u8, want, got);
+        count += 1;
+    }
+    try testing.expectEqual(129, count);
+}
+
+fn number(format: []const u8, comptime key: []const u8) !u64 {
+    const at = (std.mem.find(u8, format, " " ++ key ++ "=") orelse return error.BadCorpus) + key.len + 2;
+    const end = std.mem.findScalarPos(u8, format, at, ' ') orelse format.len;
+    return std.fmt.parseInt(u64, format[at..end], 10);
 }

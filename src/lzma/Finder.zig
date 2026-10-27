@@ -2,7 +2,10 @@
 //! up, at distances within the dictionary, as liblzma's hc3, hc4 and bt4
 //! give them to its parsers (lengths increasing, each to `nice_len`, the
 //! longest then extended to 273 where it reached that), over a buffer the
-//! encoder fills.
+//! encoder fills. With tables sized for the dictionary, the matches are
+//! liblzma's: the same hashes and table sizes, the same chains and trees,
+//! reaching as liblzma's window of the dictionary and one more position
+//! does, to a match exactly the dictionary back.
 //!
 //! Positions count in the buffer; `read_pos` is the next to search,
 //! `read_ahead` how many searched positions the coder has not yet coded,
@@ -31,9 +34,6 @@ pub const Chains4 = match.HashChainsWith(.{ .window = window, .shortest = 2, .ch
 pub const Chains3 = match.HashChainsWith(.{ .window = window, .shortest = 2, .chain = 3 });
 const Pos = i32;
 
-/// A search needs this many bytes from its position.
-pub const required = 4;
-
 /// The tables' sizes for a dictionary of `dictionary` bytes over inputs
 /// of at most `span` bytes (null: any): liblzma's hash sizes, the trees
 /// or chains a power of two covering the dictionary or the input.
@@ -50,12 +50,11 @@ pub const Sizes = struct {
         // 16 Mi for four.
         var bits: u32 = @max(std.math.log2_int_ceil(u64, @max(reach, 2)) - 1, 16);
         if (bits > 24) bits = if (kind == .hc3) 24 else bits - 1;
-        var bits3: u32 = if (kind == .hc3) 0 else 16;
+        // liblzma's hash of three bytes spans 64 Ki entries.
+        const bits3: u32 = if (kind == .hc3) 0 else 16;
         if (span) |n| if (n < 1 << 16) {
-            // A short input fills few entries: tables of its size.
-            const fit: u32 = @max(std.math.log2_int_ceil(u64, @max(n, 2)), 6);
-            bits = @min(bits, fit);
-            bits3 = @min(bits3, fit);
+            // A short input fills few entries: a table of its size.
+            bits = @min(bits, @max(std.math.log2_int_ceil(u64, @max(n, 2)), 6));
         };
         return .{
             .hash3_bits = @intCast(bits3),
@@ -83,6 +82,9 @@ pub fn Finder(comptime kind: Kind) type {
             .hc3 => Chains3,
         };
         const Match = Tables.Match;
+        /// A search needs this many bytes from its position: 3 for hc3, 4
+        /// for the others, as liblzma's.
+        pub const required = Tables.required;
 
         tables: Tables,
         sizes: Sizes,
@@ -116,7 +118,7 @@ pub fn Finder(comptime kind: Kind) type {
                         .hash4 = take(all, &at, @as(usize, 1) << sizes.hash4_bits),
                         .child = take(all, &at, sizes.slots * 2),
                     };
-                    tables.window = @intCast(@min(dictionary, sizes.slots));
+                    tables.window = @intCast(@min(dictionary, sizes.slots) + 1);
                 },
                 .hc4, .hc3 => {
                     tables = .{
@@ -125,7 +127,7 @@ pub fn Finder(comptime kind: Kind) type {
                         .hash3 = take(all, &at, @as(usize, 1) << sizes.hash3_bits),
                         .prev = take(all, &at, sizes.slots),
                     };
-                    tables.reach = @intCast(@min(dictionary, sizes.slots));
+                    tables.reach = @intCast(@min(dictionary, sizes.slots) + 1);
                 },
             }
             return .{ .tables = tables, .sizes = sizes, .nice_len = nice_len, .depth = depth, .dictionary = dictionary };
@@ -196,4 +198,42 @@ pub fn Finder(comptime kind: Kind) type {
             }
         }
     };
+}
+
+test "each finder reaches a match exactly the dictionary back, as liblzma's does, and none farther" {
+    const dictionary = 4096;
+    var prng: std.Random.DefaultPrng = .init(7);
+    const r = prng.random();
+    // Random bytes; then 200 bytes again a dictionary back, and
+    // others a dictionary and one byte back; then a repeat
+    // nearer, so the chains and trees serve searches after their edge.
+    var in: [3 * dictionary]u8 = undefined;
+    r.bytes(&in);
+    @memcpy(in[dictionary..][0..200], in[0..200]);
+    @memcpy(in[2 * dictionary + 1 ..][0..200], in[dictionary + 1000 ..][0..200]);
+    @memcpy(in[2 * dictionary + 2000 ..][0..200], in[2 * dictionary + 500 ..][0..200]);
+    inline for (.{ Kind.hc3, Kind.hc4, Kind.bt4 }) |kind| {
+        const sizes: Sizes = .of(kind, dictionary, null);
+        const memory = try std.testing.allocator.alignedAlloc(u8, .@"4", sizes.memory(kind));
+        defer std.testing.allocator.free(memory);
+        var f: Finder(kind) = .init(memory, sizes, dictionary, 64, 48);
+        f.reset();
+        f.buf = &in;
+        var out: [encode.match_len_max + 1]encode.Pair = undefined;
+        var count: u32 = 0;
+        for (0..in.len) |p| {
+            const longest = f.find(&out, &count);
+            // Every match is real and within the dictionary.
+            for (out[0..count]) |m| {
+                try std.testing.expect(m.dist < dictionary and m.dist < p);
+                try std.testing.expectEqualSlices(u8, in[p - m.dist - 1 ..][0..m.len], in[p..][0..m.len]);
+            }
+            if (p == dictionary) {
+                try std.testing.expectEqual(dictionary - 1, out[count - 1].dist);
+                try std.testing.expectEqual(200, longest);
+            }
+            if (p == 2 * dictionary + 1) for (out[0..count]) |m| try std.testing.expect(m.len < 4 or m.dist < dictionary - 1);
+            if (p == 2 * dictionary + 2000) try std.testing.expectEqual(200, longest);
+        }
+    }
 }

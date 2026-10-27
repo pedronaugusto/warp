@@ -22,6 +22,7 @@ const Crc64Xz = @import("../checksum/crc64xz.zig").Crc64Xz;
 
 pub const Check = format.Check;
 pub const Filter = filter_.Filter;
+pub const Bcj = filter_.Bcj;
 
 pub const Options = struct {
     lzma: Lzma.Options = .preset(6, false),

@@ -37,11 +37,13 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// A stored position as its slot bits.
         const Unsigned = @Int(.unsigned, @bitSizeOf(Pos));
         const pairs = config.shortest == 2;
-        /// The bytes of a word the chains hash.
-        const chain_mask: u32 = if (config.chain == 4) 0xffff_ffff else 0xff_ffff;
 
         pub const Match = match.MatchFor(window);
-        /// The latest position per two-byte hash: as liblzma's, 1024 of them.
+        /// The bytes a position needs to be hashed: three for liblzma's
+        /// hc3, as it searches the input's last three.
+        pub const required = if (pairs and config.chain == 3) 3 else 4;
+        /// The latest position per two-byte hash: as liblzma's, 1024 of them
+        /// (its hashes, `match.LzmaHashes`, with `shortest` 2).
         pub const hash2_bits = if (pairs) 10 else 0;
 
         /// Private: the latest position per two-byte hash (`shortest` 2).
@@ -59,8 +61,10 @@ pub fn HashChainsWith(comptime config: Config) type {
         hash3_bits: u5 = 0,
         /// Private: positions are stored relative to this.
         base: isize = 0,
-        /// The farthest a match from `matches` reaches back (at most the
-        /// chains' length).
+        /// The farthest a match from `matches` reaches back, plus one: at
+        /// most one past the chains' length, as liblzma's window of the
+        /// dictionary and one more position reaches a match exactly the
+        /// dictionary back.
         reach: u32 = window,
 
         /// The memory for tables of at most `hash4_bits` and `hash3_bits`, over a
@@ -215,7 +219,7 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// latest position with those two, three from the hash of three
         /// (with `chain` 4), the later of them extended to its full length,
         /// then the chain for longer ones, at most `depth` links and to
-        /// `max_len` (`p + max(max_len, 4) <= in.len`), stopping at
+        /// `max_len` (`p + max(max_len, required) <= in.len`), stopping at
         /// one of `max_len`; inserts `p`. The matches go to `out` by
         /// increasing length; their count is returned. No dictionary.
         pub fn matches(hc: *HashChains, h: match.History, p: isize, max_len: u32, depth: u32, out: [*]Match) usize {
@@ -223,17 +227,19 @@ pub fn HashChainsWith(comptime config: Config) type {
             hc.advance(p);
             const base = hc.base;
             const prev = hc.prev.ptr;
-            const mask = hc.prev.len - 1;
+            const slots = hc.prev.len - 1;
             const cur: Pos = @intCast(p - base);
             const cutoff: i32 = @as(i32, cur) - @as(i32, @intCast(hc.reach));
-            const word = h.load32Of(false, p);
-            const h2 = match.hash(word & 0xffff, hash2_bits);
-            const c2 = hc.hash2[h2];
-            hc.hash2[h2] = cur;
-            const hk = match.hash(word & chain_mask, hc.hash4_bits);
+            const word = wordAt(false, h, p);
+            const mask = (@as(u32, 1) << hc.hash4_bits) - 1;
+            const lz: match.LzmaHashes = .of(word, mask);
+            const c2 = hc.hash2[lz.two];
+            hc.hash2[lz.two] = cur;
+            const hk = if (config.chain == 4) lz.four else match.LzmaHashes.threeOf(word, mask);
             var cand = hc.hash4[hk];
             hc.hash4[hk] = cur;
-            prev[slot(cur, mask)] = cand;
+            const at = slot(cur, slots);
+            prev[at] = cand;
             var n: usize = 0;
             var last: isize = undefined;
             if (c2 > cutoff and h.load32Of(false, base + c2) & 0xffff == word & 0xffff) {
@@ -242,9 +248,8 @@ pub fn HashChainsWith(comptime config: Config) type {
                 n = 1;
             }
             if (config.chain == 4) {
-                const h3 = match.hash(word & 0xff_ffff, hc.hash3_bits);
-                const c3 = hc.hash3[h3];
-                hc.hash3[h3] = cur;
+                const c3 = hc.hash3[lz.three];
+                hc.hash3[lz.three] = cur;
                 if (c3 != c2 and c3 > cutoff and h.load32Of(false, base + c3) & 0xff_ffff == word & 0xff_ffff) {
                     last = base + c3;
                     out[n] = .{ .length = 3, .offset = @intCast(p - last) };
@@ -262,9 +267,12 @@ pub fn HashChainsWith(comptime config: Config) type {
             var left = depth;
             while (left != 0 and cand > cutoff) : (left -= 1) {
                 const c = base + cand;
-                cand = prev[slot(cand, mask)];
-                const at = match.offset(best_len);
-                if (h.in[@intCast(c + at)] != h.in[@intCast(p + at)] or h.in[@intCast(c)] != h.in[@intCast(p)]) continue;
+                // A position the chains' length back shares `p`'s slot, its
+                // link now `p`'s: the ones before it are out of reach.
+                const link = slot(cand, slots);
+                cand = if (link == at) none else prev[link];
+                const end = match.offset(best_len);
+                if (h.in[@intCast(c + end)] != h.in[@intCast(p + end)] or h.in[@intCast(c)] != h.in[@intCast(p)]) continue;
                 const len = h.matchLengthOf(false, c, p, 1, max_len);
                 if (len > best_len) {
                     best_len = len;
@@ -277,7 +285,7 @@ pub fn HashChainsWith(comptime config: Config) type {
         }
 
         /// Insert `count` positions from `p` (`p >= 0`) without searching (`p +
-        /// count + 3 <= in.len`).
+        /// count + required - 1 <= in.len`).
         pub inline fn skip(hc: *HashChains, comptime full_window: bool, h: match.History, p: isize, count: u32) void {
             hc.insert(false, full_window, h, p, count);
         }
@@ -285,6 +293,13 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// Insert a dictionary's positions, which lie before the input.
         pub fn prime(hc: *HashChains, h: match.History, p: isize, count: u32) void {
             hc.insert(true, false, h, p, count);
+        }
+
+        /// The bytes at `q` the hashes take: the last three of the input
+        /// alone where `required` is 3.
+        inline fn wordAt(comptime dictionary: bool, h: match.History, q: isize) u32 {
+            if (required == 3 and q + 4 > @as(isize, @intCast(h.in.len))) return h.load24(q);
+            return h.load32Of(dictionary, q);
         }
 
         /// The mask of a position's slot in `prev`: a constant for the full window,
@@ -315,10 +330,17 @@ pub fn HashChainsWith(comptime config: Config) type {
                 const bits4 = hc.hash4_bits;
                 while (q < stop) : (q += 1) {
                     const cur: Pos = @intCast(q - base);
-                    const word = h.load32Of(dictionary, q);
-                    if (pairs) hc.hash2[match.hash(word & 0xffff, hash2_bits)] = cur;
-                    if (config.chain == 4) hash3[match.hash(word & 0xff_ffff, bits3)] = cur;
-                    const h4 = match.hash(word & chain_mask, bits4);
+                    const word = wordAt(dictionary, h, q);
+                    var h4: u32 = undefined;
+                    if (pairs) {
+                        const lz: match.LzmaHashes = .of(word, (@as(u32, 1) << bits4) - 1);
+                        hc.hash2[lz.two] = cur;
+                        if (config.chain == 4) hash3[lz.three] = cur;
+                        h4 = if (config.chain == 4) lz.four else match.LzmaHashes.threeOf(word, (@as(u32, 1) << bits4) - 1);
+                    } else {
+                        hash3[match.hash(word & 0xff_ffff, bits3)] = cur;
+                        h4 = match.hash(word, bits4);
+                    }
                     prev[slot(cur, mask)] = hash4[h4];
                     hash4[h4] = cur;
                 }

@@ -20,4 +20,5 @@ test {
     _ = @import("lzma/range.zig");
     _ = @import("lzma/decode.zig");
     _ = @import("lzma/encode.zig");
+    _ = @import("lzma/Finder.zig");
 }

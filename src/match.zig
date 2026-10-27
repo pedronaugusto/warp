@@ -14,6 +14,7 @@ pub const Position = history.Position;
 pub const History = history.History;
 pub const matchLengthIn = history.matchLengthIn;
 pub const hash = history.hash;
+pub const LzmaHashes = history.LzmaHashes;
 pub const HashChainsFor = @import("match/HashChains.zig").HashChainsFor;
 pub const HashChainsWith = @import("match/HashChains.zig").HashChainsWith;
 pub const HashTableFor = @import("match/HashTable.zig").HashTableFor;

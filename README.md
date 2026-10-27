@@ -479,10 +479,11 @@ the filters before it applied forward, any check, and blocks of `block_size`
 (one by default). Every block header names both sizes, so the parallel
 decoders split what warp writes. `lzma.Compressor` writes raw LZMA (with or
 without an end marker), raw LZMA2 and `.lzma` files. The encoder is warp's own
-on warp's matchfinders, with liblzma's parsers and presets: its streams are
-not liblzma's byte for byte, and they are the same size, give or take a few
-hundredths of a percent. Tables are taken once, sized by the dictionary or a
-`max_input`.
+on warp's matchfinders, with liblzma's parsers, hashes and presets: its
+streams are liblzma 5.8.4's byte for byte, every single stream of a captured
+corpus checked. Tables are taken once, sized by the dictionary or a
+`max_input` (one under 64 KiB takes a smaller hash table than liblzma's, and
+its streams may differ by a few bytes).
 
 `lzma.Compress` and `xz.Compress` (each with a `Writer`) encode input that
 comes in pieces, writing the whole-buffer encoder's bytes however it arrives.

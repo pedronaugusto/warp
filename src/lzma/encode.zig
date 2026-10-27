@@ -328,6 +328,13 @@ pub const Coder = struct {
     fn length(c: *Coder, comptime which: enum { match, rep }, pos_state: u32, len: u32) void {
         const l = if (which == .match) &c.probs.match_len else &c.probs.rep_len;
         const lp = if (which == .match) &c.match_len else &c.rep_len;
+        // Prices refreshed from the probabilities before this length's
+        // bits: liblzma queues a symbol's bits and refreshes here, before
+        // its coder applies them.
+        if (!c.fast) {
+            lp.counters[pos_state] -= 1;
+            if (lp.counters[pos_state] == 0) lp.update(l, pos_state);
+        }
         var v = len - match_len_min;
         if (v < len_low) {
             c.rc.bit(&l.choice, 0);
@@ -342,10 +349,6 @@ pub const Coder = struct {
                 c.rc.bit(&l.choice2, 1);
                 c.rc.tree(&l.high, 8, v - len_mid);
             }
-        }
-        if (!c.fast) {
-            lp.counters[pos_state] -= 1;
-            if (lp.counters[pos_state] == 0) lp.update(l, pos_state);
         }
     }
 

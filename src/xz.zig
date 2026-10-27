@@ -16,6 +16,8 @@ pub const Compress = @import("xz/Compress.zig");
 pub const Check = Compressor.Check;
 /// A filter before LZMA2.
 pub const Filter = Compressor.Filter;
+/// A branch converter's architecture.
+pub const Bcj = Compressor.Bcj;
 /// Whole-buffer decoding with blocks decoded in parallel.
 pub const parallel = @import("xz/parallel.zig");
 /// How many streams a decoder reads.

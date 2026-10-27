@@ -13,7 +13,7 @@
 //! LZMA's matches start at two bytes: with `shortest` 2 the latest position
 //! per hash of two bytes gives those, and the shortest match found is
 //! extended to its full length before the tree is searched, as liblzma's
-//! bt4 does.
+//! bt4 does, with liblzma's hashes, so the matches are its matches.
 
 const std = @import("std");
 const match = @import("history.zig");
@@ -62,7 +62,10 @@ pub fn BinaryTreesWith(comptime config: Config) type {
         hash4_bits: u5 = 0,
         /// Private: positions are stored relative to this.
         base: isize = 0,
-        /// Private: the farthest a match reaches back.
+        /// Private: the farthest a match reaches back, plus one; at most
+        /// one past the trees' length (`shortest` 2), as liblzma's window
+        /// of the dictionary and one more position reaches a match exactly
+        /// the dictionary back.
         window: u32 = window,
         /// A tree was ordered by a prefix that ended here. If the input grows,
         /// comparisons must verify the bytes rather than reuse that prefix length.
@@ -149,21 +152,22 @@ pub fn BinaryTreesWith(comptime config: Config) type {
             const word = h.load32Of(dictionary, p);
             var n: usize = 0;
 
-            const h3 = match.hash(word & 0xff_ffff, bt.hash3_bits);
+            const lz: match.LzmaHashes = if (pairs) .of(word, (@as(u32, 1) << bt.hash4_bits) - 1) else undefined;
+            const h3 = if (pairs) lz.three else match.hash(word & 0xff_ffff, bt.hash3_bits);
             const two = bt.hash3[h3];
             bt.hash3[h3] = .{ cur, two[0] };
-            const h4 = match.hash(word, bt.hash4_bits);
+            const h4 = if (pairs) lz.four else match.hash(word, bt.hash4_bits);
             var node = bt.hash4[h4];
             bt.hash4[h4] = cur;
             // The next position's buckets, fetched while this one is searched.
-            if (max_len >= required + 1) {
+            if (!pairs and max_len >= required + 1) {
                 const next = h.load32Of(dictionary, p + 1);
                 @prefetch(&bt.hash3[match.hash(next & 0xff_ffff, bt.hash3_bits)], .{ .rw = .write });
                 @prefetch(&bt.hash4[match.hash(next, bt.hash4_bits)], .{ .rw = .write });
             }
             var best_len: u32 = 3;
             if (pairs) {
-                const h2 = match.hash(word & 0xffff, hash2_bits);
+                const h2 = lz.two;
                 const c2 = bt.hash2[h2];
                 bt.hash2[h2] = cur;
                 if (record) {
@@ -197,6 +201,9 @@ pub fn BinaryTreesWith(comptime config: Config) type {
             while (true) {
                 const m = base + node;
                 const node_at = bt.slot(full_window, node);
+                // A node the trees' length back shares `p`'s children: its
+                // own, older, are out of reach, and the search ends with it.
+                const last = pairs and node_at == at;
                 if (byteAt(dictionary, h, m + match.offset(len)) == byteAt(dictionary, h, p + match.offset(len))) {
                     len = h.matchLengthOf(dictionary, m, p, len + 1, max_len);
                     if (record and len > best_len) {
@@ -205,8 +212,8 @@ pub fn BinaryTreesWith(comptime config: Config) type {
                         n += 1;
                     }
                     if (len >= nice_len) {
-                        child[smaller] = child[node_at];
-                        child[larger] = child[node_at + 1];
+                        child[smaller] = if (last) none else child[node_at];
+                        child[larger] = if (last) none else child[node_at + 1];
                         return n;
                     }
                 }
@@ -214,12 +221,20 @@ pub fn BinaryTreesWith(comptime config: Config) type {
                     // The node sorts before `p`: it goes on the smaller side, and
                     // the search goes on to its larger child.
                     child[smaller] = node;
+                    if (last) {
+                        child[larger] = none;
+                        return n;
+                    }
                     smaller = node_at + 1;
                     node = child[smaller];
                     smaller_len = len;
                     len = if (trust_prefix) @min(len, larger_len) else 0;
                 } else {
                     child[larger] = node;
+                    if (last) {
+                        child[smaller] = none;
+                        return n;
+                    }
                     larger = node_at;
                     node = child[larger];
                     larger_len = len;

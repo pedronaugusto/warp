@@ -140,8 +140,13 @@ The LZMA encoder has no matchfinder of its own: warp's binary trees and hash
 chains take a configuration (a window up to 2 GiB with 32-bit distances, and
 matches from two bytes found through a table of the latest position per two
 bytes, as liblzma's bt4, hc4 and hc3 find them), and DEFLATE's instances are
-unchanged. Over them run liblzma's price-based optimal parser and its fast
-parser, line for line, with its price tables refreshed as it refreshes them;
+unchanged. The LZMA configuration hashes as liblzma does, reaches as its
+window of the dictionary and one more position does (to a match exactly the
+dictionary back, whose slot is the searched position's: the chain or tree
+ends there), and hc3 searches the input's last three bytes; so the matches
+are liblzma's. Over them run liblzma's price-based optimal parser and its
+fast parser, line for line, with its price tables refreshed as it refreshes
+them (a length's before its bits are coded), so the streams are its streams;
 a path position no path has reached reads as on liblzma's first stream, so
 the output never depends on an earlier one. The range coder writes the
 caller's output in place and counts what does not fit, so an LZMA2 chunk is

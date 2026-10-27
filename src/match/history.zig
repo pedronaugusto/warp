@@ -63,6 +63,13 @@ pub const History = struct {
         return v;
     }
 
+    /// Three bytes from `p` (`p + 3 <= in.len`), little-endian, in the
+    /// low bits.
+    pub inline fn load24(h: History, p: isize) u32 {
+        const i: usize = @intCast(p);
+        return @as(u32, h.in[i]) | @as(u32, h.in[i + 1]) << 8 | @as(u32, h.in[i + 2]) << 16;
+    }
+
     /// `load32`, straight from the input when there is no dictionary.
     pub inline fn load32Of(h: History, comptime dictionary: bool, p: isize) u32 {
         if (!dictionary) return std.mem.readInt(u32, h.in[@intCast(p)..][0..4], .little);
@@ -115,6 +122,38 @@ pub inline fn offset(n: u32) isize {
 pub inline fn hash(word: u32, bits: u5) u32 {
     return (word *% 0x1e35a7bd) >> @intCast(@as(u6, 32) - bits);
 }
+
+/// liblzma's hashes of a position's first bytes (`word`, little-endian),
+/// from the CRC-32 table: of two bytes into 1024 entries and of three into
+/// 65536, each exact for a given first byte, and of four into `mask + 1`.
+/// LZMA's finders use them, so they meet the candidates liblzma's meet.
+pub const LzmaHashes = struct {
+    two: u32,
+    three: u32,
+    four: u32,
+
+    pub inline fn of(word: u32, mask: u32) LzmaHashes {
+        const t = crc_table[word & 0xff] ^ (word >> 8 & 0xff);
+        const t3 = t ^ (word >> 16 & 0xff) << 8;
+        return .{ .two = t & 0x3ff, .three = t3 & 0xffff, .four = (t3 ^ crc_table[word >> 24] << 5) & mask };
+    }
+
+    /// The hash of three bytes into `mask + 1` (liblzma's hc3 chains).
+    pub inline fn threeOf(word: u32, mask: u32) u32 {
+        return (crc_table[word & 0xff] ^ (word >> 8 & 0xff) ^ (word >> 16 & 0xff) << 8) & mask;
+    }
+};
+
+const crc_table: [256]u32 = blk: {
+    @setEvalBranchQuota(10000);
+    var t: [256]u32 = undefined;
+    for (&t, 0..) |*e, i| {
+        var r: u32 = i;
+        for (0..8) |_| r = if (r & 1 != 0) r >> 1 ^ 0xedb8_8320 else r >> 1;
+        e.* = r;
+    }
+    break :blk t;
+};
 
 /// Every entry moved back `window_` positions, saturating at `none`.
 pub fn rebase(comptime window_: u32, table: []Position(window_)) void {
