@@ -64,7 +64,9 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
                 if (ip + 7 <= iend) {
                     ip += 3;
                 } else {
-                    bit_count -%= @intCast(8 * (iend - 7 - ip));
+                    // The reference subtracts a negative distance here:
+                    // `ip` is past `iend - 7`, so the bits move forward.
+                    bit_count += @intCast(8 * (ip + 7 - iend));
                     bit_count &= 31;
                     ip = iend - 4;
                 }
@@ -100,7 +102,10 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
         }
         count -= 1;
         if (count >= 0) remaining -= count else remaining += count;
-        counts.norm[charnum] = @intCast(count);
+        // Only a log-15 table's one full count, 2^15, does not fit: zstd
+        // stores it as (short)-32768 and every caller then refuses the log,
+        // as warp's do; refused here, the answer is the same.
+        counts.norm[charnum] = std.math.cast(i16, count) orelse return error.InvalidStream;
         charnum += 1;
         previous0 = count == 0;
         if (remaining < threshold) {
@@ -596,4 +601,25 @@ test "descriptions that break the rules are refused" {
     try std.testing.expectError(error.InvalidStream, readCounts(&.{ 0x0f, 0, 0, 0 }, 255, &counts));
     // Counts that do not add up before the input ends.
     try std.testing.expectError(error.InvalidStream, readCounts(&.{0x00}, 255, &counts));
+}
+
+test "a log-15 table's one full count is refused, not narrowed" {
+    // Log 15, one count of 2^15: zstd 1.5.7 reads it as -32768 at log 15,
+    // which its callers refuse; warp refuses it here.
+    var counts: Counts = undefined;
+    try std.testing.expectError(error.InvalidStream, readCounts(&.{ 0xfa, 0xff, 0x0f }, 255, &counts));
+}
+
+test "zero-count repeats running into a description's last seven bytes are read on, not overflowed" {
+    // A count of 0, then two runs of twelve repeat codes: the second run
+    // starts within seven bytes of the end, where the reference's distance
+    // to `iend - 7` is negative. zstd 1.5.7's FSE_readNCount reads it as
+    // symbols 0-82 at 0 and 83 at 32, in five bytes.
+    var counts: Counts = undefined;
+    try readCounts(&.{ 0x10, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, 255, &counts);
+    try std.testing.expectEqual(@as(usize, 5), counts.len);
+    try std.testing.expectEqual(@as(u8, 83), counts.max_symbol);
+    try std.testing.expectEqual(@as(u4, 5), counts.log);
+    for (counts.norm[0..83]) |n| try std.testing.expectEqual(@as(i16, 0), n);
+    try std.testing.expectEqual(@as(i16, 32), counts.norm[83]);
 }

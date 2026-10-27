@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- zstd: two table descriptions stopped the program in a safe build and were undefined behaviour in ReleaseFast, reachable from any frame, compressed dictionary or Huffman literals section a peer sends. (1) An FSE description whose zero-count repeat codes run into its last seven bytes (eight bytes suffice: `10 fe ff ff ff ff ff ff`): the distance zstd subtracts there is negative, and warp took it unsigned, an integer overflow. (2) A description of log 15 whose one count fills the table (`fa ff 0f`): the count, 32768, was narrowed into 16 bits. The first now reads as zstd 1.5.7's `FSE_readNCount` reads it; the second is refused, the answer zstd's callers give it. Both have tests, and a fuzz target now reads FSE and Huffman descriptions that end their input, the shape the frame-level targets missed.
+
 ## [0.4.4] - 2026-10-25
 
 ### Added
