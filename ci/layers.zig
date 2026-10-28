@@ -100,6 +100,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "xz parallel decode", .patterns = &.{ "src/xz/parallel/Decompressor.zig", "src/xz/parallel/Compressor.zig" } },
     .{ .name = "xz parallel", .patterns = &.{"src/xz/parallel.zig"} },
     .{ .name = "xz", .patterns = &.{"src/xz.zig"} },
+    .{ .name = "bcj2", .patterns = &.{"src/Bcj2.zig"} },
     .{ .name = "snappy elements", .patterns = &.{ "src/snappy/Diagnostic.zig", "src/snappy/Dict.zig", "src/snappy/emit.zig" } },
     .{ .name = "snappy engines", .patterns = &.{ "src/snappy/block.zig", "src/snappy/reference.zig", "src/snappy/fast.zig", "src/snappy/better.zig", "src/snappy/best.zig" } },
     .{ .name = "snappy framing", .patterns = &.{ "src/snappy/frame.zig", "src/snappy/Index.zig" } },
