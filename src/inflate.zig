@@ -28,6 +28,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const huffman = @import("huffman.zig").decode;
 const Diagnostic = @import("Diagnostic.zig");
+const chainless = @import("match/copy.zig").chainless;
 
 const literal_flag = huffman.literal_flag;
 const exceptional = huffman.exceptional;
@@ -107,16 +108,23 @@ pub const History = struct {
     /// Copy `dst.len` bytes into `dst`, starting `back` bytes before the
     /// end (`dst.len <= back <= len()`).
     pub fn copyOut(h: History, back: usize, dst: []u8) void {
-        var from = h.len() - back;
-        var to: usize = 0;
+        aegis.assert.invariant(back <= h.len(), "back <= h.len()");
+        aegis.assert.invariant(dst.len <= back, "dst.len <= back");
+        const from = h.len() - back;
         if (from < h.older.len) {
-            const n = @min(dst.len, h.older.len - from);
-            @memcpy(dst[0..n], h.older[from..][0..n]);
-            to = n;
-            from = h.older.len;
+            const older = h.older[from..];
+            const n = @min(dst.len, older.len);
+            @memcpy(dst[0..n], older[0..n]);
+            // The rest, from the newer piece's start.
+            aegis.assert.invariant(dst.len - n <= h.newer.len, "dst.len - n <= h.newer.len");
+            @memcpy(dst[n..], h.newer[0 .. dst.len - n]);
+        } else {
+            const at = from - h.older.len;
+            aegis.assert.invariant(at <= h.newer.len, "at <= h.newer.len");
+            const newer = h.newer[at..];
+            aegis.assert.invariant(dst.len <= newer.len, "dst.len <= newer.len");
+            @memcpy(dst, newer[0..dst.len]);
         }
-        const rest = dst.len - to;
-        @memcpy(dst[to..], h.newer[from - h.older.len ..][0..rest]);
     }
 };
 
@@ -158,6 +166,8 @@ pub const Stream = struct {
 
     /// Bits consumed since the start of the input.
     pub fn bitOffset(s: *const Stream) u64 {
+        // The bits in hand came from the bytes read.
+        aegis.assert.invariant(s.bitsleft <= (s.in_base + s.ip) * 8, "s.bitsleft <= (s.in_base + s.ip) * 8");
         return (s.in_base + s.ip) * 8 - s.bitsleft;
     }
 
@@ -171,7 +181,7 @@ pub const Stream = struct {
     pub fn fail(s: *Stream, reason: Diagnostic.Reason) Error {
         const truncated = !s.whole();
         if (s.diagnostic) |d| d.* = .{
-            .bit_offset = .fromRaw(if (truncated) (s.in_base + s.ip - s.virtual) * 8 else s.bitOffset()),
+            .bit_offset = .fromRaw(if (truncated) (s.in_base +| s.ip -| s.virtual) *| 8 else s.bitOffset()),
             .reason = if (truncated) .truncated else reason,
         };
         return if (truncated) error.Truncated else error.InvalidStream;
@@ -193,6 +203,7 @@ pub const Stream = struct {
     }
 
     pub inline fn consume(s: *Stream, n: u6) void {
+        aegis.assert.invariant(n <= s.bitsleft, "n <= s.bitsleft");
         s.bitbuf >>= n;
         s.bitsleft -= n;
     }
@@ -258,7 +269,10 @@ pub const Stream = struct {
         s.bitbuf = 0;
         s.bitsleft = 0;
         // Zero bytes handed back were never consumed.
-        s.virtual = @intCast(s.ip -| s.in.len);
+        const past = s.ip -| s.in.len;
+        // At most the register's bytes run past the input.
+        aegis.assert.invariant(past <= 8, "past <= 8");
+        s.virtual = @truncate(past);
     }
 };
 
@@ -460,11 +474,14 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     const total = hlit + state.hdist;
     const pre_bits = state.pre_bits;
     const lens = &t.lens;
+    // The block header refused more codes than the tables hold.
+    aegis.assert.invariant(total <= lens.len, "total <= lens.len");
+    const all = lens[0..total];
     // Keep progress in a register, then save it even on a truncated unit.
     // Source commits snapshot bits and output, independently of this index.
     var read = state.read;
     defer state.read = read;
-    while (read < total) {
+    while (read < all.len) {
         const i = read;
         s.need(source, 7 + 7);
         const e = t.precode[s.peek(pre_bits)];
@@ -498,8 +515,8 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
             if (i == 0) return s.fail(.bad_code_lengths);
             break :blk lens[i - 1];
         } else 0;
-        if (i + repeat > total) return s.fail(.bad_code_lengths);
-        @memset(lens[i..][0..repeat], fill);
+        if (repeat > all.len - i) return s.fail(.bad_code_lengths);
+        @memset(all[i..][0..repeat], fill);
         read = i + repeat;
         source.commit(s);
     }
@@ -725,6 +742,8 @@ fn Bytes(comptime full_window: bool) type {
         /// Whether a match of `distance` at `op` lies in the output, and within
         /// the window: it can be copied by `copy`.
         inline fn reaches(b: Self, op: usize, distance: usize) bool {
+            // The output position only moves forward from the start.
+            aegis.assert.invariant(b.start <= op, "b.start <= op");
             return distance <= op - b.start and (full_window or distance <= b.window);
         }
 
@@ -736,6 +755,7 @@ fn Bytes(comptime full_window: bool) type {
         /// the stream is refused.
         fn far(b: Self, s: *Stream, op: usize, distance: usize, length: usize) ?Diagnostic.Reason {
             if (!full_window and distance > b.window) return .window_exceeded;
+            aegis.assert.invariant(b.start <= op, "b.start <= op");
             if (distance > op - b.start + s.history.len()) return .distance_too_far;
             copyFromHistory(s, op, distance, length);
             return null;
@@ -760,6 +780,9 @@ const Fast = struct {
 
     /// At least 56 bits in hand: one unaligned load, branchless.
     inline fn refill(r: *Fast) void {
+        // A round's guard leaves sixteen bytes for its two refills (see
+        // `fast_input`).
+        aegis.assert.invariant(r.ip + 8 <= r.in.len, "r.ip + 8 <= r.in.len");
         r.bitbuf |= std.mem.readInt(u64, r.in[r.ip..][0..8], .little) << @truncate(r.bitsleft);
         r.ip += (63 - (r.bitsleft & 63)) >> 3;
         r.bitsleft |= 56;
@@ -802,6 +825,8 @@ inline fn careful(s: *Stream, source: anytype, state: *State, litlen: []const u3
     }
     s.consume(lit.bits);
     if (lit.entry & literal_flag != 0) {
+        // Short of the end, checked above.
+        aegis.assert.invariant(s.op < s.out.len, "s.op < s.out.len");
         s.out[s.op] = @truncate(lit.entry >> 16);
         s.op += 1;
         return .symbol;
@@ -811,6 +836,7 @@ inline fn careful(s: *Stream, source: anytype, state: *State, litlen: []const u3
     s.consume(d.bits);
     const distance = huffman.value(d.entry) + try s.take(source, d.extra);
     if (distance > s.window) return s.fail(.window_exceeded);
+    aegis.assert.invariant(s.start <= s.op, "s.start <= s.op");
     if (distance > s.op - s.start + s.history.len()) return s.fail(.distance_too_far);
     const room = s.out.len - s.op;
     if (length > room) {
@@ -855,6 +881,7 @@ pub inline fn symbol(s: *Stream, source: anytype, table: []const u32, bits: u5) 
 /// The rest of a match the output had no room for, as far as it has room
 /// now; whether it is all copied.
 fn resumeCopy(s: *Stream, state: *State) bool {
+    aegis.assert.invariant(s.op <= s.out.len, "s.op <= s.out.len");
     const n = @min(state.copy_left, s.out.len - s.op);
     copyCareful(s, state.copy_distance, n);
     state.copy_left -= @intCast(n);
@@ -864,14 +891,35 @@ fn resumeCopy(s: *Stream, state: *State) bool {
 /// A match where the output may end within sixteen bytes: the part in the
 /// history, then a byte at a time.
 fn copyCareful(s: *Stream, distance: usize, length: usize) void {
-    const back = s.op - s.start;
+    // The callers have checked the match against the output's room and
+    // the history's reach.
+    aegis.assert.invariant(s.start <= s.op, "s.start <= s.op");
+    aegis.assert.invariant(s.op <= s.out.len, "s.op <= s.out.len");
+    aegis.assert.invariant(length <= s.out.len - s.op, "length <= s.out.len - s.op");
+    const target = s.out[s.op..][0..length];
+    const written = s.out[0..s.op];
+    const back = written.len - s.start;
     var done: usize = 0;
     if (distance > back) {
-        done = @min(length, distance - back);
-        s.history.copyOut(distance - back, s.out[s.op..][0..done]);
+        done = @min(target.len, distance - back);
+        s.history.copyOut(distance - back, target[0..done]);
     }
-    for (done..length) |i| s.out[s.op + i] = s.out[s.op + i - distance];
+    if (done < target.len) {
+        // The rest from the output, which it may overlap, a byte at a
+        // time: from `distance` back, or from the start once the history
+        // has given its part.
+        const from = if (done == 0) from: {
+            aegis.assert.invariant(distance <= written.len, "distance <= written.len");
+            break :from written[written.len - distance ..];
+        } else written[s.start..];
+        copyForward(target[done..].ptr, from.ptr, target.len - done);
+    }
     s.op += length;
+}
+
+/// Copy `len` bytes forward from `src` to `dst`, which may overlap it.
+fn copyForward(dst: [*]u8, src: [*]const u8, len: usize) void {
+    for (0..len) |i| dst[i] = src[i];
 }
 
 /// A match that starts in the history, from the fast loop (the output has
@@ -879,12 +927,23 @@ fn copyCareful(s: *Stream, distance: usize, length: usize) void {
 /// time where one piece of it holds them, then the rest from the output,
 /// which it may overlap.
 fn copyFromHistory(s: *Stream, op: usize, distance: usize, length: usize) void {
+    // The fast loop's `reaches` and `far` have checked the match: it starts
+    // before the output, inside the history, and has the margin's room.
+    aegis.assert.invariant(s.start <= op, "s.start <= op");
     const back = op - s.start;
+    aegis.assert.invariant(back < distance, "back < distance");
     const k = distance - back;
     const from_history = @min(length, k);
     const h = s.history;
+    aegis.assert.invariant(k <= h.len(), "k <= h.len()");
     const at = h.len() - k;
-    const piece = if (at >= h.older.len) h.newer[at - h.older.len ..] else h.older[at..];
+    const piece = if (at >= h.older.len) newer: {
+        const newer_at = at - h.older.len;
+        aegis.assert.invariant(newer_at <= h.newer.len, "newer_at <= h.newer.len");
+        break :newer h.newer[newer_at..];
+    } else h.older[at..];
+    aegis.assert.invariant(op <= s.out.len, "op <= s.out.len");
+    aegis.assert.invariant(from_history <= s.out.len - op, "from_history <= s.out.len - op");
     if (from_history + 15 <= piece.len) {
         // Up to fifteen bytes past the part are written, inside the margin.
         const dst = s.out[op..].ptr;
@@ -897,8 +956,11 @@ fn copyFromHistory(s: *Stream, op: usize, distance: usize, length: usize) void {
 /// Copy `length` elements from `distance` back to `op`, sixteen at a time;
 /// up to thirty-one elements past the end fit within the fast-loop margin.
 pub inline fn copyMatch(comptime T: type, out: []T, op: usize, distance: usize, length: usize) void {
-    const dst = out[op..].ptr;
-    const src = dst - distance;
+    // The caller has checked that the match is in the output.
+    aegis.assert.invariant(op <= out.len, "op <= out.len");
+    aegis.assert.invariant(distance <= op, "distance <= op");
+    const dst = out.ptr + op;
+    const src = out.ptr + (op - distance);
     if (distance >= 16) {
         // Most matches are at most 32 bytes: two copies, no branch.
         dst[0..16].* = src[0..16].*;
@@ -923,9 +985,20 @@ pub inline fn copyMatch(comptime T: type, out: []T, op: usize, distance: usize, 
     } else {
         // Distances 2-7: each eight-byte step writes the pattern and moves
         // on by the distance, so it reads only bytes already written.
-        var i: usize = 0;
-        while (i < length) : (i += distance) dst[i..][0..8].* = src[i..][0..8].*;
+        switch (distance) {
+            inline 2...6 => |d| copyPeriod(T, d, dst, src, length),
+            else => copyPeriod(T, 7, dst, src, length),
+        }
     }
+}
+
+/// `copyMatch`'s eight-byte steps for a distance `period` of 2 to 7, by
+/// a step the optimizer cannot see, so that each period stays one small
+/// loop rather than an unrolled one.
+inline fn copyPeriod(comptime T: type, comptime period: usize, dst: [*]T, src: [*]const T, length: usize) void {
+    const step = chainless(period);
+    var i: usize = 0;
+    while (i < length) : (i += step) dst[i..][0..8].* = src[i..][0..8].*;
 }
 
 test "history reads as one across a ring's two pieces" {
