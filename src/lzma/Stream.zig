@@ -182,7 +182,11 @@ pub fn decode(s: *Stream, in: []const u8, out: []u8) Error!Step {
             if (s.gather[0] != 0) return s.fail(s.offset + ip - 5, .range_start);
             s.range_state = 0xffff_ffff;
             s.code = std.mem.readInt(u32, s.gather[1..5], .big);
-            if (s.format == .lzma2) s.packed_left -= 5;
+            if (s.format == .lzma2) {
+                // Each of the five bytes was inside the chunk.
+                aegis.assert.invariant(s.packed_left >= 5, "s.packed_left >= 5");
+                s.packed_left -= 5;
+            }
             s.go(.start, .read);
         },
         .lzma => {
@@ -272,7 +276,7 @@ fn run(s: *Stream, in: []const u8, ip: *usize, out: []u8, op: *usize) Error!?eng
         taken += tail.len;
     }
     if (s.format == .lzma2) {
-        if (taken > s.packed_left) return s.fail(base + s.packed_left, .chunk_size);
+        if (taken > s.packed_left) return s.fail(base +| s.packed_left, .chunk_size);
         s.packed_left -= @intCast(taken);
     }
     ip.* += taken;

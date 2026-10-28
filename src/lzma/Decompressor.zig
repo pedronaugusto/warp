@@ -7,6 +7,7 @@
 const Decompressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const decode = @import("decode.zig");
 const range = @import("range.zig");
 const Diagnostic = @import("Diagnostic.zig");
@@ -55,12 +56,12 @@ fn lzma1(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lzma1)
     d.coder.left = options.size;
     d.coder.allow_marker = true;
     var rc: range.Decoder = .{ .in = in, .pos = 0 };
-    if (!(rc.start() catch return fail(options.diagnostic, error.Truncated, base + in.len, .truncated)))
+    if (!(rc.start() catch return fail(options.diagnostic, error.Truncated, base +| in.len, .truncated)))
         return fail(options.diagnostic, error.InvalidStream, base, .range_start);
     const limit = if (options.size) |s| @min(out.len, s) else out.len;
     var w: decode.Linear = .{ .buf = out, .pos = 0, .start = 0, .dict_size = decode.dictionary(options.dictionary), .limit = limit };
     const status = decode.run(&d.coder, &rc, &w, base) catch |err| switch (err) {
-        error.NeedInput => return fail(options.diagnostic, error.Truncated, base + in.len, .truncated),
+        error.NeedInput => return fail(options.diagnostic, error.Truncated, base +| in.len, .truncated),
         error.InvalidStream => return fail(options.diagnostic, error.InvalidStream, d.coder.fail_at, d.coder.reason),
     };
     if (status == .output_full) return error.OutputTooSmall;
@@ -86,7 +87,7 @@ pub fn lzma2(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lz
     var need_reset = true;
     var need_properties = true;
     while (true) {
-        const at = base + ip;
+        const at = base +| ip;
         if (ip == in.len) return fail(diag, error.Truncated, at, .truncated);
         const control = in[ip];
         ip += 1;
@@ -96,13 +97,13 @@ pub fn lzma2(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lz
             need_reset = true;
         } else if (need_reset) return fail(diag, error.InvalidStream, at, .dictionary_reset);
         if (control >= 0x80) {
-            if (in.len - ip < 4) return fail(diag, error.Truncated, base + in.len, .truncated);
+            if (in.len - ip < 4) return fail(diag, error.Truncated, base +| in.len, .truncated);
             const size = ((@as(u64, control & 0x1f) << 16) | (@as(u64, in[ip]) << 8) | in[ip + 1]) + 1;
             const packed_size = ((@as(usize, in[ip + 2]) << 8) | in[ip + 3]) + 1;
             ip += 4;
             if (control >= 0xc0) {
-                if (ip == in.len) return fail(diag, error.Truncated, base + in.len, .truncated);
-                const props = Properties.parse(in[ip]) orelse return fail(diag, error.InvalidStream, base + ip, .properties);
+                if (ip == in.len) return fail(diag, error.Truncated, base +| in.len, .truncated);
+                const props = Properties.parse(in[ip]) orelse return fail(diag, error.InvalidStream, base +| ip, .properties);
                 ip += 1;
                 need_properties = false;
                 d.coder.reset(props);
@@ -120,26 +121,26 @@ pub fn lzma2(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lz
             d.coder.allow_marker = false;
             d.coder.marker_next = false;
             var rc: range.Decoder = .{ .in = chunk, .pos = 0 };
-            const started = rc.start() catch return d.chunkShort(diag, chunk, packed_size, base + ip);
-            if (!started) return fail(diag, error.InvalidStream, base + ip, .range_start);
+            const started = rc.start() catch return d.chunkShort(diag, chunk, packed_size, base +| ip);
+            if (!started) return fail(diag, error.InvalidStream, base +| ip, .range_start);
             w.limit = @min(out.len, w.pos + size);
-            const status = decode.run(&d.coder, &rc, &w, base + ip) catch |err| switch (err) {
-                error.NeedInput => return d.chunkShort(diag, chunk, packed_size, base + ip),
+            const status = decode.run(&d.coder, &rc, &w, base +| ip) catch |err| switch (err) {
+                error.NeedInput => return d.chunkShort(diag, chunk, packed_size, base +| ip),
                 error.InvalidStream => return fail(diag, error.InvalidStream, d.coder.fail_at, d.coder.reason),
             };
             if (status == .output_full) return error.OutputTooSmall;
-            if (rc.pos != packed_size) return fail(diag, error.InvalidStream, base + ip, .chunk_size);
+            if (rc.pos != packed_size) return fail(diag, error.InvalidStream, base +| ip, .chunk_size);
             ip += packed_size;
         } else {
             if (control > 2) return fail(diag, error.InvalidStream, at, .control);
-            if (in.len - ip < 2) return fail(diag, error.Truncated, base + in.len, .truncated);
+            if (in.len - ip < 2) return fail(diag, error.Truncated, base +| in.len, .truncated);
             const size = ((@as(usize, in[ip]) << 8) | in[ip + 1]) + 1;
             ip += 2;
             if (need_reset) {
                 need_reset = false;
                 w.start = w.pos;
             }
-            if (in.len - ip < size) return fail(diag, error.Truncated, base + in.len, .truncated);
+            if (in.len - ip < size) return fail(diag, error.Truncated, base +| in.len, .truncated);
             if (out.len - w.pos < size) return error.OutputTooSmall;
             @memcpy(out[w.pos..][0..size], in[ip..][0..size]);
             w.pos += size;
@@ -153,7 +154,7 @@ pub fn lzma2(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lz
 fn chunkShort(d: *Decompressor, diag: ?*Diagnostic, chunk: []const u8, packed_size: usize, at: u64) Error {
     _ = d;
     if (chunk.len > packed_size) return fail(diag, error.InvalidStream, at, .chunk_size);
-    return fail(diag, error.Truncated, at + chunk.len, .truncated);
+    return fail(diag, error.Truncated, at +| chunk.len, .truncated);
 }
 
 pub const Alone = struct {
@@ -178,6 +179,8 @@ pub fn decompressAlone(d: *Decompressor, in: []const u8, out: []u8, options: Alo
         .size = if (size == std.math.maxInt(u64)) null else size,
         .diagnostic = diag,
     });
+    // LZMA takes no more than it is given.
+    aegis.assert.invariant(r.in_len <= in.len - alone_header_len, "r.in_len <= in.len - alone_header_len");
     return .{ .in_len = alone_header_len + r.in_len, .out_len = r.out_len };
 }
 
