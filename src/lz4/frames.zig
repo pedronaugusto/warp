@@ -191,12 +191,13 @@ const Decoder = struct {
         }) catch |err| switch (err) {
             error.OutputTooSmall => {
                 if (limit < d.out.len or d.out.len - d.op >= block_max) return d.fail(at, .block_too_large, error.InvalidStream);
-                if (d.options.partial) unreachable; // aegis: no-danger: a partial decode stops at a full output
+                // A partial decode stops at a full output.
+                if (d.options.partial) unreachable;
                 return error.OutputTooSmall;
             },
             else => |e| return e,
         };
-        d.op = origin + r.op;
+        d.op += r.written.len;
         return r.finished;
     }
 

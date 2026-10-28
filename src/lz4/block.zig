@@ -34,8 +34,8 @@ pub const Error = error{
 };
 
 pub const Result = struct {
-    /// Where the output now ends: `start` plus the bytes written.
-    op: usize,
+    /// What this call wrote: `out` from `start` to where the output ends.
+    written: []u8,
     /// The whole block was decoded (always, unless `partial` stopped it at a
     /// full output).
     finished: bool,
@@ -60,8 +60,8 @@ pub noinline fn decode(in: []const u8, out: []u8, start: usize, options: Options
         d.fast();
         switch (try d.careful()) {
             .more => {},
-            .done => return .{ .op = d.op, .finished = true },
-            .full => return .{ .op = d.op, .finished = false },
+            .done => return .{ .written = d.out[start..d.op], .finished = true },
+            .full => return .{ .written = d.out[start..d.op], .finished = false },
         }
     }
 }
@@ -271,19 +271,19 @@ test "a block's literals, an overlapping match and its last literals" {
     var out: [64]u8 = undefined;
     const r = try decode(&block, &out, 0, .{});
     try std.testing.expect(r.finished);
-    try std.testing.expectEqualStrings("abcabcabcabcxyzzy", out[0..r.op]);
+    try std.testing.expectEqualStrings("abcabcabcabcxyzzy", r.written);
     var exact: [17]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 17), (try decode(&block, &exact, 0, .{})).op);
+    try std.testing.expectEqual(@as(usize, 17), (try decode(&block, &exact, 0, .{})).written.len);
     var short: [16]u8 = undefined;
     try std.testing.expectError(error.OutputTooSmall, decode(&block, &short, 0, .{}));
     const partial = try decode(&block, &short, 0, .{ .partial = true });
     try std.testing.expect(!partial.finished);
-    try std.testing.expectEqualStrings("abcabcabcabcxyzz", short[0..partial.op]);
+    try std.testing.expectEqualStrings("abcabcabcabcxyzz", partial.written);
     // Every prefix is cut inside a sequence, but the one that ends after
     // the first literals: a block whose last sequence is "abc".
     for (0..block.len) |n| {
         if (n == 4) {
-            try std.testing.expectEqualStrings("abc", out[0..(try decode(block[0..n], &out, 0, .{})).op]);
+            try std.testing.expectEqualStrings("abc", (try decode(block[0..n], &out, 0, .{})).written);
         } else try std.testing.expectError(error.Truncated, decode(block[0..n], &out, 0, .{}));
     }
 }
@@ -298,7 +298,7 @@ test "an offset of zero and one before the history are refused, one into the his
     try std.testing.expectError(error.InvalidStream, decode(&far, &out, 0, .{ .diagnostic = &diagnostic }));
     try std.testing.expectEqual(Diagnostic.Reason.offset_too_far, diagnostic.reason);
     const r = try decode(&far, &out, 0, .{ .history = "xy" });
-    try std.testing.expectEqualStrings("ayaya", out[0..r.op]);
+    try std.testing.expectEqualStrings("ayaya", r.written);
 }
 
 test "every period from one to fifteen repeats as a byte loop would" {

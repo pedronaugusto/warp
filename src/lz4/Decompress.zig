@@ -142,7 +142,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
         .skip => {
             const n: usize = @intCast(@min(in.len - ip, s.skip));
             ip += n;
-            s.offset += n;
+            s.offset +|= n;
             s.skip -= n;
             if (s.skip != 0) return .{ .in_len = ip, .out_len = op, .status = .need_input };
             s.next(.skip, .read, 4);
@@ -150,33 +150,33 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
         .payload => {
             // The whole stored block in this call's input: decoded from it.
             if (s.have == 0 and in.len - ip >= s.wanted) {
-                const data = in[ip..][0..s.wanted];
+                const data = in[ip..][0..@min(in.len - ip, s.wanted)];
                 ip += s.wanted;
-                s.offset += s.wanted;
+                s.offset +|= s.wanted;
                 try s.readBlock(data);
                 continue;
             }
-            const n = @min(in.len - ip, s.wanted - s.have);
+            const n = @min(in.len - ip, s.lacking());
             @memcpy(s.stage[s.have..][0..n], in[ip..][0..n]);
             s.have += n;
             ip += n;
-            s.offset += n;
+            s.offset +|= n;
             if (s.have != s.wanted) return .{ .in_len = ip, .out_len = op, .status = .need_input };
             try s.readBlock(s.stage[0..s.have]);
         },
         .legacy_payload => {
             if (s.have == 0 and in.len - ip >= s.wanted) {
-                const data = in[ip..][0..s.wanted];
+                const data = in[ip..][0..@min(in.len - ip, s.wanted)];
                 ip += s.wanted;
-                s.offset += s.wanted;
+                s.offset +|= s.wanted;
                 try s.readLegacyBlock(data);
                 continue;
             }
-            const n = @min(in.len - ip, s.wanted - s.have);
+            const n = @min(in.len - ip, s.lacking());
             @memcpy(s.stage[s.have..][0..n], in[ip..][0..n]);
             s.have += n;
             ip += n;
-            s.offset += n;
+            s.offset +|= n;
             if (s.have != s.wanted) return .{ .in_len = ip, .out_len = op, .status = .need_input };
             try s.readLegacyBlock(s.stage[0..s.have]);
         },
@@ -184,11 +184,11 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             // A legacy frame ends where the input does, or at a frame.
             if (s.phase == .legacy_header and s.have == 0 and ip == in.len)
                 return .{ .in_len = ip, .out_len = op, .status = .need_input };
-            const n = @min(in.len - ip, s.wanted - s.have);
+            const n = @min(in.len - ip, s.lacking());
             @memcpy(s.stage[s.have..][0..n], in[ip..][0..n]);
             s.have += n;
             ip += n;
-            s.offset += n;
+            s.offset +|= n;
             if (s.have != s.wanted) return .{ .in_len = ip, .out_len = op, .status = .need_input };
             switch (s.phase) {
                 .header => {
@@ -199,13 +199,13 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
                 },
                 .checksum => {
                     const want = std.mem.readInt(u32, s.stage[0..4], .little);
-                    if (s.options.verify_checksum and s.hash.final() != want) return s.fail(error.ChecksumMismatch, s.offset - 4, .content_checksum);
+                    if (s.options.verify_checksum and s.hash.final() != want) return s.fail(error.ChecksumMismatch, s.offset -| 4, .content_checksum);
                     return .{ .in_len = ip, .out_len = op, .status = s.endFrame(.checksum) };
                 },
                 .legacy_header => {
                     const len = std.mem.readInt(u32, s.stage[0..4], .little);
                     if (len <= frame.legacy_block_max) {
-                        s.block_at = s.offset - 4;
+                        s.block_at = s.offset -| 4;
                         s.next(.legacy_header, .block, len);
                         continue;
                     }
@@ -215,8 +215,10 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
                     const status = s.endFrame(.legacy_header);
                     if (status == .done) {
                         // Left unread, as much of it as this call gave.
+                        // `n` was taken above, in this call.
+                        aegis.assert.invariant(n <= ip, "n <= ip");
                         ip -= n;
-                        s.offset -= n;
+                        s.offset -|= n;
                     } else {
                         // The next header's first four bytes.
                         s.have = 4;
@@ -238,7 +240,7 @@ pub fn finish(s: *Decompress) Error!void {
         .header => if (s.frames != 0) {
             if (s.have == 0) return;
             // Bytes after a frame that end before a magic does.
-            if (s.have < 4 and frame.after(s.stage[0..s.have]) == .trailing) return s.fail(error.InvalidStream, s.offset - s.have, .trailing_data);
+            if (s.have < 4 and frame.after(s.stage[0..s.have]) == .trailing) return s.fail(error.InvalidStream, s.offset -| s.have, .trailing_data);
         },
         // A legacy frame ends with the input.
         .legacy_header => if (s.have == 0) {
@@ -254,6 +256,12 @@ pub fn finish(s: *Decompress) Error!void {
 /// The one place the phase changes: along a declared edge.
 fn go(s: *Decompress, comptime from: Phase, comptime on: Event) void {
     s.phase = comptime Machine.after(from, on);
+}
+
+/// The bytes the unit still lacks.
+fn lacking(s: *const Decompress) usize {
+    aegis.assert.invariant(s.have <= s.wanted, "s.have <= s.wanted");
+    return s.wanted - s.have;
 }
 
 /// Take the edge, and start a unit of `wanted` bytes.
@@ -283,7 +291,7 @@ fn endFrame(s: *Decompress, comptime from: Phase) Status {
 
 /// The header gathered so far: complete, or asking for more of itself.
 fn readHeader(s: *Decompress) Error!?Status {
-    const at = s.offset - s.have;
+    const at = s.offset -| s.have;
     if (s.have == 4 and s.frames > 0 and !frame.startsFrame(s.stage[0..4])) return s.fail(error.InvalidStream, at, .trailing_data);
     var diagnostic: Diagnostic = .{};
     const parsed = frame.parse(s.stage[0..s.have], &diagnostic, at) catch |err| switch (err) {
@@ -342,7 +350,7 @@ fn readBlockHeader(s: *Decompress) Error!?Status {
         }
         return s.endFrame(.block_header);
     }
-    s.block_at = s.offset - 4;
+    s.block_at = s.offset -| 4;
     s.block_header = frame.BlockHeader.read(head);
     if (s.block_header.len > s.header.block_size.bytes()) return s.fail(error.InvalidStream, s.block_at, .block_too_large);
     s.next(.block_header, .block, @as(usize, s.block_header.len) + @as(usize, if (s.header.block_checksum) 4 else 0));
@@ -373,6 +381,9 @@ fn readBlock(s: *Decompress, stored: []const u8) Error!void {
     const block_max = s.header.block_size.bytes();
     const linked = !s.header.independent;
     const at = s.place(block_max, linked);
+    // `place` leaves a block's room after `at`.
+    aegis.assert.invariant(at <= s.window.len, "at <= s.window.len");
+    aegis.assert.invariant(block_max <= s.window.len - at, "block_max <= s.window.len - at");
     var end: usize = undefined;
     if (bh.uncompressed) {
         @memcpy(s.window[at..][0..data.len], data);
@@ -382,7 +393,7 @@ fn readBlock(s: *Decompress, stored: []const u8) Error!void {
         const r = block.decode(data, s.window[origin .. at + block_max], at, .{
             .history = s.dictionary,
             .diagnostic = s.options.diagnostic,
-            .in_base = s.block_at + 4,
+            .in_base = s.block_at +| 4,
         }) catch |err| switch (err) {
             error.OutputTooSmall => return s.fail(error.InvalidStream, s.block_at, .block_too_large),
             else => |e| {
@@ -390,7 +401,7 @@ fn readBlock(s: *Decompress, stored: []const u8) Error!void {
                 return e;
             },
         };
-        end = r.op;
+        end = at + r.written.len;
     }
     if (s.header.content_checksum) s.hash.update(s.window[at..end]);
     s.produced += end - at;
@@ -401,16 +412,16 @@ fn readBlock(s: *Decompress, stored: []const u8) Error!void {
 }
 
 fn readLegacyBlock(s: *Decompress, data: []const u8) Error!void {
-    const r = block.decode(data, s.window[0..frame.legacy_block_len], 0, .{ .diagnostic = s.options.diagnostic, .in_base = s.block_at + 4 }) catch |err| switch (err) {
+    const r = block.decode(data, s.window[0..frame.legacy_block_len], 0, .{ .diagnostic = s.options.diagnostic, .in_base = s.block_at +| 4 }) catch |err| switch (err) {
         error.OutputTooSmall => return s.fail(error.InvalidStream, s.block_at, .block_too_large),
         else => |e| {
             s.failure = e;
             return e;
         },
     };
-    s.produced += r.op;
+    s.produced += r.written.len;
     s.pending = 0;
-    s.pending_end = r.op;
+    s.pending_end = r.written.len;
     s.go(.legacy_payload, .read);
 }
 
