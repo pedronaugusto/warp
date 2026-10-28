@@ -151,15 +151,16 @@ const Decoder = struct {
     inline fn literal(d: *Decoder, at: usize, tag: u8) Error!void {
         const in = d.in;
         var ip = at + 1;
-        var len: u64 = tag >> 2;
-        if (len >= 60) {
-            const n: usize = @intCast(len - 59);
+        // At most 4 bytes: a length less one of 32 bits.
+        var short: u32 = tag >> 2;
+        if (short >= 60) {
+            const n: usize = short - 59;
             if (in.len - ip < n) return d.fail(at, .truncated, error.Truncated);
-            len = 0;
-            for (in[ip..][0..n], 0..) |b, i| len |= @as(u64, b) << @intCast(8 * i);
+            short = 0;
+            for (in[ip..][0..n], 0..) |b, i| short |= @as(u32, b) << @intCast(8 * i);
             ip += n;
         }
-        len += 1;
+        const len = @as(u64, short) + 1;
         if (len > in.len - ip) return d.fail(at, .truncated, error.Truncated);
         if (len > d.end - d.op) return d.fail(at, .too_long, error.InvalidStream);
         const n: usize = @intCast(len);
@@ -179,10 +180,10 @@ const Decoder = struct {
         if (code < 5) return code + 4;
         const n = code - 4;
         if (in.len - ip < n) return d.fail(at, .truncated, error.Truncated);
-        var extra: usize = 0;
-        for (in[ip..][0..n], 0..) |b, i| extra |= @as(usize, b) << @intCast(8 * i);
+        var extra: u24 = 0;
+        for (in[ip..][0..n], 0..) |b, i| extra |= @as(u24, b) << @intCast(8 * i);
         d.ip = ip + n;
-        return extra + switch (code) {
+        return @as(usize, extra) + switch (code) {
             5 => @as(usize, 8),
             6 => 260,
             else => 65540,
