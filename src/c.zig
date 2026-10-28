@@ -495,8 +495,8 @@ pub export fn inflateSync(stream: ?*Stream) c_int {
     if (!s.syncing) {
         s.syncing = true;
         s.sync_match = 0;
-        const discard = s.decoder.bitsleft & 7;
-        s.decoder.bitbuf >>= @intCast(discard);
+        const discard: u3 = @truncate(s.decoder.bitsleft);
+        s.decoder.bitbuf >>= discard;
         s.decoder.bitsleft -= discard;
         while (s.decoder.bitsleft >= 8 and s.sync_match < 4) {
             syncByte(s, @truncate(s.decoder.bitbuf));

@@ -331,8 +331,9 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
     };
     // Whole bytes read ahead go back to the caller.
     const in_len = s.ip - s.bitsleft / 8;
-    z.bitsleft = s.bitsleft & 7;
-    z.bitbuf = s.bitbuf & ((@as(u64, 1) << @intCast(z.bitsleft)) - 1);
+    const partial: u3 = @truncate(s.bitsleft);
+    z.bitsleft = partial;
+    z.bitbuf = s.bitbuf & ~(~@as(u64, 0) << partial);
     z.in_total += in_len;
     return .{
         .in_len = in_len,

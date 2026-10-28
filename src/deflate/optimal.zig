@@ -51,7 +51,7 @@ const min_block = 5000;
 /// A node of a block's graph, one per position and one for its end: the
 /// least cost from here to the end of the block, and the item that starts
 /// that path (`length` 1: a literal, its byte above; else a match, its
-/// distance above).
+/// distance above): a byte or a u16 over a 9-bit length.
 pub const Node = struct { cost: u32, item: u32 };
 const item_shift = 9;
 const item_mask = (1 << item_shift) - 1;
@@ -413,7 +413,7 @@ fn tally(o: *const State, length: usize) block.Counts {
     while (i < length) {
         const item = o.nodes[i].item;
         const len = item & item_mask;
-        if (len == 1) counts.literal(@intCast(item >> item_shift)) else counts.match(len, item >> item_shift);
+        if (len == 1) counts.literal(@truncate(item >> item_shift)) else counts.match(len, item >> item_shift);
         i += len;
     }
     return counts;
@@ -521,9 +521,9 @@ fn emitPath(c: anytype, o: *State, h: match.History, start: usize, length: usize
     var i: usize = 0;
     while (i < length) {
         const item = o.nodes[i].item;
-        const len = item & item_mask;
+        const len: u9 = @truncate(item);
         if (len == 1) {
-            const byte: u8 = @intCast(item >> item_shift);
+            const byte: u8 = @truncate(item >> item_shift);
             b.counts.literal(byte);
             if (keep) {
                 b.lits[b.n_lits] = byte;
@@ -531,9 +531,9 @@ fn emitPath(c: anytype, o: *State, h: match.History, start: usize, length: usize
             }
             run += 1;
         } else {
-            const distance = item >> item_shift;
+            const distance: u16 = @truncate(item >> item_shift);
             b.counts.match(len, distance);
-            b.seqs[b.n] = .{ .literals = run, .length = @intCast(len), .distance = @intCast(distance) };
+            b.seqs[b.n] = .{ .literals = run, .length = len, .distance = distance };
             b.n += 1;
             run = 0;
         }
