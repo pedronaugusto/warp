@@ -77,143 +77,152 @@ pub fn decode(in: []const u8, out: []u8, options: Options) Error!usize {
     var d: Decoder = .{
         .in = in,
         .out = out,
-        .end = h.len,
-        .ip = h.size,
+        .window = out[0..h.len],
         .options = options,
         .dict = if (options.dictionary) |dict| dict.content else &.{},
         .last = if (options.dictionary) |dict| dict.content.len - dict.repeat else 0,
     };
-    try d.run();
+    try d.run(h.size);
     return h.len;
 }
 
 const Decoder = struct {
     in: []const u8,
     out: []u8,
-    /// The declared length.
-    end: usize,
-    ip: usize,
-    op: usize = 0,
+    /// The output to the declared length.
+    window: []u8,
     options: Options,
     /// The dictionary's content, before `out[0]`.
     dict: []const u8,
     /// The offset a repeat copies from (S2); 0 for none yet.
     last: usize,
 
-    fn run(d: *Decoder) Error!void {
+    /// Decode the elements after the header's `start` bytes.
+    fn run(d: *Decoder, start: usize) Error!void {
         const in = d.in;
-        while (d.ip < in.len) {
-            const at = d.ip;
-            const tag = in[at];
+        // What is left of the input, cut as each element is read, and of
+        // the declared output, cut as each is written.
+        var rest = in[start..];
+        var room = d.window;
+        while (rest.len != 0) {
+            const at = in.len - rest.len;
+            const tag = rest[0];
             if (tag & 3 == 0) {
-                try d.literal(at, tag);
+                try d.literal(at, tag, &rest, &room);
                 continue;
             }
             var len: usize = undefined;
             var offset: usize = undefined;
             switch (tag & 3) {
                 1 => {
-                    if (in.len - at < 2) return d.fail(at, .truncated, error.Truncated);
+                    if (rest.len < 2) return d.fail(at, .truncated, error.Truncated);
                     const code: usize = (tag >> 2) & 7;
-                    offset = (@as(usize, tag & 0xe0) << 3) | in[at + 1];
-                    d.ip = at + 2;
+                    offset = (@as(usize, tag & 0xe0) << 3) | rest[1];
+                    rest = rest[2..];
                     len = code + 4;
                     if (offset == 0) {
                         if (d.options.format == .snappy) return d.fail(at, .zero_offset, error.InvalidStream);
-                        len = try d.repeatLen(at, code);
+                        len = try d.repeatLen(at, code, &rest);
                         if (d.last == 0) return d.fail(at, .no_repeat_offset, error.InvalidStream);
                         offset = d.last;
                     }
                 },
                 2 => {
-                    if (in.len - at < 3) return d.fail(at, .truncated, error.Truncated);
+                    if (rest.len < 3) return d.fail(at, .truncated, error.Truncated);
                     len = (tag >> 2) + 1;
-                    offset = std.mem.readInt(u16, in[at + 1 ..][0..2], .little);
-                    d.ip = at + 3;
+                    offset = std.mem.readInt(u16, rest[1..3], .little);
+                    rest = rest[3..];
                     if (offset == 0) return d.fail(at, .zero_offset, error.InvalidStream);
                 },
                 else => {
-                    if (in.len - at < 5) return d.fail(at, .truncated, error.Truncated);
+                    if (rest.len < 5) return d.fail(at, .truncated, error.Truncated);
                     len = (tag >> 2) + 1;
-                    offset = std.mem.readInt(u32, in[at + 1 ..][0..4], .little);
-                    d.ip = at + 5;
+                    offset = std.mem.readInt(u32, rest[1..5], .little);
+                    rest = rest[5..];
                     if (offset == 0) return d.fail(at, .zero_offset, error.InvalidStream);
                 },
             }
             d.last = offset;
-            try d.match(at, offset, len);
+            try d.match(at, offset, len, &room);
         }
-        if (d.op != d.end) return d.fail(d.ip, .truncated, error.Truncated);
+        if (room.len != 0) return d.fail(in.len, .truncated, error.Truncated);
     }
 
     /// A literal: its length in the tag (up to 60) or in the 1-4 bytes
     /// after it, then its bytes.
-    inline fn literal(d: *Decoder, at: usize, tag: u8) Error!void {
-        const in = d.in;
-        var ip = at + 1;
+    inline fn literal(d: *Decoder, at: usize, tag: u8, rest: *[]const u8, room: *[]u8) Error!void {
+        var in = rest.*[1..];
         // At most 4 bytes: a length less one of 32 bits.
         var short: u32 = tag >> 2;
         if (short >= 60) {
             const n: usize = short - 59;
-            if (in.len - ip < n) return d.fail(at, .truncated, error.Truncated);
+            if (in.len < n) return d.fail(at, .truncated, error.Truncated);
             short = 0;
-            for (in[ip..][0..n], 0..) |b, i| short |= @as(u32, b) << @intCast(8 * i);
-            ip += n;
+            for (in[0..n], 0..) |b, i| short |= @as(u32, b) << @intCast(8 * i);
+            in = in[n..];
         }
         const len = @as(u64, short) + 1;
-        if (len > in.len - ip) return d.fail(at, .truncated, error.Truncated);
-        if (len > d.end - d.op) return d.fail(at, .too_long, error.InvalidStream);
-        const n: usize = @intCast(len);
+        const space = room.*;
+        if (len > in.len) return d.fail(at, .truncated, error.Truncated);
+        if (len > space.len) return d.fail(at, .too_long, error.InvalidStream);
+        const literals = in[0..@min(in.len, len)];
+        const n = literals.len;
         const out = d.out;
-        if (n <= 16 and in.len - ip >= 16 and out.len - d.op >= 16) {
-            out[d.op..][0..16].* = in[ip..][0..16].*;
-        } else @memcpy(out[d.op..][0..n], in[ip..][0..n]);
-        d.op += n;
-        d.ip = ip + n;
+        const op = d.window.len - space.len;
+        if (n <= 16 and in.len >= 16 and out.len - op >= 16) {
+            out[op..][0..16].* = in[0..16].*;
+        } else @memcpy(space[0..n], literals);
+        room.* = space[n..];
+        rest.* = in[n..];
     }
 
     /// An S2 repeat's length: codes 0-4 are lengths 4-8; 5, 6 and 7 take
     /// 1, 2 and 3 bytes more, added to 8, 260 and 65540.
-    inline fn repeatLen(d: *Decoder, at: usize, code: usize) Error!usize {
-        const in = d.in;
-        const ip = d.ip;
+    inline fn repeatLen(d: *Decoder, at: usize, code: usize, rest: *[]const u8) Error!usize {
         if (code < 5) return code + 4;
         const n = code - 4;
-        if (in.len - ip < n) return d.fail(at, .truncated, error.Truncated);
+        const in = rest.*;
+        if (in.len < n) return d.fail(at, .truncated, error.Truncated);
         var extra: u24 = 0;
-        for (in[ip..][0..n], 0..) |b, i| extra |= @as(u24, b) << @intCast(8 * i);
-        d.ip = ip + n;
-        return @as(usize, extra) + switch (code) {
-            5 => @as(usize, 8),
+        for (in[0..n], 0..) |b, i| extra |= @as(u24, b) << @intCast(8 * i);
+        rest.* = in[n..];
+        const base: u17 = switch (code) {
+            5 => 8,
             6 => 260,
             else => 65540,
         };
+        return @as(u25, extra) + base;
     }
 
     /// Copy `len` bytes from `offset` back: from the output, or (S2) from
     /// the dictionary, never running from it into the output.
-    inline fn match(d: *Decoder, at: usize, offset: usize, len: usize) Error!void {
+    inline fn match(d: *Decoder, at: usize, offset: usize, len: usize, room: *[]u8) Error!void {
         const out = d.out;
-        const op = d.op;
-        if (len > d.end - op) return d.fail(at, .too_long, error.InvalidStream);
-        if (offset > op) {
+        const space = room.*;
+        if (len > space.len) return d.fail(at, .too_long, error.InvalidStream);
+        const target = space[0..len];
+        // The output so far, which the match copies from.
+        const written = d.window[0 .. d.window.len - space.len];
+        const op = written.len;
+        if (offset > written.len) {
             if (d.dict.len == 0) return d.fail(at, .offset_too_far, error.InvalidStream);
-            const back = offset - op;
+            const back = offset - written.len;
             if (op > Dict.max_reach or back > d.dict.len or len > back) return d.fail(at, .dictionary_copy, error.InvalidStream);
-            const from = d.dict.len - back;
-            @memcpy(out[op..][0..len], d.dict[from..][0..len]);
+            const from = d.dict[d.dict.len - back ..];
+            @memcpy(target, from[0..@min(from.len, len)]);
         } else if (out.len - op >= len + 32) {
             copy.copyMatch(out, op, offset, len);
         } else if (offset >= len) {
-            @memcpy(out[op..][0..len], out[op - offset ..][0..len]);
-        } else for (out[op..][0..len], op - offset..) |*b, from| {
+            const from = written[written.len - offset ..];
+            @memcpy(target, from[0..@min(from.len, len)]);
+        } else for (target, written.len - offset..) |*b, from| {
             b.* = out[from];
         }
-        d.op = op + len;
+        room.* = space[len..];
     }
 
     fn fail(d: *Decoder, at: usize, reason: Diagnostic.Reason, err: Error) Error {
-        if (d.options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(d.options.in_base + at), .reason = reason };
+        if (d.options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(d.options.in_base +| at), .reason = reason };
         return err;
     }
 };
