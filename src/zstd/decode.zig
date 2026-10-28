@@ -319,21 +319,11 @@ pub const Frame = struct {
     fn sequenceHeader(f: *Frame, in: []const u8, lit_len: usize) Error!SequenceHeader {
         const at = lit_len;
         if (at >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
+        const parsed = aegis.input.Untrusted([]const u8).init(in[at..]).parse({}, sequenceCount) catch
+            return f.fail(error.InvalidStream, at, .bad_sequences_header);
+        const count: usize = parsed.count;
         // What is left of the block, cut as the header is read.
-        var rest = in[at..];
-        var count: usize = rest[0];
-        rest = rest[1..];
-        if (count > 0x7f) {
-            if (count == 0xff) {
-                if (rest.len < 2) return f.fail(error.InvalidStream, at, .bad_sequences_header);
-                count = @as(usize, std.mem.readInt(u16, rest[0..2], .little)) + 0x7f00;
-                rest = rest[2..];
-            } else {
-                if (rest.len == 0) return f.fail(error.InvalidStream, at, .bad_sequences_header);
-                count = ((count - 0x80) << 8) | rest[0];
-                rest = rest[1..];
-            }
-        }
+        var rest = in[at..][parsed.bytes..];
         if (count == 0) {
             if (rest.len != 0) return f.fail(error.InvalidStream, at, .bad_sequences_header);
         } else {
@@ -347,6 +337,24 @@ pub const Frame = struct {
             f.entropy.fse_ready = true;
         }
         return .{ .count = count, .stream = rest, .at = in.len - rest.len };
+    }
+
+    /// A sequences header's count, at most the format's 0xFFFF + 0x7F00,
+    /// and the bytes that give it.
+    const SequenceCount = struct { count: u17, bytes: u2 };
+
+    /// The count at the start of `in`: one byte below 0x80, two from
+    /// 0x80, three after 0xFF.
+    fn sequenceCount(_: void, in: []const u8) error{Truncated}!SequenceCount {
+        if (in.len == 0) return error.Truncated;
+        const first = in[0];
+        if (first < 0x80) return .{ .count = first, .bytes = 1 };
+        if (first == 0xff) {
+            if (in.len < 3) return error.Truncated;
+            return .{ .count = @as(u17, std.mem.readInt(u16, in[1..3], .little)) + 0x7f00, .bytes = 3 };
+        }
+        if (in.len < 2) return error.Truncated;
+        return .{ .count = (@as(u17, first - 0x80) << 8) | in[1], .bytes = 2 };
     }
 
     fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals) Error!usize {
