@@ -50,11 +50,12 @@ const min_block = 5000;
 
 /// A node of a block's graph, one per position and one for its end: the
 /// least cost from here to the end of the block, and the item that starts
-/// that path (`length` 1: a literal, its byte above; else a match, its
-/// distance above): a byte or a u16 over a 9-bit length.
-pub const Node = struct { cost: u32, item: u32 };
-const item_shift = 9;
-const item_mask = (1 << item_shift) - 1;
+/// that path.
+pub const Node = struct { cost: u32, item: Item };
+
+/// A path's step: a literal (`len` 1, `payload` its byte) or a match
+/// (`payload` its distance).
+const Item = packed struct(u32) { len: u9, payload: u23 };
 
 const Costs = struct {
     literal: [256]u32,
@@ -387,7 +388,7 @@ fn findPath(o: *State, length: usize, cache: []const Match) void {
         const count = header.length;
         const literal = header.offset;
         var best = costs.literal[literal] + nodes[i + 1].cost;
-        var item: u32 = (@as(u32, literal) << item_shift) | 1;
+        var item: Item = .{ .len = 1, .payload = literal };
         if (count != 0) {
             var len: u32 = o.min_take;
             for (cache[k - count .. k]) |m| {
@@ -396,7 +397,7 @@ fn findPath(o: *State, length: usize, cache: []const Match) void {
                     const cost = offset_cost + costs.length[len] + nodes[i + len].cost;
                     if (cost < best) {
                         best = cost;
-                        item = len | (@as(u32, m.offset) << item_shift);
+                        item = .{ .len = @intCast(len), .payload = m.offset };
                     }
                 }
             }
@@ -412,8 +413,8 @@ fn tally(o: *const State, length: usize) block.Counts {
     var i: usize = 0;
     while (i < length) {
         const item = o.nodes[i].item;
-        const len = item & item_mask;
-        if (len == 1) counts.literal(@truncate(item >> item_shift)) else counts.match(len, item >> item_shift);
+        const len = item.len;
+        if (len == 1) counts.literal(@truncate(item.payload)) else counts.match(len, item.payload);
         i += len;
     }
     return counts;
@@ -521,9 +522,9 @@ fn emitPath(c: anytype, o: *State, h: match.History, start: usize, length: usize
     var i: usize = 0;
     while (i < length) {
         const item = o.nodes[i].item;
-        const len: u9 = @truncate(item);
+        const len = item.len;
         if (len == 1) {
-            const byte: u8 = @truncate(item >> item_shift);
+            const byte: u8 = @truncate(item.payload);
             b.counts.literal(byte);
             if (keep) {
                 b.lits[b.n_lits] = byte;
@@ -531,7 +532,7 @@ fn emitPath(c: anytype, o: *State, h: match.History, start: usize, length: usize
             }
             run += 1;
         } else {
-            const distance: u16 = @truncate(item >> item_shift);
+            const distance: u16 = @truncate(item.payload);
             b.counts.match(len, distance);
             b.seqs[b.n] = .{ .literals = run, .length = len, .distance = distance };
             b.n += 1;
