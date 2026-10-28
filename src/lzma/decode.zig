@@ -278,7 +278,7 @@ pub fn run(c: *Coder, d: *range.Decoder, w: anytype, base: u64) (Error || range.
         const n: u32 = @intCast(@min(c.pending, w.room()));
         w.copy(c.reps[0], n);
         c.pending -= n;
-        c.left = if (c.left) |l| l - n else null;
+        c.left = if (c.left) |l| taken(l, n) else null;
         if (c.pending != 0) return .output_full;
     }
     var log: Log = .{};
@@ -352,7 +352,7 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
         }
         w.put(@truncate(v));
         c.state = afterLiteral(c.state);
-        if (c.left) |l| c.left = l - 1;
+        if (c.left) |l| c.left = taken(l, 1);
         return false;
     }
     var len: u32 = undefined;
@@ -365,11 +365,14 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
         if (slot >= 4) {
             const footer: u5 = @intCast((slot >> 1) - 1);
             dist = (2 | (slot & 1)) << footer;
+            // The footer's bits are below `dist`'s two, each field its own.
             if (slot < dist_model_end) {
-                dist += try d.reverse(p.dist_special[dist - slot ..], footer, careful, log);
+                // A slot's probabilities start at its base less the slot.
+                aegis.assert.invariant(slot <= dist and dist - slot < p.dist_special.len, "slot <= dist and dist - slot < p.dist_special.len");
+                dist |= try d.reverse(p.dist_special[dist - slot ..], footer, careful, log);
             } else {
-                dist += try d.direct(footer - align_bits, careful) << align_bits;
-                dist += try d.reverse(&p.dist_align, align_bits, careful, log);
+                dist |= try d.direct(footer - align_bits, careful) << align_bits;
+                dist |= try d.reverse(&p.dist_align, align_bits, careful, log);
             }
         }
         if (dist == 0xffff_ffff) {
@@ -393,7 +396,7 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
                 // A short rep: one byte from rep0.
                 c.state = afterShortRep(c.state);
                 w.put(w.back(c.reps[0]));
-                if (c.left) |l| c.left = l - 1;
+                if (c.left) |l| c.left = taken(l, 1);
                 return false;
             }
         } else {
@@ -422,8 +425,14 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
     if (c.left) |l| if (len > l) return c.fail(sym_at, .past_size);
     w.copy(c.reps[0], n);
     c.pending = len - n;
-    if (c.left) |l| c.left = l - n;
+    if (c.left) |l| c.left = taken(l, n);
     return false;
+}
+
+/// The known size left after `n` more bytes, which it was checked to hold.
+inline fn taken(left: u64, n: u32) u64 {
+    aegis.assert.invariant(n <= left, "n <= left");
+    return left - n;
 }
 
 test {
