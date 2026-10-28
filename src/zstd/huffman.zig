@@ -5,6 +5,7 @@
 //! it.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const bits = @import("bits.zig");
 const fse = @import("fse.zig");
 
@@ -31,9 +32,11 @@ pub const Weights = struct {
     len: usize,
 };
 
-/// Read a tree description from the start of `in`.
-pub fn readWeights(in: []const u8, w: *Weights) Error!void {
+/// Read a tree description from the start of `in`. A parser for
+/// `aegis.input.Untrusted`.
+pub fn readWeights(_: void, in: []const u8) Error!Weights {
     if (in.len == 0) return error.InvalidStream;
+    var w: Weights = undefined;
     const header = in[0];
     var n: usize = undefined;
     if (header >= 128) {
@@ -77,13 +80,13 @@ pub fn readWeights(in: []const u8, w: *Weights) Error!void {
     if (w.rank[1] < 2 or w.rank[1] & 1 != 0) return error.InvalidStream;
     w.count = @intCast(n + 1);
     w.log = @intCast(log);
+    return w;
 }
 
 /// FSE-compressed weights: two interleaved states, decoded until the
 /// stream overruns, the way the format's reference decoder counts them.
 fn decodeWeights(in: []const u8, out: []u8) Error!usize {
-    var counts: fse.Counts = undefined;
-    try fse.readCounts(in, 255, &counts);
+    const counts = try aegis.input.Untrusted([]const u8).init(in).parse(@as(u8, 255), fse.readCounts);
     if (counts.log > 6) return error.InvalidStream;
     var table: fse.Table(6) = undefined;
     table.build(counts.norm[0 .. @as(usize, counts.max_symbol) + 1], counts.log);
@@ -865,7 +868,7 @@ test "a direct description: weights read, the last implied, and the table's code
     // implied. Five weights in three bytes behind the header 127 + 5.
     const desc = [_]u8{ 127 + 5, 0x43, 0x20, 0x10 };
     var w: Weights = undefined;
-    try readWeights(&desc, &w);
+    w = try readWeights({}, &desc);
     try std.testing.expectEqual(@as(u32, 6), w.count);
     try std.testing.expectEqual(@as(u4, 4), w.log);
     try std.testing.expectEqualSlices(u8, &.{ 4, 3, 2, 0, 1, 1 }, w.weights[0..6]);
@@ -963,29 +966,28 @@ test "single tables list the symbols by weight, then symbol, at every scale" {
 test "weights are counted whatever their number, and any above the longest code are refused" {
     var w: Weights = undefined;
     // Four direct weights (1, 1, 2, 3) and the implied one (4): 1+1+2+4+8.
-    try readWeights(&.{ 127 + 4, 0x11, 0x32 }, &w);
+    w = try readWeights({}, &.{ 127 + 4, 0x11, 0x32 });
     try std.testing.expectEqual([_]u32{ 0, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }, w.rank);
     try std.testing.expectEqual(@as(u32, 5), w.count);
     // Five direct weights (1, 1, 1, 1, 3) and the implied one (4).
-    try readWeights(&.{ 127 + 5, 0x11, 0x11, 0x30 }, &w);
+    w = try readWeights({}, &.{ 127 + 5, 0x11, 0x11, 0x30 });
     try std.testing.expectEqual([_]u32{ 0, 4, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }, w.rank);
     try std.testing.expectEqual(@as(u32, 6), w.count);
     // A weight of 13 cannot be a code of up to 12 bits.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0xd1 }, &w));
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 5, 0x11, 0x11, 0xf0 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 2, 0xd1 }));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 5, 0x11, 0x11, 0xf0 }));
 }
 
 test "descriptions whose weights do not form a code are refused" {
-    var w: Weights = undefined;
     // Weights 3 and 1 leave 3 to a power of two: no last weight does it.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0x31 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 2, 0x31 }));
     // Weight 2 alone: the last is 2 as well, and no code has two symbols
     // of length 1 and none longer.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 1, 0x20 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 1, 0x20 }));
     // All zero.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0x00 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 2, 0x00 }));
     // Truncated.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 4, 0x11 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 4, 0x11 }));
 }
 
 /// Sequential symbols for partial decoding: literals are read directly

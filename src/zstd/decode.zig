@@ -291,7 +291,7 @@ pub const Frame = struct {
     }
 
     fn huffmanTable(f: *Frame, src: []const u8, at: usize, double: bool) Error!void {
-        huffman.readWeights(src, &f.tables.weights) catch return f.fail(error.InvalidStream, at, .bad_huffman_weights);
+        f.tables.weights = aegis.input.Untrusted([]const u8).init(src).parse({}, huffman.readWeights) catch return f.fail(error.InvalidStream, at, .bad_huffman_weights);
         if (double) f.tables.huffman.buildDouble(&f.tables.weights) else f.tables.huffman.buildSingle(&f.tables.weights);
         f.entropy.huffman = &f.tables.huffman;
     }
@@ -538,8 +538,7 @@ pub const Frame = struct {
                 return rest[1..];
             },
             2 => {
-                var counts: fse.Counts = undefined;
-                fse.readCounts(rest, max, &counts) catch return f.fail(error.InvalidStream, ip, .bad_fse_table);
+                const counts = aegis.input.Untrusted([]const u8).init(rest).parse(max, fse.readCounts) catch return f.fail(error.InvalidStream, ip, .bad_fse_table);
                 if (counts.log > max_log) return f.fail(error.InvalidStream, ip, .bad_fse_table);
                 own.build(counts.norm[0 .. @as(usize, counts.max_symbol) + 1], counts.log, base, extra);
                 current.* = own;

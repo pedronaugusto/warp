@@ -6,6 +6,7 @@
 const Dictionary = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const fse = @import("fse.zig");
 const huffman = @import("huffman.zig");
 const codes = @import("codes.zig");
@@ -48,7 +49,8 @@ pub fn parse(bytes: []const u8) ParseError!Dictionary {
     var d: Dictionary = .{ .id = std.mem.readInt(u32, bytes[4..8], .little), .content = undefined, .formatted = true, .entropy = undefined, .encoding = undefined };
     const e = &d.entropy;
     var pos: usize = 8;
-    huffman.readWeights(bytes[pos..], &e.weights) catch return error.InvalidDictionary;
+    // The entropy section is untrusted: each description is parsed.
+    e.weights = aegis.input.Untrusted([]const u8).init(bytes[pos..]).parse({}, huffman.readWeights) catch return error.InvalidDictionary;
     // Two symbols per lookup, as the reference decoder builds a
     // dictionary's table: treeless literals decode the same way.
     e.huffman.buildDouble(&e.weights);
@@ -83,7 +85,7 @@ pub fn raw(bytes: []const u8) Dictionary {
 }
 
 fn counts(in: []const u8, max: u8, max_log: u4, c: *fse.Counts) ParseError!usize {
-    fse.readCounts(in, max, c) catch return error.InvalidDictionary;
+    c.* = aegis.input.Untrusted([]const u8).init(in).parse(max, fse.readCounts) catch return error.InvalidDictionary;
     if (c.log > max_log) return error.InvalidDictionary;
     return c.len;
 }

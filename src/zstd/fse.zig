@@ -30,19 +30,23 @@ pub const Counts = struct {
 
 /// Read a table description from the start of `in`: at most
 /// `max_symbol + 1` symbols, a log of at most `absolute_max_log` (the
-/// caller applies its own limit).
-pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!void {
-    if (in.len < 8) {
-        // The reader below needs eight bytes: the description is read from
-        // a zero-padded copy, and may not reach into the padding.
-        var buffer: [8]u8 = @splat(0);
-        @memcpy(buffer[0..in.len], in);
-        try readCounts(&buffer, max_symbol, counts);
-        if (counts.len > in.len) return error.InvalidStream;
-        return;
-    }
+/// caller applies its own limit). A parser for `aegis.input.Untrusted`.
+pub fn readCounts(max_symbol: u8, in: []const u8) ReadError!Counts {
+    if (in.len >= 8) return readLong(max_symbol, in);
+    // The reader needs eight bytes: the description is read from a
+    // zero-padded copy, and may not reach into the padding.
+    var buffer: [8]u8 = @splat(0);
+    @memcpy(buffer[0..in.len], in);
+    const counts = try readLong(max_symbol, &buffer);
+    if (counts.len > in.len) return error.InvalidStream;
+    return counts;
+}
+
+/// `readCounts` from at least eight bytes.
+fn readLong(max_symbol: u8, in: []const u8) ReadError!Counts {
     const symbols: u32 = @as(u32, max_symbol) + 1;
-    @memset(counts.norm[0..symbols], 0);
+    var norm: [256]i16 = undefined;
+    @memset(norm[0..symbols], 0);
     var ip: usize = 0;
     const iend = in.len;
     var bit_stream: u32 = std.mem.readInt(u32, in[0..4], .little);
@@ -50,7 +54,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
     if (nb_bits > absolute_max_log) return error.InvalidStream;
     bit_stream >>= 4;
     var bit_count: u32 = 4;
-    counts.log = @intCast(nb_bits);
+    const log: u4 = @intCast(nb_bits);
     var remaining: i32 = (@as(i32, 1) << nb_bits) + 1;
     var threshold: i32 = @as(i32, 1) << nb_bits;
     nb_bits += 1;
@@ -109,7 +113,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
         // Only a log-15 table's one full count, 2^15, does not fit: zstd
         // stores it as (short)-32768 and every caller then refuses the log,
         // as warp's do; refused here, the answer is the same.
-        counts.norm[charnum] = std.math.cast(i16, count) orelse return error.InvalidStream;
+        norm[charnum] = std.math.cast(i16, count) orelse return error.InvalidStream;
         charnum += 1;
         previous0 = count == 0;
         if (remaining < threshold) {
@@ -131,8 +135,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
     if (remaining != 1) return error.InvalidStream;
     if (charnum > symbols) return error.InvalidStream;
     if (bit_count > 32) return error.InvalidStream;
-    counts.max_symbol = @intCast(charnum - 1);
-    counts.len = ip + ((bit_count + 7) >> 3);
+    return .{ .norm = norm, .max_symbol = @intCast(charnum - 1), .log = log, .len = ip + ((bit_count + 7) >> 3) };
 }
 
 /// The table's step between the positions of one symbol.
@@ -612,18 +615,16 @@ test "a table cannot price a symbol it has no state for, nor any symbol of an RL
 }
 
 test "descriptions that break the rules are refused" {
-    var counts: Counts = undefined;
     // A log above 15.
-    try std.testing.expectError(error.InvalidStream, readCounts(&.{ 0x0f, 0, 0, 0 }, 255, &counts));
+    try std.testing.expectError(error.InvalidStream, readCounts(255, &.{ 0x0f, 0, 0, 0 }));
     // Counts that do not add up before the input ends.
-    try std.testing.expectError(error.InvalidStream, readCounts(&.{0x00}, 255, &counts));
+    try std.testing.expectError(error.InvalidStream, readCounts(255, &.{0x00}));
 }
 
 test "a log-15 table's one full count is refused, not narrowed" {
     // Log 15, one count of 2^15: zstd 1.5.7 reads it as -32768 at log 15,
     // which its callers refuse; warp refuses it here.
-    var counts: Counts = undefined;
-    try std.testing.expectError(error.InvalidStream, readCounts(&.{ 0xfa, 0xff, 0x0f }, 255, &counts));
+    try std.testing.expectError(error.InvalidStream, readCounts(255, &.{ 0xfa, 0xff, 0x0f }));
 }
 
 test "zero-count repeats running into a description's last seven bytes are read on, not overflowed" {
@@ -631,8 +632,7 @@ test "zero-count repeats running into a description's last seven bytes are read 
     // starts within seven bytes of the end, where the reference's distance
     // to `iend - 7` is negative. zstd 1.5.7's FSE_readNCount reads it as
     // symbols 0-82 at 0 and 83 at 32, in five bytes.
-    var counts: Counts = undefined;
-    try readCounts(&.{ 0x10, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, 255, &counts);
+    const counts = try readCounts(255, &.{ 0x10, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff });
     try std.testing.expectEqual(@as(usize, 5), counts.len);
     try std.testing.expectEqual(@as(u8, 83), counts.max_symbol);
     try std.testing.expectEqual(@as(u4, 5), counts.log);

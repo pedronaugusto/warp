@@ -58,16 +58,14 @@ fn readsWhole(_: void, case: *shakedown.Case) !void {
     const in = try description(case);
     const max_symbol = shakedown.gen.int(case.source, u8);
     case.note("{d} bytes, max symbol {d}", .{ in.len, max_symbol });
-    var counts: fse.Counts = undefined;
-    if (fse.readCounts(in, max_symbol, &counts)) {
+    if (fse.readCounts(max_symbol, in)) |counts| {
         try testing.expect(counts.len <= in.len);
         try testing.expect(counts.max_symbol <= max_symbol);
         var sum: u32 = 0;
         for (counts.norm[0 .. @as(usize, counts.max_symbol) + 1]) |n| sum += if (n == -1) 1 else @intCast(n);
         try testing.expectEqual(@as(u32, 1) << counts.log, sum);
     } else |_| {}
-    var weights: huffman.Weights = undefined;
-    huffman.readWeights(in, &weights) catch return;
+    _ = huffman.readWeights({}, in) catch return;
 }
 
 test "fuzz: FSE and Huffman descriptions ending their input are refused or fill their tables" {
