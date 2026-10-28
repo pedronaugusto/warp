@@ -330,7 +330,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         },
     };
     // Whole bytes read ahead go back to the caller.
-    const in_len = s.ip - s.bitsleft / 8;
+    const in_len = s.consumed();
     const partial: u3 = @truncate(s.bitsleft);
     z.bitsleft = partial;
     z.bitbuf = s.bitbuf & ~(~@as(u64, 0) << partial);

@@ -29,8 +29,8 @@ pub const Decompressor = struct {
         var state: engine.State = .{};
         while (true) switch (try engine.decode(&d.tables, &stream, engine.no_more, &state)) {
             .block_end => {},
-            .done => return .{ .in_len = stream.ip - stream.bitsleft / 8, .out_len = stream.op, .finished = true },
-            .output_full => return .{ .in_len = stream.ip - stream.bitsleft / 8, .out_len = stream.op, .finished = false },
+            .done => return .{ .in_len = stream.consumed(), .out_len = stream.op, .finished = true },
+            .output_full => return .{ .in_len = stream.consumed(), .out_len = stream.op, .finished = false },
         };
     }
 };

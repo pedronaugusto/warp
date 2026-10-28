@@ -241,13 +241,20 @@ pub const Stream = struct {
         return v;
     }
 
+    /// The input taken: `ip` less the whole bytes the bit buffer holds
+    /// unconsumed.
+    pub fn consumed(s: *const Stream) usize {
+        // The bit buffer's bytes were loaded from before `ip`.
+        aegis.assert.invariant(s.bitsleft / 8 <= s.ip, "s.bitsleft / 8 <= s.ip");
+        return s.ip - s.bitsleft / 8;
+    }
+
     /// Drop the bits to the next byte boundary, and hand back the whole
     /// bytes still in the bit buffer: `ip` is then the next byte. Those
     /// bytes were loaded from `in` (a unit finished in this input).
     pub fn alignToByte(s: *Stream) void {
         s.consume(s.bitsleft & 7);
-        aegis.assert.invariant(s.bitsleft / 8 <= s.ip, "s.bitsleft / 8 <= s.ip");
-        s.ip -= s.bitsleft / 8;
+        s.ip = s.consumed();
         s.bitbuf = 0;
         s.bitsleft = 0;
         // Zero bytes handed back were never consumed.

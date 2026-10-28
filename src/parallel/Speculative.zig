@@ -188,7 +188,7 @@ fn advance(t: *engine.Tables, state: *unwrap.State, s: *engine.Stream, options: 
 }
 
 fn finish(s: *const engine.Stream) Native.Result {
-    return .{ .in_len = s.ip - s.bitsleft / 8, .out_len = s.op, .finished = true };
+    return .{ .in_len = s.consumed(), .out_len = s.op, .finished = true };
 }
 
 fn setBit(s: *engine.Stream, bit: usize) void {

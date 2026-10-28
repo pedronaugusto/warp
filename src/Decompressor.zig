@@ -78,7 +78,7 @@ pub fn inflateReader(d: *Decompressor, r: *Io.Reader, out: []u8, options: Option
         return err;
     };
     // Hand back what the bit buffer holds unconsumed.
-    r.toss(s.ip - s.bitsleft / 8);
+    r.toss(s.consumed());
     return result;
 }
 
@@ -93,7 +93,7 @@ const ReaderSource = struct {
     pub fn more(src: *ReaderSource, s: *inflate_.Stream) bool {
         if (src.ended) return false;
         const back = s.bitsleft / 8;
-        const used = s.ip - back;
+        const used = s.consumed();
         src.r.toss(used);
         s.in_base += used;
         s.bitsleft &= 7;
@@ -134,6 +134,7 @@ fn run(d: *Decompressor, s: *inflate_.Stream, source: anytype, options: Options)
 
 /// The result at the end, or a partial stop.
 fn finish(s: *inflate_.Stream, finished: bool) Result {
-    // Whole bytes still in the bit buffer were not used.
-    return .{ .in_len = @intCast(s.in_base + s.ip - s.bitsleft / 8), .out_len = s.op, .finished = finished };
+    // Whole bytes still in the bit buffer were not used. The reader has
+    // tossed what was taken: the count only reports it.
+    return .{ .in_len = @intCast(s.in_base +| s.consumed()), .out_len = s.op, .finished = finished };
 }
