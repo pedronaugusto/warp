@@ -5,6 +5,8 @@
 //! uses this where it has kept that much spare output. LZ4's and Snappy's
 //! decoders share it.
 
+const aegis = @import("aegis");
+
 /// `x`, as a value the optimizer cannot rewrite through: a sum built from
 /// it stays the sum written, so `chainless(ip + 3) + lit` keeps the `+ 3`
 /// off the path from `lit`, where reassociation would put it back.
@@ -21,12 +23,18 @@ pub inline fn chainless(x: usize) usize {
 /// Copy a match of `len` bytes to `out[at..]` from `offset` back, with
 /// stores that may reach 31 bytes past its end.
 pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
-    const op = out[at..].ptr;
+    // The caller keeps the match and the stores' reach inside `out`.
+    aegis.assert.invariant(at <= out.len, "at <= out.len");
+    aegis.assert.invariant(len <= out.len - at, "len <= out.len - at");
+    aegis.assert.invariant(out.len - at - len >= 32, "out.len - at - len >= 32");
+    // The match itself; its length bounds the loops.
+    const match = out[at..][0..len];
+    const op = match.ptr;
     const from = op - offset;
     if (offset >= 16) {
         // Each 16-byte store reads bytes already written.
         var i: usize = 0;
-        while (i < len) : (i += 32) {
+        while (i < match.len) : (i += 32) {
             op[i..][0..16].* = from[i..][0..16].*;
             op[i + 16 ..][0..16].* = from[i + 16 ..][0..16].*;
         }
@@ -34,7 +42,7 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
     }
     if (offset >= 8) {
         var i: usize = 0;
-        while (i < len) : (i += 16) {
+        while (i < match.len) : (i += 16) {
             op[i..][0..8].* = from[i..][0..8].*;
             op[i + 8 ..][0..8].* = from[i + 8 ..][0..8].*;
         }
@@ -50,7 +58,7 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
             // a call to `memset`, slower for a match's few stores.
             const step = chainless(16 - 16 % period);
             var i: usize = 0;
-            while (i < len) : (i += 2 * step) {
+            while (i < match.len) : (i += 2 * step) {
                 store16(op + i, pattern);
                 store16(op + i + step, pattern);
             }
