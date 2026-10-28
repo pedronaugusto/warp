@@ -293,11 +293,11 @@ pub fn storeRaw(w: *Writer, data: []const u8, start_pos: usize) void {
 }
 
 inline fn hashAt(data: []const u8, at: usize, comptime shift: u6) u32 {
-    return @intCast((find.load64(data, at) << 24) *% find.hash_mul32 >> shift);
+    return @intCast(((find.load64(data, at) << 24) *% find.hash_mul32) >> shift);
 }
 
 inline fn hashBytes(v: u64, comptime offset: u6, comptime shift: u6) u32 {
-    return @intCast(((v >> (8 * offset)) << 24) *% find.hash_mul32 >> shift);
+    return @intCast((((v >> (8 * offset)) << 24) *% find.hash_mul32) >> shift);
 }
 
 inline fn isMatch(data: []const u8, a: usize, b: usize) bool {
@@ -505,7 +505,9 @@ pub fn compress(s: *Arena, input: []const u8, is_last: bool, table: []i32, w: *W
         return;
     }
     const table_bits: u6 = @intCast(std.math.log2_int(usize, table.len));
-    std.debug.assert(table_bits & 1 == 1 and table_bits >= 9 and table_bits <= 15);
+    std.debug.assert(table_bits & 1 == 1);
+    std.debug.assert(table_bits >= 9);
+    std.debug.assert(table_bits <= 15);
     // The shift a constant, as the reference instantiates each size.
     switch (table_bits) {
         inline 9, 11, 13, 15 => |size| compressImpl(s, input, is_last, table, size, w),

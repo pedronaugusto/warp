@@ -23,7 +23,6 @@ const blocks = @import("blocks.zig");
 const Writer = bits.Writer;
 const BlockSplit = blocks.BlockSplit;
 const MetaBlockSplit = blocks.MetaBlockSplit;
-const grow = blocks.grow;
 const shrink = blocks.shrink;
 const isMostlyUtf8 = blocks.isMostlyUtf8;
 const Command = command.Command;
@@ -482,7 +481,7 @@ pub fn write(gpa: Allocator, scratch: *Scratch, data: []const u8, mask: u32, las
         return;
     }
     aegis.assert.invariant(w.pos <= 14, "w.pos <= 14");
-    const last_bytes: u16 = @as(u16, w.buf[1]) << 8 | w.buf[0];
+    const last_bytes: u16 = (@as(u16, w.buf[1]) << 8) | w.buf[0];
     const last_bytes_bits = w.pos;
     var block_params = params.*;
     if (params.quality <= 2) {

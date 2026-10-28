@@ -27,7 +27,7 @@ pub fn buildLengths(freqs: []const u32, max_len: u4, lens: []u8) void {
     var n: usize = 0;
     for (freqs, 0..) |f, sym| {
         if (f == 0) continue;
-        keys[n] = @as(u64, f) << 16 | sym;
+        keys[n] = (@as(u64, f) << 16) | sym;
         n += 1;
     }
     if (n == 0) return;

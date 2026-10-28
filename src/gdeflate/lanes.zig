@@ -182,7 +182,7 @@ pub const Writer = struct {
                     const dlen = code.dist_lens[m.distance_symbol];
                     waiting[w.lane] = .{
                         .round = round,
-                        .bits = code.dist_codes[m.distance_symbol] | m.distance_extra << @intCast(dlen),
+                        .bits = code.dist_codes[m.distance_symbol] | (m.distance_extra << @intCast(dlen)),
                         .len = @intCast(dlen + distExtraBits(m.distance_symbol)),
                     };
                 },

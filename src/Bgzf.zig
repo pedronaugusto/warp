@@ -83,7 +83,7 @@ pub fn finish(b: *Bgzf, out: *Io.Writer) WriteError!void {
 pub fn virtualOffset(b: *const Bgzf) u64 {
     aegis.assert.invariant(b.compressed_offset < 1 << 48, "b.compressed_offset < 1 << 48");
     std.debug.assert(b.filled < 65536);
-    return b.compressed_offset << 16 | @as(u64, @intCast(b.filled));
+    return (b.compressed_offset << 16) | @as(u64, @intCast(b.filled));
 }
 
 fn emit(b: *Bgzf, out: *Io.Writer) WriteError!void {

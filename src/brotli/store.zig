@@ -42,7 +42,8 @@ pub const BlockTypeCodes = struct {
 
 /// MLEN's nibbles (as MNIBBLES - 4), bit count and value.
 fn encodeMlen(length: usize) struct { nibbles: u64, numbits: u32, value: u64 } {
-    std.debug.assert(length > 0 and length <= 1 << 24);
+    std.debug.assert(length > 0);
+    std.debug.assert(length <= 1 << 24);
     const lg: u32 = if (length == 1) 1 else command.log2Floor(length - 1) + 1;
     const mnibbles: u32 = (if (lg < 16) 16 else lg + 3) / 4;
     return .{ .nibbles = mnibbles - 4, .numbits = mnibbles * 4, .value = length - 1 };

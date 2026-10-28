@@ -669,7 +669,7 @@ fn selectLiteral(s: *State, t: *Tables) void {
             .signed => 8,
         };
         for (0..256) |p1| for (0..parts) |c| {
-            t.literal_bytes[p1 << 3 | c] = t.literal_contexts[lookup[p1] | @as(u8, @intCast(c))];
+            t.literal_bytes[(p1 << 3) | c] = t.literal_contexts[lookup[p1] | @as(u8, @intCast(c))];
         };
     }
 }
@@ -1116,7 +1116,7 @@ inline fn literals(comptime by: enum { trivial, contexts, bytes }, s: *const Sta
         const table = switch (by) {
             .trivial => fixed,
             .contexts => t.literal[trees[lookup[p1] | lookup[256 + @as(usize, p2)]]..].ptr,
-            .bytes => t.literal[bytes[@as(usize, p1) << 3 | lookup[256 + @as(usize, p2)]]..].ptr,
+            .bytes => t.literal[bytes[(@as(usize, p1) << 3) | lookup[256 + @as(usize, p2)]]..].ptr,
         };
         const literal: u8 = @intCast(decodeOk(&f.br, table));
         buf[pos] = literal;

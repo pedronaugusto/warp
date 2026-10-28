@@ -650,16 +650,16 @@ fn writeBlockWithPlan(c: *Encoder, store: *encode.SeqStore, strategy: Strategy, 
     var written: usize = 0;
     if (size == 0) {
         if (out.len - 3 < in.len) return error.OutputTooSmall;
-        std.mem.writeInt(u24, out[0..3], @intCast(end | in.len << 3), .little);
+        std.mem.writeInt(u24, out[0..3], @intCast(end | (in.len << 3)), .little);
         @memcpy(out[3..][0..in.len], in);
         written = 3 + in.len;
     } else if (size == 1) {
         if (out.len < 4) return error.OutputTooSmall;
-        std.mem.writeInt(u24, out[0..3], @intCast(end | 1 << 1 | in.len << 3), .little);
+        std.mem.writeInt(u24, out[0..3], @intCast(end | (1 << 1) | (in.len << 3)), .little);
         out[3] = in[0];
         written = 4;
     } else {
-        std.mem.writeInt(u24, out[0..3], @intCast(end | 2 << 1 | size << 3), .little);
+        std.mem.writeInt(u24, out[0..3], @intCast(end | (2 << 1) | (size << 3)), .little);
         prev.* = 1 - prev.*;
         written = 3 + size;
         reps.* = next_reps;
@@ -869,7 +869,7 @@ fn writeHeaderWithDictionary(out: []u8, p: Params, size: u64, f: Frame, id: u32)
         std.mem.writeInt(u32, out[0..4], frame.magic, .little);
         o = 4;
     }
-    out[o] = @as(u8, @intFromBool(f.checksum)) << 2 | @as(u8, @intFromBool(single)) << 5 | fcs << 6 | dict_flag;
+    out[o] = (@as(u8, @intFromBool(f.checksum)) << 2) | (@as(u8, @intFromBool(single)) << 5) | (fcs << 6) | dict_flag;
     o += 1;
     if (!single) {
         out[o] = (@as(u8, p.window_log) - params_.window_log_min) << 3;

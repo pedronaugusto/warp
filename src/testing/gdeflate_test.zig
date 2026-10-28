@@ -273,7 +273,7 @@ const Plain = struct {
                 if (i + repeat > total) return error.InvalidStream;
                 @memset(b.lens[i..][0..repeat], fill);
                 i += repeat;
-                h.items[n] = sym | @as(u16, @intCast(extra)) << 8;
+                h.items[n] = sym | (@as(u16, @intCast(extra)) << 8);
             }
             n += 1;
             try p.advance();
@@ -505,7 +505,7 @@ test "tile stream headers: the codec ID, the tile size, offsets within the input
     try testing.expectError(error.InvalidStream, d.decompress(&.{ 4, 0xfb, 0, 0, 2, 0, 0, 0 }, &out, .{ .diagnostic = &diag }));
     try testing.expectEqual(.bad_tile_size, diag.reason);
     // One tile of 5 bytes whose page is 200 bytes long, past the input.
-    try testing.expectError(error.InvalidStream, d.decompress(&.{ 4, 0xfb, 1, 0, 1 | 5 << 2, 0, 0, 0, 200, 0, 0, 0 }, &out, .{ .diagnostic = &diag }));
+    try testing.expectError(error.InvalidStream, d.decompress(&.{ 4, 0xfb, 1, 0, 1 | (5 << 2), 0, 0, 0, 200, 0, 0, 0 }, &out, .{ .diagnostic = &diag }));
     try testing.expectEqual(.bad_tile_offsets, diag.reason);
 }
 

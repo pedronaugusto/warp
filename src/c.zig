@@ -550,8 +550,8 @@ fn headerLength(h: *const Header) usize {
 fn headerByte(s: *const State, h: *const Header, offset: usize) u8 {
     const level_ = s.encoder.options.level;
     var fixed = [_]u8{ 31, 139, 8, 0, 0, 0, 0, 0, 0, @truncate(@as(c_uint, @bitCast(h.os))) };
-    fixed[3] = @as(u8, @intFromBool(h.text != 0)) | @as(u8, @intFromBool(h.hcrc != 0)) << 1 |
-        @as(u8, @intFromBool(h.extra != null)) << 2 | @as(u8, @intFromBool(h.name != null)) << 3 | @as(u8, @intFromBool(h.comment != null)) << 4;
+    fixed[3] = @as(u8, @intFromBool(h.text != 0)) | (@as(u8, @intFromBool(h.hcrc != 0)) << 1) |
+        (@as(u8, @intFromBool(h.extra != null)) << 2) | (@as(u8, @intFromBool(h.name != null)) << 3) | (@as(u8, @intFromBool(h.comment != null)) << 4);
     std.mem.writeInt(u32, fixed[4..8], @truncate(h.time), .little);
     fixed[8] = if (level_ >= 9) 2 else if (level_ == 1) 4 else 0;
     if (offset < 10) return fixed[offset];
@@ -757,8 +757,8 @@ pub export fn zError(code: c_int) [*:0]const u8 {
 }
 
 pub export fn zlibCompileFlags() c_ulong {
-    return (if (@sizeOf(c_uint) == 4) @as(c_ulong, 1) else 2) | (if (@sizeOf(c_ulong) == 4) @as(c_ulong, 1) else 2) << 2 |
-        (if (@sizeOf(usize) == 4) @as(c_ulong, 1) else 2) << 4 | (if (@sizeOf(c_long) == 4) @as(c_ulong, 1) else 2) << 6 | @as(c_ulong, 1) << 16;
+    return (if (@sizeOf(c_uint) == 4) @as(c_ulong, 1) else 2) | ((if (@sizeOf(c_ulong) == 4) @as(c_ulong, 1) else 2) << 2) |
+        ((if (@sizeOf(usize) == 4) @as(c_ulong, 1) else 2) << 4) | ((if (@sizeOf(c_long) == 4) @as(c_ulong, 1) else 2) << 6) | (@as(c_ulong, 1) << 16);
 }
 
 pub export fn compressBound(len: c_ulong) c_ulong {

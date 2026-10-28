@@ -144,8 +144,8 @@ pub fn indexDict(content: []const u8, long: []u32, short: []u32) void {
         const cv = load64(content, i);
         const l = hash8(cv);
         const h = hash4(cv);
-        long[l] = @as(u32, @intCast(i)) | long[l] << 16;
-        short[h] = @as(u32, @intCast(i)) | short[h] << 16;
+        long[l] = @as(u32, @intCast(i)) | (long[l] << 16);
+        short[h] = @as(u32, @intCast(i)) | (short[h] << 16);
     }
 }
 
@@ -252,8 +252,8 @@ fn Parser(comptime mode: Mode) type {
             const v = load64(p.in, i);
             const l = hash8(v);
             const h = hash4(v);
-            p.long[l] = @as(u64, i) | p.long[l] << 32;
-            p.short[h] = @as(u64, i) | p.short[h] << 32;
+            p.long[l] = @as(u64, i) | (p.long[l] << 32);
+            p.short[h] = @as(u64, i) | (p.short[h] << 32);
         }
 
         /// Whether the repeat is an offset in the input at `s`.
@@ -292,8 +292,8 @@ fn Parser(comptime mode: Mode) type {
                 p.take(p.fromDict(c + 1, s + 1, @truncate(cv >> 8), true));
             }
             if (p.best.length > 0) p.ahead(s, cv);
-            p.long[hl] = @as(u64, s) | candidate_l << 32;
-            p.short[hs] = @as(u64, s) | candidate_s << 32;
+            p.long[hl] = @as(u64, s) | (candidate_l << 32);
+            p.short[hs] = @as(u64, s) | (candidate_s << 32);
         }
 
         /// The next two positions' candidates, then a match ending where

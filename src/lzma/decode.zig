@@ -34,7 +34,7 @@ pub const Properties = struct {
     pub fn parse(byte: u8) ?Properties {
         if (byte > (4 * 5 + 4) * 9 + 8) return null;
         const pb = byte / 45;
-        const lp = byte % 45 / 9;
+        const lp = (byte % 45) / 9;
         const lc = byte % 9;
         if (lc + lp > 4) return null;
         return .{ .lc = @intCast(lc), .lp = @intCast(lp), .pb = @intCast(pb) };
@@ -332,7 +332,7 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
         if (c.marker_next) return c.fail(sym_at, .size_without_end);
         const prev: u32 = if (w.full() == 0) 0 else w.back(0);
         const lp_mask = ~(~@as(usize, 0) << c.props.lp);
-        const coder: u4 = @truncate(((at & lp_mask) << c.props.lc) | (prev << c.props.lc >> 8));
+        const coder: u4 = @truncate(((at & lp_mask) << c.props.lc) | ((prev << c.props.lc) >> 8));
         const probs = &p.literal[coder];
         var v: u32 = 1;
         if (c.state >= 7) {
@@ -344,11 +344,11 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
                 match_byte <<= 1;
                 const match_bit = match_byte & offset;
                 const b = try d.bit(&probs[offset + match_bit + v], careful, log);
-                v = v << 1 | b;
+                v = (v << 1) | b;
                 offset &= if (b == 1) match_bit else ~match_bit;
             }
         } else {
-            while (v < 0x100) v = v << 1 | try d.bit(&probs[v], careful, log);
+            while (v < 0x100) v = (v << 1) | try d.bit(&probs[v], careful, log);
         }
         w.put(@truncate(v));
         c.state = afterLiteral(c.state);

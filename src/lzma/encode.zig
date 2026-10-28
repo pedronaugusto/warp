@@ -96,7 +96,7 @@ pub const Optimal = struct {
 pub inline fn distSlot(dist: u32) u32 {
     if (dist < 2) return dist;
     const n: u5 = @intCast(31 - @clz(dist));
-    return @as(u32, n) << 1 | (dist >> (n - 1) & 1);
+    return (@as(u32, n) << 1) | ((dist >> (n - 1)) & 1);
 }
 
 pub inline fn distState(len: u32) u32 {
@@ -185,7 +185,7 @@ pub const Coder = struct {
         // lc + lp is at most 4: the index is under 16.
         const lp_mask = ~(~@as(u32, 0) << c.props.lp);
         const at: u32 = @truncate(position);
-        const index: u4 = @truncate(((at & lp_mask) << c.props.lc) | (@as(u32, prev) << c.props.lc >> 8));
+        const index: u4 = @truncate(((at & lp_mask) << c.props.lc) | ((@as(u32, prev) << c.props.lc) >> 8));
         return &c.probs.literal[index];
     }
 
@@ -201,7 +201,7 @@ pub const Coder = struct {
         while (sym < 1 << 16) {
             mb <<= 1;
             const match_bit = mb & offset;
-            price += range.bitPrice(probs[offset + match_bit + (sym >> 8)], sym >> 7 & 1);
+            price += range.bitPrice(probs[offset + match_bit + (sym >> 8)], (sym >> 7) & 1);
             sym <<= 1;
             offset &= ~(mb ^ sym);
         }
@@ -318,7 +318,7 @@ pub const Coder = struct {
             while (sym < 1 << 16) {
                 mb <<= 1;
                 const match_bit = mb & offset;
-                c.rc.bit(&probs[offset + match_bit + (sym >> 8)], sym >> 7 & 1);
+                c.rc.bit(&probs[offset + match_bit + (sym >> 8)], (sym >> 7) & 1);
                 sym <<= 1;
                 offset &= ~(mb ^ sym);
             }

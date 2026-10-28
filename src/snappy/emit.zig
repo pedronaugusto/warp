@@ -32,11 +32,11 @@ pub inline fn literal(out: []u8, at: usize, in: []const u8, start: usize, len: u
     const n = len - 1;
     var o = at;
     if (n < 60) {
-        out[o] = tag_literal | @as(u8, @intCast(n)) << 2;
+        out[o] = tag_literal | (@as(u8, @intCast(n)) << 2);
         o += 1;
     } else {
         const count: usize = (std.math.log2_int(usize, n) >> 3) + 1;
-        out[o] = tag_literal | @as(u8, @intCast(59 + count)) << 2;
+        out[o] = tag_literal | (@as(u8, @intCast(59 + count)) << 2);
         for (0..count) |i| out[o + 1 + i] = @truncate(n >> @intCast(8 * i));
         o += 1 + count;
     }
@@ -51,11 +51,11 @@ pub inline fn literal(out: []u8, at: usize, in: []const u8, start: usize, len: u
 /// 2048, else a 2-byte-offset one.
 inline fn googleCopyAtMost64(out: []u8, at: usize, offset: usize, len: usize) usize {
     if (len < 12 and offset < 2048) {
-        out[at] = @intCast(tag_copy1 | (len - 4) << 2 | (offset >> 8) << 5);
+        out[at] = @intCast(tag_copy1 | ((len - 4) << 2) | ((offset >> 8) << 5));
         out[at + 1] = @truncate(offset);
         return at + 2;
     }
-    out[at] = @intCast(tag_copy2 | (len - 1) << 2);
+    out[at] = @intCast(tag_copy2 | ((len - 1) << 2));
     std.mem.writeInt(u16, out[at + 1 ..][0..2], @intCast(offset), .little);
     return at + 3;
 }
@@ -88,44 +88,44 @@ pub fn s2Repeat(comptime max_len: u64, out: []u8, at: usize, offset: usize, len_
     while (true) {
         const l = len - 4;
         if (len <= 8) {
-            out[o] = @intCast(tag_copy1 | l << 2);
+            out[o] = @intCast(tag_copy1 | (l << 2));
             out[o + 1] = 0;
             return o + 2;
         }
         if (max_len >= 2048 and len < 12 and offset < 2048) {
-            out[o] = @intCast(tag_copy1 | l << 2 | (offset >> 8) << 5);
+            out[o] = @intCast(tag_copy1 | (l << 2) | ((offset >> 8) << 5));
             out[o + 1] = @truncate(offset);
             return o + 2;
         }
         if (l < 260) {
-            out[o..][0..3].* = .{ 5 << 2 | tag_copy1, 0, @intCast(l - 4) };
+            out[o..][0..3].* = .{ (5 << 2) | tag_copy1, 0, @intCast(l - 4) };
             return o + 3;
         }
         if (max_len < (1 << 16) + (1 << 8) or l < (1 << 16) + (1 << 8)) {
-            out[o..][0..2].* = .{ 6 << 2 | tag_copy1, 0 };
+            out[o..][0..2].* = .{ (6 << 2) | tag_copy1, 0 };
             std.mem.writeInt(u16, out[o + 2 ..][0..2], @intCast(l - 256), .little);
             return o + 4;
         }
         if (max_len >= max_repeat and l >= max_repeat) {
-            out[o..][0..5].* = .{ 7 << 2 | tag_copy1, 0, 0xfb, 0xff, 0xff };
+            out[o..][0..5].* = .{ (7 << 2) | tag_copy1, 0, 0xfb, 0xff, 0xff };
             o += 5;
             len = l - (max_repeat - 4);
             continue;
         }
         const v = l - 65536;
-        out[o..][0..5].* = .{ 7 << 2 | tag_copy1, 0, @truncate(v), @truncate(v >> 8), @truncate(v >> 16) };
+        out[o..][0..5].* = .{ (7 << 2) | tag_copy1, 0, @truncate(v), @truncate(v >> 8), @truncate(v >> 16) };
         return o + 5;
     }
 }
 
 inline fn copy4(out: []u8, at: usize, offset: usize, len: usize) usize {
-    out[at] = @intCast(tag_copy4 | (len - 1) << 2);
+    out[at] = @intCast(tag_copy4 | ((len - 1) << 2));
     std.mem.writeInt(u32, out[at + 1 ..][0..4], @intCast(offset), .little);
     return at + 5;
 }
 
 inline fn copy2(out: []u8, at: usize, offset: usize, len: usize) usize {
-    out[at] = @intCast(tag_copy2 | (len - 1) << 2);
+    out[at] = @intCast(tag_copy2 | ((len - 1) << 2));
     std.mem.writeInt(u16, out[at + 1 ..][0..2], @intCast(offset), .little);
     return at + 3;
 }
@@ -134,7 +134,7 @@ inline fn copy2(out: []u8, at: usize, offset: usize, len: usize) usize {
 /// bytes and 2048 back, else 2-byte.
 inline fn s2CopyShort(comptime max_len: u64, out: []u8, at: usize, offset: usize, len: usize) usize {
     if (len >= 12 or (max_len - 1 >= 2048 and offset >= 2048)) return copy2(out, at, offset, len);
-    out[at] = @intCast(tag_copy1 | (len - 4) << 2 | (offset >> 8) << 5);
+    out[at] = @intCast(tag_copy1 | ((len - 4) << 2) | ((offset >> 8) << 5));
     out[at + 1] = @truncate(offset);
     return at + 2;
 }
@@ -157,7 +157,7 @@ pub fn s2Copy(comptime max_len: u64, out: []u8, at: usize, offset: usize, len_in
     }
     if (len > 64) {
         if (offset < 2048) {
-            out[o] = @intCast(tag_copy1 | (8 - 4) << 2 | (offset >> 8) << 5);
+            out[o] = @intCast(tag_copy1 | ((8 - 4) << 2) | ((offset >> 8) << 5));
             out[o + 1] = @truncate(offset);
             return s2Repeat(max_len, out, o + 2, offset, len - 8);
         }

@@ -90,7 +90,7 @@ pub const Decoder = struct {
         if (d.range < top) {
             if (careful and d.pos == d.in.len) return error.NeedInput;
             d.range <<= 8;
-            d.code = d.code << 8 | d.in[d.pos];
+            d.code = (d.code << 8) | d.in[d.pos];
             d.pos += 1;
         }
     }
@@ -114,7 +114,7 @@ pub const Decoder = struct {
     /// `n` bits, most significant first, through a tree of `2^n` probabilities.
     pub inline fn tree(d: *Decoder, probs: []Prob, comptime n: u5, comptime careful: bool, log: *Log) NeedInput!u32 {
         var m: u32 = 1;
-        inline for (0..n) |_| m = m << 1 | try d.bit(&probs[m], careful, log);
+        inline for (0..n) |_| m = (m << 1) | try d.bit(&probs[m], careful, log);
         return m - (1 << n);
     }
 
@@ -124,7 +124,7 @@ pub const Decoder = struct {
         var v: u32 = 0;
         for (0..n) |i| {
             const b = try d.bit(&probs[m], careful, log);
-            m = m << 1 | b;
+            m = (m << 1) | b;
             v |= @as(u32, b) << @intCast(i);
         }
         return v;
@@ -137,9 +137,9 @@ pub const Decoder = struct {
             try d.normalize(careful);
             d.range >>= 1;
             // All ones where the code was at or above the range.
-            const mask = 0 -% (d.code -% d.range >> 31 ^ 1);
+            const mask = 0 -% (((d.code -% d.range) >> 31) ^ 1);
             d.code -%= d.range & mask;
-            v = v << 1 | (mask & 1);
+            v = (v << 1) | (mask & 1);
         }
         return v;
     }
@@ -223,9 +223,9 @@ pub const Encoder = struct {
     pub inline fn tree(e: *Encoder, probs: []Prob, comptime n: u5, v: u32) void {
         var m: u32 = 1;
         inline for (0..n) |i| {
-            const b = v >> (n - 1 - i) & 1;
+            const b = (v >> (n - 1 - i)) & 1;
             e.bit(&probs[m], b);
-            m = m << 1 | b;
+            m = (m << 1) | b;
         }
     }
 
@@ -237,7 +237,7 @@ pub const Encoder = struct {
             const b = rest & 1;
             rest >>= 1;
             e.bit(&probs[m], b);
-            m = m << 1 | b;
+            m = (m << 1) | b;
         }
     }
 
@@ -248,7 +248,7 @@ pub const Encoder = struct {
             i -= 1;
             e.normalize();
             e.range >>= 1;
-            if (v >> i & 1 != 0) e.low += e.range;
+            if ((v >> i) & 1 != 0) e.low += e.range;
         }
     }
 
@@ -314,7 +314,7 @@ pub inline fn reversePrice(probs: []const Prob, n: u5, v: u32) u32 {
         const b = rest & 1;
         rest >>= 1;
         price += bitPrice(probs[m], b);
-        m = m << 1 | b;
+        m = (m << 1) | b;
     }
     return price;
 }

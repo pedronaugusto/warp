@@ -160,7 +160,7 @@ pub fn maxMetaBlockSize(r: *const Resolved) usize {
 pub fn wrapPosition(position: u64) u32 {
     var result: u32 = @truncate(position);
     const gb = position >> 30;
-    if (gb > 2) result = (result & ((1 << 30) - 1)) | (@as(u32, @intCast((gb - 1) & 1)) + 1) << 30;
+    if (gb > 2) result = (result & ((1 << 30) - 1)) | ((@as(u32, @intCast((gb - 1) & 1)) + 1) << 30);
     return result;
 }
 

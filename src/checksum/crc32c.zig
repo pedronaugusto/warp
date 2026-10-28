@@ -121,7 +121,7 @@ test "CRC-32C is iSCSI's: the check value, RFC 3720's vectors, and std's at ever
     for (&up, 0..) |*b, i| b.* = @intCast(i);
     try testing.expectEqual(@as(u32, 0x46dd794e), Crc32c.hash(&up));
     var buf: [3000]u8 = undefined;
-    for (&buf, 0..) |*b, i| b.* = @truncate(i *% 2654435761 >> 7);
+    for (&buf, 0..) |*b, i| b.* = @truncate((i *% 2654435761) >> 7);
     for ([_]usize{ 0, 1, 7, 8, 9, 31, 64, 191, 192, 193, 1000, 2999, 3000 }) |n| {
         try testing.expectEqual(std.hash.crc.@"CRC-32/ISCSI".hash(buf[0..n]), Crc32c.hash(buf[0..n]));
     }
@@ -148,7 +148,7 @@ test "every CRC-32C kernel this CPU runs gives the bitwise CRC at lengths 0 to 4
 
 test "crc32cCombine joins the CRC-32Cs of two pieces, up to lengths past 4 GiB" {
     var buf: [4096]u8 = undefined;
-    for (&buf, 0..) |*b, i| b.* = @truncate(i *% 7919 >> 3);
+    for (&buf, 0..) |*b, i| b.* = @truncate((i *% 7919) >> 3);
     for ([_]usize{ 0, 1, 2, 100, 1000, 2048, 4095, 4096 }) |cut| {
         var c: Crc32c = .init;
         c.update(buf[0..cut]);

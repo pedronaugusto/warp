@@ -378,7 +378,7 @@ const BitWriter = struct {
 
     fn put(w: *BitWriter, value: u64, count: u6) void {
         for (0..count) |i| {
-            if (value >> @intCast(i) & 1 != 0) w.buf[w.n / 8] |= @as(u8, 1) << @intCast(w.n % 8);
+            if ((value >> @intCast(i)) & 1 != 0) w.buf[w.n / 8] |= @as(u8, 1) << @intCast(w.n % 8);
             w.n += 1;
         }
     }

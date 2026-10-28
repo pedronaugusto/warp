@@ -124,7 +124,7 @@ pub fn tail(s1_in: u32, s2_in: u32, rest: []const u8) u32 {
         s1 += b;
         s2 += s1;
     }
-    return (s2 % base) << 16 | (s1 % base);
+    return ((s2 % base) << 16) | (s1 % base);
 }
 
 /// The Adler-32 of A ++ B from those of A and B and the length of B.
@@ -138,7 +138,7 @@ pub fn adler32Combine(adler_a: u32, adler_b: u32, len_b: u64) u32 {
     if (sum1 >= base) sum1 -= base;
     if (sum2 >= base << 1) sum2 -= base << 1;
     if (sum2 >= base) sum2 -= base;
-    return sum2 << 16 | sum1;
+    return (sum2 << 16) | sum1;
 }
 
 /// The definition, one byte at a time with a reduction after each: the
@@ -150,7 +150,7 @@ pub fn reference(adler: u32, bytes: []const u8) u32 {
         s1 = (s1 + b) % base;
         s2 = (s2 + s1) % base;
     }
-    return s2 << 16 | s1;
+    return (s2 << 16) | s1;
 }
 
 const testing = std.testing;
@@ -186,14 +186,14 @@ test "every kernel this CPU runs gives the reference at lengths 0 to 4096, align
             }
         }
         // The largest sums: every byte 0xff, starting from the largest state.
-        const start: u32 = (base - 1) << 16 | (base - 1);
+        const start: u32 = ((base - 1) << 16) | (base - 1);
         try testing.expectEqual(reference(start, ones), update(k, start, ones));
     }
 }
 
 test "adler32Combine joins the checksums of two pieces" {
     var buf: [10_000]u8 = undefined;
-    for (&buf, 0..) |*b, i| b.* = @truncate(i *% 7919 >> 3);
+    for (&buf, 0..) |*b, i| b.* = @truncate((i *% 7919) >> 3);
     for ([_]usize{ 0, 1, 2, 100, 5552, 9999, 10_000 }) |cut| {
         const a = Adler32.hash(buf[0..cut]);
         const b = Adler32.hash(buf[cut..]);

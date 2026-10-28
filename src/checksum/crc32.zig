@@ -109,7 +109,7 @@ test "CRC-32 is zlib's: the check value, the empty input, and std's at every len
     try testing.expectEqual(@as(u32, 0xcbf43926), Crc32.hash("123456789"));
     try testing.expectEqual(@as(u32, 0), Crc32.hash(""));
     var buf: [3000]u8 = undefined;
-    for (&buf, 0..) |*b, i| b.* = @truncate(i *% 2654435761 >> 7);
+    for (&buf, 0..) |*b, i| b.* = @truncate((i *% 2654435761) >> 7);
     for ([_]usize{ 0, 1, 7, 8, 9, 31, 64, 1000, 2999, 3000 }) |n| {
         try testing.expectEqual(std.hash.Crc32.hash(buf[0..n]), Crc32.hash(buf[0..n]));
     }
@@ -149,7 +149,7 @@ test "a CRC continued over pieces equals the CRC of the whole, for every kernel"
 
 test "crc32Combine joins the CRCs of two pieces, at any length of the second" {
     var buf: [4096]u8 = undefined;
-    for (&buf, 0..) |*b, i| b.* = @truncate(i *% 7919 >> 3);
+    for (&buf, 0..) |*b, i| b.* = @truncate((i *% 7919) >> 3);
     for ([_]usize{ 0, 1, 2, 100, 1000, 2048, 4095, 4096 }) |cut| {
         const a = Crc32.hash(buf[0..cut]);
         const b = Crc32.hash(buf[cut..]);

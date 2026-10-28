@@ -115,7 +115,7 @@ const Decoder = struct {
                 1 => {
                     if (in.len - at < 2) return d.fail(at, .truncated, error.Truncated);
                     const code: usize = (tag >> 2) & 7;
-                    offset = @as(usize, tag & 0xe0) << 3 | in[at + 1];
+                    offset = (@as(usize, tag & 0xe0) << 3) | in[at + 1];
                     d.ip = at + 2;
                     len = code + 4;
                     if (offset == 0) {

@@ -178,9 +178,9 @@ pub const Table = struct {
                 const pair = len1 + len2 <= log;
                 const size = if (pair) span >> len2 else 1;
                 const cell = if (pair)
-                    @as(u32, @as(u8, @truncate(first))) | @as(u32, @as(u8, @truncate(second))) << 8 | @as(u32, len1 + len2) << 16 | 2 << 24
+                    @as(u32, @as(u8, @truncate(first))) | (@as(u32, @as(u8, @truncate(second))) << 8) | (@as(u32, len1 + len2) << 16) | (2 << 24)
                 else
-                    @as(u32, @as(u8, @truncate(first))) | @as(u32, len1) << 16 | 1 << 24;
+                    @as(u32, @as(u8, @truncate(first))) | (@as(u32, len1) << 16) | (1 << 24);
                 @memset(t.cells.double[at + sub ..][0..size], cell);
                 sub += size;
             }
@@ -477,7 +477,7 @@ pub const EncodeTable = struct {
         }
         for (&t.lens, &t.codes, &t.cells) |length, *code, *cell| {
             code.* = if (length == 0) 0 else values[length];
-            cell.* = @as(u32, code.*) << 8 | length;
+            cell.* = (@as(u32, code.*) << 8) | length;
             if (length != 0) values[length] += 1;
         }
         t.max_symbol = @intCast(w.count - 1);
@@ -562,7 +562,7 @@ pub const EncodeTable = struct {
                     continue;
                 }
                 code.* = value[len];
-                cell.* = @as(u32, code.*) << 8 | len;
+                cell.* = (@as(u32, code.*) << 8) | len;
                 value[len] += 1;
             }
             t.max_symbol = tree.max_symbol;
@@ -723,7 +723,7 @@ pub const EncodeTable = struct {
         out[0] = 128 + (n - 1);
         weights[n] = 0;
         var k: usize = 0;
-        while (k < n) : (k += 2) out[k / 2 + 1] = weights[k] << 4 | weights[k + 1];
+        while (k < n) : (k += 2) out[k / 2 + 1] = (weights[k] << 4) | weights[k + 1];
         return size + 1;
     }
 };
@@ -874,14 +874,14 @@ test "a direct description: weights read, the last implied, and the table's code
     // Codes: 0 -> 1, 1 -> 01, 2 -> 001, 4 -> 0000, 5 -> 0001.
     const want = [_]struct { u16, u8, u8 }{ .{ 0b1000, 0, 1 }, .{ 0b0100, 1, 2 }, .{ 0b0010, 2, 3 }, .{ 0b0000, 4, 4 }, .{ 0b0001, 5, 4 } };
     for (want) |c| {
-        try std.testing.expectEqual(@as(u16, c[1]) | @as(u16, c[2]) << 8, t.cells.single[c[0]]);
+        try std.testing.expectEqual(@as(u16, c[1]) | (@as(u16, c[2]) << 8), t.cells.single[c[0]]);
     }
     // Over 11 bits, two symbols where they fit: "1" then "01" is 0b101
     // followed by anything, three bits.
     t.buildDouble(&w);
     try std.testing.expectEqual(@as(u4, 11), t.log);
     const pair = t.cells.double[0b101 << 8];
-    try std.testing.expectEqual(@as(u32, 0 | 1 << 8 | 3 << 16 | 2 << 24), pair);
+    try std.testing.expectEqual(@as(u32, 0 | (1 << 8) | (3 << 16) | (2 << 24)), pair);
 }
 
 test "double tables agree with two single lookups at every code length" {
@@ -951,7 +951,7 @@ test "single tables list the symbols by weight, then symbol, at every scale" {
                 for (w.weights[0..w.count], 0..) |x, s| {
                     if (x != weight) continue;
                     const cells = @as(usize, 1) << @intCast(weight - 1 + (wide - log));
-                    for (table[at..][0..cells]) |cell| try std.testing.expectEqual(@as(u16, @intCast(s)) | @as(u16, log + 1 - @as(u4, @intCast(weight))) << 8, cell);
+                    for (table[at..][0..cells]) |cell| try std.testing.expectEqual(@as(u16, @intCast(s)) | (@as(u16, log + 1 - @as(u4, @intCast(weight))) << 8), cell);
                     at += cells;
                 }
             }

@@ -22,7 +22,6 @@ const Prepared = @import("Prepared.zig");
 const settings = @import("settings.zig");
 
 const Writer = bits.Writer;
-const Mode = settings.Mode;
 const Params = settings.Params;
 const Resolved = settings.Resolved;
 const resolve = settings.resolve;

@@ -234,7 +234,7 @@ pub fn extent(in: []const u8, format: Format, fault: *Fault) ParseError!Extent {
                 }
                 pos += 4;
             }
-            return .{ .len = pos, .bound = h.content_size orelse blocks * h.blockMax() };
+            return .{ .len = pos, .bound = h.content_size orelse (blocks * h.blockMax()) };
         },
     }
 }

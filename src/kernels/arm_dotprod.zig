@@ -50,7 +50,7 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
         s1 += b;
         s2 += s1;
     }
-    return @intCast((s2 % base) << 16 | (s1 % base));
+    return @intCast(((s2 % base) << 16) | (s1 % base));
 }
 
 inline fn udot(acc: u32x4, a: u8x16, b: u8x16) u32x4 {

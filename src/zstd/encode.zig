@@ -174,7 +174,7 @@ fn entropyCode(store: *SeqStore, prev: *const Entropy, next: *Entropy, strategy:
     const ml = codeTable(MlTable, &codes.ml_default, codes.ml_default_log, &counts.ml, store.ml_codes[count - 1], count, codes.max_ml, codes.max_ml_log, null, &prev.ml, prev.ml_repeat, &next.ml, &next.ml_repeat, strategy, out[o..]) orelse return null;
     o += ml.len;
     if (ml.mode == .compressed) last_table = ml.len;
-    out[modes_at] = @as(u8, @backingInt(ll.mode)) << 6 | @as(u8, @backingInt(of.mode)) << 4 | @as(u8, @backingInt(ml.mode)) << 2;
+    out[modes_at] = (@as(u8, @backingInt(ll.mode)) << 6) | (@as(u8, @backingInt(of.mode)) << 4) | (@as(u8, @backingInt(ml.mode)) << 2);
     const stream = encodeSequences(store, &next.ll, &next.of, &next.ml, out[o..]) orelse return null;
     // Decoders up to zstd 1.3.4 refuse a last table description shorter
     // than 4 bytes with the stream; the reference sends such a block raw.
@@ -256,7 +256,7 @@ pub const Target = struct {
         at += ml.len;
         if (ml.mode == .compressed) plan.last_table = ml.len;
         plan.sequence_len = at;
-        plan.modes = @as(u8, @backingInt(ll.mode)) << 6 | @as(u8, @backingInt(of.mode)) << 4 | @as(u8, @backingInt(ml.mode)) << 2;
+        plan.modes = (@as(u8, @backingInt(ll.mode)) << 6) | (@as(u8, @backingInt(of.mode)) << 4) | (@as(u8, @backingInt(ml.mode)) << 2);
         plan.size = plan.literal_size + 8 + at + estimateSymbols(ll.mode, &plan.tables.ll, &original.ll, &codes.ll_bits, &codes.ll_default, codes.ll_default_log) + estimateSymbols(of.mode, &plan.tables.of, &original.of, &codes.of_bits, &codes.of_default, codes.of_default_log) + estimateSymbols(ml.mode, &plan.tables.ml, &original.ml, &codes.ml_bits, &codes.ml_default, codes.ml_default_log);
     }
 
@@ -344,10 +344,10 @@ pub const Target = struct {
         if (body == 0 or size >= lits.len + description or (plan.huf_sent and size >= lits.len)) return rawLiterals(lits, out);
         const kind: u32 = if (plan.huf_sent) 3 else 2;
         switch (header) {
-            3 => std.mem.writeInt(u24, out[0..3], @intCast(kind | @as(u32, @intFromBool(!single)) << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @intCast(size)) << 14), .little),
-            4 => std.mem.writeInt(u32, out[0..4], kind | 2 << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @intCast(size)) << 18, .little),
+            3 => std.mem.writeInt(u24, out[0..3], @intCast(kind | (@as(u32, @intFromBool(!single)) << 2) | (@as(u32, @intCast(lits.len)) << 4) | (@as(u32, @intCast(size)) << 14)), .little),
+            4 => std.mem.writeInt(u32, out[0..4], kind | (2 << 2) | (@as(u32, @intCast(lits.len)) << 4) | (@as(u32, @intCast(size)) << 18), .little),
             else => {
-                std.mem.writeInt(u32, out[0..4], kind | 3 << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @truncate(size << 22)), .little);
+                std.mem.writeInt(u32, out[0..4], kind | (3 << 2) | (@as(u32, @intCast(lits.len)) << 4) | @as(u32, @truncate(size << 22)), .little);
                 out[4] = @intCast(size >> 10);
             },
         }
@@ -365,8 +365,8 @@ fn rawLiterals(lits: []const u8, out: []u8) ?usize {
     if (lits.len + header > out.len) return null;
     switch (header) {
         1 => out[0] = @intCast(lits.len << 3),
-        2 => std.mem.writeInt(u16, out[0..2], @intCast(1 << 2 | lits.len << 4), .little),
-        else => std.mem.writeInt(u24, out[0..3], @intCast(3 << 2 | lits.len << 4), .little),
+        2 => std.mem.writeInt(u16, out[0..2], @intCast((1 << 2) | (lits.len << 4)), .little),
+        else => std.mem.writeInt(u24, out[0..3], @intCast((3 << 2) | (lits.len << 4)), .little),
     }
     @memcpy(out[header..][0..lits.len], lits);
     return header + lits.len;
@@ -376,9 +376,9 @@ fn rleLiterals(lits: []const u8, out: []u8) ?usize {
     const header: usize = 1 + @as(usize, @intFromBool(lits.len > 31)) + @intFromBool(lits.len > 4095);
     if (out.len < header + 1) return null;
     switch (header) {
-        1 => out[0] = @intCast(1 | lits.len << 3),
-        2 => std.mem.writeInt(u16, out[0..2], @intCast(1 | 1 << 2 | lits.len << 4), .little),
-        else => std.mem.writeInt(u24, out[0..3], @intCast(1 | 3 << 2 | lits.len << 4), .little),
+        1 => out[0] = @intCast(1 | (lits.len << 3)),
+        2 => std.mem.writeInt(u16, out[0..2], @intCast(1 | (1 << 2) | (lits.len << 4)), .little),
+        else => std.mem.writeInt(u24, out[0..3], @intCast(1 | (3 << 2) | (lits.len << 4)), .little),
     }
     out[header] = lits[0];
     return header + 1;
@@ -427,10 +427,10 @@ fn compressLiterals(lits: []const u8, out: []u8, prev: *const Entropy, next: *En
     if (kind == 2) next.huf_repeat = .check;
     const streams: u32 = if (single) 0 else 1;
     switch (header) {
-        3 => std.mem.writeInt(u24, out[0..3], @intCast(kind | streams << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @intCast(size)) << 14), .little),
-        4 => std.mem.writeInt(u32, out[0..4], kind | 2 << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @intCast(size)) << 18, .little),
+        3 => std.mem.writeInt(u24, out[0..3], @intCast(kind | (streams << 2) | (@as(u32, @intCast(lits.len)) << 4) | (@as(u32, @intCast(size)) << 14)), .little),
+        4 => std.mem.writeInt(u32, out[0..4], kind | (2 << 2) | (@as(u32, @intCast(lits.len)) << 4) | (@as(u32, @intCast(size)) << 18), .little),
         else => {
-            std.mem.writeInt(u32, out[0..4], kind | 3 << 2 | @as(u32, @intCast(lits.len)) << 4 | @as(u32, @truncate(size << 22)), .little);
+            std.mem.writeInt(u32, out[0..4], kind | (3 << 2) | (@as(u32, @intCast(lits.len)) << 4) | @as(u32, @truncate(size << 22)), .little);
             out[4] = @intCast(size >> 10);
         },
     }

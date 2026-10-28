@@ -387,7 +387,7 @@ fn findPath(o: *State, length: usize, cache: []const Match) void {
         const count = header.length;
         const literal = header.offset;
         var best = costs.literal[literal] + nodes[i + 1].cost;
-        var item: u32 = @as(u32, literal) << item_shift | 1;
+        var item: u32 = (@as(u32, literal) << item_shift) | 1;
         if (count != 0) {
             var len: u32 = o.min_take;
             for (cache[k - count .. k]) |m| {
@@ -396,7 +396,7 @@ fn findPath(o: *State, length: usize, cache: []const Match) void {
                     const cost = offset_cost + costs.length[len] + nodes[i + len].cost;
                     if (cost < best) {
                         best = cost;
-                        item = len | @as(u32, m.offset) << item_shift;
+                        item = len | (@as(u32, m.offset) << item_shift);
                     }
                 }
             }

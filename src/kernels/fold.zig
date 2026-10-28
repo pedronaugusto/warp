@@ -83,7 +83,7 @@ pub inline fn fold(comptime Ops: type, comptime polynomial: u32, reg: u32, bytes
     while (bytes.len - at >= 16) : (at += 16) {
         x = Ops.clmulLo(x, k16) ^ Ops.clmulHi(x, k16) ^ load(u64x2, bytes[at..][0..16]);
     }
-    return .{ .lane = @as(u128, x[1]) << 64 | x[0], .used = at };
+    return .{ .lane = (@as(u128, x[1]) << 64) | x[0], .used = at };
 }
 
 inline fn load(comptime R: type, bytes: *const [@sizeOf(R)]u8) R {

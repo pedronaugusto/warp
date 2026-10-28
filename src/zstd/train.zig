@@ -57,7 +57,7 @@ pub fn train(gpa: Allocator, samples: []const []const u8, out: []u8, options: Op
         for (0..steps) |step| {
             const low: usize = @min(50, content.len);
             const high: usize = @min(2000, content.len);
-            const k = @max(d, options.k orelse low + (high - low) * step / @max(steps - 1, 1));
+            const k = @max(d, options.k orelse (low + (high - low) * step / @max(steps - 1, 1)));
             const selected = model.select(content, k);
             if (selected == 0) continue;
             const n = try finalize(gpa, content[0..selected], training, candidate, options);

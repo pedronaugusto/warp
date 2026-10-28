@@ -240,7 +240,7 @@ pub fn lzma2DictionaryByte(dictionary: u32) u8 {
     const v = d + 1;
     // The distance slot of `v`, less 24.
     const n: u5 = @intCast(31 - @clz(v));
-    return @intCast((@as(u32, n) << 1 | (v >> (n - 1) & 1)) - 24);
+    return @intCast(((@as(u32, n) << 1) | ((v >> (n - 1)) & 1)) - 24);
 }
 
 /// What a block header names: its sizes where known, the filters before

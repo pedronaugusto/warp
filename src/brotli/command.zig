@@ -154,7 +154,7 @@ pub const Command = struct {
         const d = prefixEncodeDistance(distance_code, dist.direct_codes, @intCast(dist.postfix_bits));
         return .{
             .insert_len = @intCast(insert_len),
-            .copy_len = @intCast(copy_len | delta << 25),
+            .copy_len = @intCast(copy_len | (delta << 25)),
             .dist_extra = d.extra,
             .dist_prefix = d.prefix,
             .cmd_prefix = lengthCode(insert_len, @intCast(@as(isize, @intCast(copy_len)) + copy_code_delta), d.prefix & 0x3ff == 0),

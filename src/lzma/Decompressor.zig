@@ -97,8 +97,8 @@ pub fn lzma2(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lz
         } else if (need_reset) return fail(diag, error.InvalidStream, at, .dictionary_reset);
         if (control >= 0x80) {
             if (in.len - ip < 4) return fail(diag, error.Truncated, base + in.len, .truncated);
-            const size = (@as(u64, control & 0x1f) << 16 | @as(u64, in[ip]) << 8 | in[ip + 1]) + 1;
-            const packed_size = (@as(usize, in[ip + 2]) << 8 | in[ip + 3]) + 1;
+            const size = ((@as(u64, control & 0x1f) << 16) | (@as(u64, in[ip]) << 8) | in[ip + 1]) + 1;
+            const packed_size = ((@as(usize, in[ip + 2]) << 8) | in[ip + 3]) + 1;
             ip += 4;
             if (control >= 0xc0) {
                 if (ip == in.len) return fail(diag, error.Truncated, base + in.len, .truncated);
@@ -133,7 +133,7 @@ pub fn lzma2(d: *Decompressor, in: []const u8, base: u64, out: []u8, options: Lz
         } else {
             if (control > 2) return fail(diag, error.InvalidStream, at, .control);
             if (in.len - ip < 2) return fail(diag, error.Truncated, base + in.len, .truncated);
-            const size = (@as(usize, in[ip]) << 8 | in[ip + 1]) + 1;
+            const size = ((@as(usize, in[ip]) << 8) | in[ip + 1]) + 1;
             ip += 2;
             if (need_reset) {
                 need_reset = false;

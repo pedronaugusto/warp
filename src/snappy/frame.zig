@@ -75,7 +75,7 @@ pub fn writeHeader(out: *[header_len]u8, t: u8, len: usize) void {
 pub const Header = struct { type: u8, len: u32 };
 
 pub fn readHeader(in: *const [header_len]u8) Header {
-    return .{ .type = in[0], .len = @as(u32, in[1]) | @as(u32, in[2]) << 8 | @as(u32, in[3]) << 16 };
+    return .{ .type = in[0], .len = @as(u32, in[1]) | (@as(u32, in[2]) << 8) | (@as(u32, in[3]) << 16) };
 }
 
 /// S2's `MaxEncodedLen`: the longest block of `n` bytes, its length

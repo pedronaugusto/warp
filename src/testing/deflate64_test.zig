@@ -72,7 +72,7 @@ test "Deflate64 dynamic tables include the extended distance and length symbols"
     var stream: [512]u8 = undefined;
     var w: bits.Writer = .init(&stream, 0);
     w.add(5, 3); // final dynamic block
-    w.add(29 | 31 << 5 | 14 << 10, 14); // 286 literals, 32 distances, 18 precode lengths
+    w.add(29 | (31 << 5) | (14 << 10), 14); // 286 literals, 32 distances, 18 precode lengths
     w.flush();
     const order = [_]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1 };
     for (order) |symbol| {

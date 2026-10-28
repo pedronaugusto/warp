@@ -122,10 +122,11 @@ pub const Writer = struct {
 
     /// Put the low `n` bits of `v` (no bits above them), `n <= 56`.
     pub inline fn bits(w: *Writer, n: u32, v: u64) void {
-        std.debug.assert(n <= 56 and v >> @intCast(n) == 0); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
+        std.debug.assert(n <= 56); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
+        std.debug.assert(v >> @intCast(n) == 0); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
         const at = w.pos >> 3;
         const old: u64 = w.buf[at];
-        std.mem.writeInt(u64, w.buf[at..][0..8], old | v << @intCast(w.pos & 7), .little);
+        std.mem.writeInt(u64, w.buf[at..][0..8], old | (v << @intCast(w.pos & 7)), .little);
         w.pos += n;
     }
 

@@ -24,7 +24,7 @@ pub const Reader = struct {
     pub fn init(in: []const u8, base: u64, skip: u3) Reader {
         var r: Reader = .{ .in = in, .base = base };
         if (skip != 0 and in.len != 0) {
-            r.buf = @as(u64, in[0]) << 56 << skip;
+            r.buf = (@as(u64, in[0]) << 56) << skip;
             r.n = 8 - @as(u32, skip);
             r.pos = 1;
         }

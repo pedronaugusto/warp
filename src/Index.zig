@@ -75,7 +75,7 @@ pub fn write(index: *const Index, out: *Io.Writer) WriteError!void {
         std.mem.writeInt(u32, record[20..24], point.size, .little);
         std.mem.writeInt(u32, record[24..28], point.members, .little);
         std.mem.writeInt(u16, record[28..30], point.history_len, .little);
-        record[30] = @as(u8, point.window_bits) | @as(u8, point.bits) << 4;
+        record[30] = @as(u8, point.window_bits) | (@as(u8, point.bits) << 4);
         record[31] = point.pending;
         record[32] = @backingInt(point.wrapper);
         try out.writeAll(&record);

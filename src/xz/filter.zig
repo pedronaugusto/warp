@@ -195,7 +195,7 @@ fn arm(now: u32, buf: []u8, comptime encode: bool) usize {
     var i: usize = 0;
     while (i < size) : (i += 4) {
         if (buf[i + 3] != 0xeb) continue;
-        const src = (@as(u32, buf[i + 2]) << 16 | @as(u32, buf[i + 1]) << 8 | buf[i]) << 2;
+        const src = ((@as(u32, buf[i + 2]) << 16) | (@as(u32, buf[i + 1]) << 8) | buf[i]) << 2;
         const at = now +% @as(u32, @truncate(i)) +% 8;
         const dest = (if (encode) at +% src else src -% at) >> 2;
         buf[i + 2] = @truncate(dest >> 16);
@@ -211,7 +211,7 @@ fn armthumb(now: u32, buf: []u8, comptime encode: bool) usize {
     var i: usize = 0;
     while (i <= size) : (i += 2) {
         if (buf[i + 1] & 0xf8 != 0xf0 or buf[i + 3] & 0xf8 != 0xf8) continue;
-        const src = ((@as(u32, buf[i + 1]) & 7) << 19 | @as(u32, buf[i]) << 11 | (@as(u32, buf[i + 3]) & 7) << 8 | buf[i + 2]) << 1;
+        const src = (((@as(u32, buf[i + 1]) & 7) << 19) | (@as(u32, buf[i]) << 11) | ((@as(u32, buf[i + 3]) & 7) << 8) | buf[i + 2]) << 1;
         const at = now +% @as(u32, @truncate(i)) +% 4;
         const dest = (if (encode) at +% src else src -% at) >> 1;
         buf[i + 1] = @truncate(0xf0 | ((dest >> 19) & 7));
@@ -228,7 +228,7 @@ fn powerpc(now: u32, buf: []u8, comptime encode: bool) usize {
     var i: usize = 0;
     while (i < size) : (i += 4) {
         if (buf[i] >> 2 != 0x12 or buf[i + 3] & 3 != 1) continue;
-        const src = (@as(u32, buf[i]) & 3) << 24 | @as(u32, buf[i + 1]) << 16 | @as(u32, buf[i + 2]) << 8 | (@as(u32, buf[i + 3]) & ~@as(u32, 3));
+        const src = ((@as(u32, buf[i]) & 3) << 24) | (@as(u32, buf[i + 1]) << 16) | (@as(u32, buf[i + 2]) << 8) | (@as(u32, buf[i + 3]) & ~@as(u32, 3));
         const at = now +% @as(u32, @truncate(i));
         const dest = if (encode) at +% src else src -% at;
         buf[i] = @truncate(0x48 | ((dest >> 24) & 3));
@@ -247,7 +247,7 @@ fn sparc(now: u32, buf: []u8, comptime encode: bool) usize {
         const src = std.mem.readInt(u32, buf[i..][0..4], .big) << 2;
         const at = now +% @as(u32, @truncate(i));
         var dest = (if (encode) at +% src else src -% at) >> 2;
-        dest = ((0 -% ((dest >> 22) & 1)) << 22 & 0x3fff_ffff) | (dest & 0x3f_ffff) | 0x4000_0000;
+        dest = (((0 -% ((dest >> 22) & 1)) << 22) & 0x3fff_ffff) | (dest & 0x3f_ffff) | 0x4000_0000;
         std.mem.writeInt(u32, buf[i..][0..4], dest, .big);
     }
     return i;
@@ -340,7 +340,7 @@ fn riscvDecode(now: u32, buf: []u8) usize {
             buf[i + 3] = @truncate(((addr >> 4) & 0x7f) | ((addr >> 13) & 0x80));
             i += 4 - 2;
         } else if (inst & 0x7f == 0x17) {
-            inst |= @as(u32, buf[i + 1]) << 8 | @as(u32, buf[i + 2]) << 16 | @as(u32, buf[i + 3]) << 24;
+            inst |= (@as(u32, buf[i + 1]) << 8) | (@as(u32, buf[i + 2]) << 16) | (@as(u32, buf[i + 3]) << 24);
             var inst2: u32 = undefined;
             if (inst & 0xe80 != 0) {
                 inst2 = std.mem.readInt(u32, buf[i + 4 ..][0..4], .little);
@@ -390,7 +390,7 @@ fn riscvEncode(now: u32, buf: []u8) usize {
             buf[i + 3] = @truncate(addr >> 1);
             i += 4 - 2;
         } else if (inst & 0x7f == 0x17) {
-            inst |= @as(u32, buf[i + 1]) << 8 | @as(u32, buf[i + 2]) << 16 | @as(u32, buf[i + 3]) << 24;
+            inst |= (@as(u32, buf[i + 1]) << 8) | (@as(u32, buf[i + 2]) << 16) | (@as(u32, buf[i + 3]) << 24);
             if (inst & 0xe80 != 0) {
                 const inst2 = std.mem.readInt(u32, buf[i + 4 ..][0..4], .little);
                 if (notAuipcPair(inst, inst2)) {

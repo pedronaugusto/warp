@@ -229,7 +229,7 @@ pub const Compressor = struct {
         out[1] = codec_id ^ 0xff;
         std.mem.writeInt(u16, out[2..4], @intCast(tiles), .little);
         const last: u32 = @intCast(in.len % tile_size);
-        std.mem.writeInt(u32, out[4..8], 1 | last << 2, .little);
+        std.mem.writeInt(u32, out[4..8], 1 | (last << 2), .little);
         var at: usize = data;
         for (0..tiles) |i| {
             const page = in[i * tile_size .. @min(in.len, (i + 1) * tile_size)];

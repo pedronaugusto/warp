@@ -259,7 +259,7 @@ fn zlibHeader(st: *State, s: *inflate.Stream, source: anytype, options: Options)
     const header = try s.take(source, 16);
     const cmf: u8 = @truncate(header);
     const flg: u8 = @truncate(header >> 8);
-    if ((@as(u16, cmf) << 8 | flg) % 31 != 0 or cmf & 15 != 8 or (cmf >> 4) + 8 > options.window_bits) return s.fail(.bad_zlib_header);
+    if (((@as(u16, cmf) << 8) | flg) % 31 != 0 or cmf & 15 != 8 or (cmf >> 4) + 8 > options.window_bits) return s.fail(.bad_zlib_header);
     const named = flg & 0x20 != 0;
     if (named) {
         st.go(.zlib_header, .dictionary);

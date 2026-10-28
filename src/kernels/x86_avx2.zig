@@ -57,7 +57,7 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
         s1 += b;
         s2 += s1;
     }
-    return @intCast((s2 % base) << 16 | (s1 % base));
+    return @intCast(((s2 % base) << 16) | (s1 % base));
 }
 
 /// Sums of each eight bytes, in four 64-bit lanes.

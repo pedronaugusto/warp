@@ -31,11 +31,11 @@ pub const Arena = struct {
 };
 
 inline fn hashAt(data: []const u8, at: usize, shift: u6, comptime len: u6) u32 {
-    return @intCast((find.load64(data, at) << (8 - len) * 8) *% find.hash_mul32 >> shift);
+    return @intCast(((find.load64(data, at) << ((8 - len) * 8)) *% find.hash_mul32) >> shift);
 }
 
 inline fn hashBytes(v: u64, offset: u6, shift: u6, comptime len: u6) u32 {
-    return @intCast(((v >> (8 * offset)) << (8 - len) * 8) *% find.hash_mul32 >> shift);
+    return @intCast((((v >> (8 * offset)) << ((8 - len) * 8)) *% find.hash_mul32) >> shift);
 }
 
 inline fn isMatch(data: []const u8, a: usize, b: usize, comptime len: usize) bool {
@@ -346,7 +346,8 @@ fn compressImpl(s: *Arena, all: []const u8, command_buf: []u32, literal_buf: []u
 pub fn compress(s: *Arena, input: []const u8, is_last: bool, command_buf: []u32, literal_buf: []u8, table: []i32, w: *Writer) void {
     const start = w.pos;
     const table_bits: u6 = @intCast(std.math.log2_int(usize, table.len));
-    std.debug.assert(table_bits >= 8 and table_bits <= 17);
+    std.debug.assert(table_bits >= 8);
+    std.debug.assert(table_bits <= 17);
     if (table_bits <= 15) {
         compressImpl(s, input, command_buf, literal_buf, table, table_bits, 4, w);
     } else compressImpl(s, input, command_buf, literal_buf, table, table_bits, 6, w);

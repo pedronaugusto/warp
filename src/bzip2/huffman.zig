@@ -66,7 +66,7 @@ pub const Table = struct {
             while (zn <= root_bits) : (zn += 1) {
                 const zvec: i32 = @intCast(v >> @intCast(root_bits - zn));
                 if (zvec <= t.limit[zn]) {
-                    e.* = if (t.symbol(zn, zvec)) |s| s << len_bits | @as(Entry, @intCast(zn)) else refused;
+                    e.* = if (t.symbol(zn, zvec)) |s| (s << len_bits) | @as(Entry, @intCast(zn)) else refused;
                     break;
                 }
             }

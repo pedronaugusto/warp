@@ -562,7 +562,7 @@ pub fn storeStaticDistanceCode(w: *Writer) void {
 
 test "depths respect the limit and form a complete code" {
     var counts: [300]u32 = undefined;
-    for (&counts, 0..) |*c, i| c.* = if (i % 7 == 3) 0 else @intCast(1 + (i * i * 2654435761 >> 7) % 100000);
+    for (&counts, 0..) |*c, i| c.* = if (i % 7 == 3) 0 else @intCast(1 + ((i * i * 2654435761) >> 7) % 100000);
     counts[5] = 1 << 28;
     var tree: Tree = undefined;
     var depth: [300]u8 = @splat(0);

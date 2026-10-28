@@ -230,7 +230,7 @@ fn plainDecode(in: []const u8, out: []u8, format: snappy.Format, dict: ?snappy.D
             1 => {
                 if (in.len - ip < 2) return null;
                 len = ((tag >> 2) & 7) + 4;
-                offset = @as(u64, tag >> 5) << 8 | in[ip + 1];
+                offset = (@as(u64, tag >> 5) << 8) | in[ip + 1];
                 ip += 2;
                 if (offset == 0) {
                     if (format == .snappy) return null;

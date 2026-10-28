@@ -15,11 +15,11 @@ const tables: [8][256]u64 = blk: {
     var t: [8][256]u64 = undefined;
     for (0..256) |i| {
         var c: u64 = i;
-        for (0..8) |_| c = if (c & 1 != 0) c >> 1 ^ polynomial else c >> 1;
+        for (0..8) |_| c = if (c & 1 != 0) (c >> 1) ^ polynomial else c >> 1;
         t[0][i] = c;
     }
     for (1..8) |k| {
-        for (0..256) |i| t[k][i] = t[k - 1][i] >> 8 ^ t[0][t[k - 1][i] & 0xff];
+        for (0..256) |i| t[k][i] = (t[k - 1][i] >> 8) ^ t[0][t[k - 1][i] & 0xff];
     }
     break :blk t;
 };
@@ -60,7 +60,7 @@ pub fn slicing8(reg: u64, bytes: []const u8) u64 {
             tables[3][(v >> 32) & 0xff] ^ tables[2][(v >> 40) & 0xff] ^ tables[1][(v >> 48) & 0xff] ^ tables[0][v >> 56];
         rest = rest[8..];
     }
-    for (rest) |b| c = c >> 8 ^ tables[0][(c ^ b) & 0xff];
+    for (rest) |b| c = (c >> 8) ^ tables[0][(c ^ b) & 0xff];
     return c;
 }
 
@@ -69,7 +69,7 @@ pub fn bitwise(reg: u64, bytes: []const u8) u64 {
     var c = reg;
     for (bytes) |b| {
         c ^= b;
-        for (0..8) |_| c = if (c & 1 != 0) c >> 1 ^ polynomial else c >> 1;
+        for (0..8) |_| c = if (c & 1 != 0) (c >> 1) ^ polynomial else c >> 1;
     }
     return c;
 }
