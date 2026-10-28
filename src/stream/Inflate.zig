@@ -147,6 +147,9 @@ pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 /// of `out` past `out_len` may have been written.
 pub fn decode(z: *Inflate, in: []const u8, out: []u8) DecodeError!Step {
     const stepped = try z.step(in, out, 0, 0, z.ringHistory());
+    // What the step wrote lies within `out`, after where it started.
+    aegis.assert.invariant(stepped.start <= stepped.op, "stepped.start <= stepped.op");
+    aegis.assert.invariant(stepped.op <= out.len, "stepped.op <= out.len");
     z.out_total += stepped.op;
     z.at_boundary = stepped.status == .block_end and z.state.engine.phase == .header;
     if (stepped.replaced) {
@@ -212,7 +215,8 @@ pub fn checkpoint(z: *const Inflate) CheckpointError!Checkpoint {
         .in_offset = z.in_total,
         .out_offset = z.out_total,
         .window_bits = z.options.window_bits,
-        .bits = @intCast(z.bitsleft),
+        // At a boundary only a partial byte is in hand.
+        .bits = std.math.cast(u3, z.bitsleft) orelse return error.NotAtBoundary,
         .pending = @truncate(z.bitbuf),
         .wrapper = z.state.wrapper,
         .check = z.state.check,
@@ -281,11 +285,13 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
 
     var diagnostic: Diagnostic = .{};
     var source: Resume = .{};
+    // `absorb` keeps fewer bits than a unit needs, so fewer than 64.
+    aegis.assert.invariant(z.bitsleft < 64, "z.bitsleft < 64");
     var s: inflate_.Stream = .{
         .in = in,
         .ip = 0,
         .bitbuf = z.bitbuf,
-        .bitsleft = @intCast(z.bitsleft),
+        .bitsleft = @truncate(z.bitsleft),
         .in_base = z.in_total,
         .out = out,
         .op = op,
@@ -324,6 +330,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
             if (z.options.diagnostic) |d| d.* = diagnostic;
             z.state.sum(&s);
             z.error_in_len = @min(in.len, s.ip -| (s.bitsleft / 8));
+            aegis.assert.invariant(op <= s.op, "op <= s.op");
             z.error_out_len = s.op - op;
             z.failed = e;
             return e;
@@ -354,13 +361,17 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
 /// in hand: fewer bits than the unit needs, so fewer than 64.
 fn absorb(z: *Inflate, s: *inflate_.Stream) void {
     // Zero bytes loaded past the end are not the input's.
-    s.bitsleft -= @intCast(8 * s.virtual);
+    // `ip` and `bitsleft` count them: at most seven.
+    aegis.assert.invariant(s.virtual <= s.ip, "s.virtual <= s.ip");
+    aegis.assert.invariant(8 * s.virtual <= s.bitsleft, "8 * s.virtual <= s.bitsleft");
+    s.bitsleft -= @truncate(8 * s.virtual);
     s.ip -= s.virtual;
+    aegis.assert.invariant(s.ip <= s.in.len, "s.ip <= s.in.len");
     var bits = s.bitbuf & ~(~@as(u64, 0) << s.bitsleft);
-    var n: u32 = s.bitsleft;
+    var n: u7 = s.bitsleft;
     for (s.in[s.ip..]) |byte| {
         aegis.assert.invariant(n + 8 <= 64, "n + 8 <= 64");
-        bits |= @as(u64, byte) << @intCast(n);
+        bits |= @as(u64, byte) << @as(u6, @truncate(n));
         n += 8;
     }
     z.bitbuf = bits;
@@ -511,6 +522,7 @@ pub const Reader = struct {
     /// Decode until some bytes are in the buffer, or the stream ends.
     fn fill(r: *Reader) Io.Reader.Error!void {
         const io_r = &r.interface;
+        aegis.assert.invariant(io_r.end <= io_r.buffer.len, "io_r.end <= io_r.buffer.len");
         if (io_r.buffer.len - io_r.end < 4096) r.slide();
         const before = io_r.end;
         while (io_r.end == before) {

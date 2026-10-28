@@ -142,14 +142,20 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
                         // this candidate after its false prefix is discarded.
                         const before = stream.op;
                         const ended = try advance(&tables, &state, &stream, machine);
-                        if (p.options.statistics) |stats| stats.serial_bytes += stream.op - before;
+                        if (p.options.statistics) |stats| stats.serial_bytes +|= stream.op -| before;
                         if (ended) return finish(&stream);
                         continue;
                     }
                     if (first < candidate.count) {
                         if (first > 0) w.stats.salvaged_blocks += candidate.count - first;
                         for (w.blocks[first..candidate.count]) |block| {
-                            if (block.required > stream.op - stream.start + stream.history.len() or
+                            // The stream writes forward inside its output; a
+                            // worker's blocks lie inside its tokens.
+                            aegis.assert.invariant(stream.start <= stream.op, "stream.start <= stream.op");
+                            aegis.assert.invariant(stream.op <= output.len, "stream.op <= output.len");
+                            aegis.assert.invariant(block.token <= w.tokens.len, "block.token <= w.tokens.len");
+                            aegis.assert.invariant(block.len <= w.tokens.len - block.token, "block.len <= w.tokens.len - block.token");
+                            if (block.required > stream.op - stream.start +| stream.history.len() or
                                 block.max_distance > stream.window or block.len > output.len - stream.op) break;
                             resolve(w.tokens[block.token..][0..block.len], &stream, block.required);
                             state.checked = stream.op - block.len;
@@ -170,7 +176,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
         }
         const before = stream.op;
         const ended = try advance(&tables, &state, &stream, machine);
-        if (p.options.statistics) |stats| stats.serial_bytes += stream.op - before;
+        if (p.options.statistics) |stats| stats.serial_bytes +|= stream.op -| before;
         if (ended) return finish(&stream);
     }
 }
@@ -208,6 +214,10 @@ fn resolve(tokens: []const u16, s: *engine.Stream, required: usize) void {
     // Mixed vectors therefore need no unpredictable branch per element.
     var values: [256 + engine.max_distance]u8 = undefined;
     const history = values[256..];
+    // The caller found room for the tokens after `op`, which is past `start`.
+    aegis.assert.invariant(s.start <= s.op, "s.start <= s.op");
+    aegis.assert.invariant(s.op <= s.out.len, "s.op <= s.out.len");
+    aegis.assert.invariant(tokens.len <= s.out.len - s.op, "tokens.len <= s.out.len - s.op");
     const n = @min(engine.max_distance, s.op - s.start);
     const dict = @min(engine.max_distance - n, s.history.len());
     if (required > 0) {
@@ -297,6 +307,7 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
                 }
                 // Each block has its own symbolic predecessor window. That
                 // lets a validated suffix survive a falsely decoded prefix.
+                aegis.assert.invariant(written <= w.tokens.len, "written <= w.tokens.len");
                 decoder.tokens = w.tokens[written..];
                 decoder.written = 0;
                 decoder.required = 0;
