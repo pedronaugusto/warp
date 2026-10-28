@@ -36,7 +36,9 @@ pub const Statistics = struct {
 pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
 pub const Error = Native.Error || Io.Cancelable;
 
-const Job = struct { header: format.BlockHeader, data: usize, out_at: usize, check: format.Check };
+/// A block: its compressed data and where it starts in the input, its
+/// padding and stored check, and the output it fills.
+const Job = struct { header: format.BlockHeader, data: []const u8, base: u64, padding: []const u8, stored: []const u8, dest: []u8, check: format.Check };
 
 const Worker = struct {
     group: Io.Group = .init,
@@ -46,16 +48,13 @@ const Worker = struct {
 
     /// The block decoded into its range: LZMA2 to the header's sizes, the
     /// filters undone, the padding and check read.
-    fn run(w: *Worker, in: []const u8, out: []u8) void {
+    fn run(w: *Worker) void {
         const j = w.job;
-        const c: usize = @intCast(j.header.compressed.?);
-        const u: usize = @intCast(j.header.uncompressed.?);
-        const dest = out[j.out_at..][0..u];
-        const r = w.coder.lzma2(in[j.data..][0..c], j.data, dest, .{ .dictionary = j.header.dictionary }) catch {
+        const r = w.coder.lzma2(j.data, j.base, j.dest, .{ .dictionary = j.header.dictionary }) catch {
             w.refused = true;
             return;
         };
-        if (r.in_len != c or r.out_len != u) {
+        if (r.in_len != j.data.len or r.out_len != j.dest.len) {
             w.refused = true;
             return;
         }
@@ -63,14 +62,13 @@ const Worker = struct {
         while (i > 0) {
             i -= 1;
             var s: filter_.State = .init(j.header.filters[i]);
-            _ = filter_.run(j.header.filters[i], &s, dest, false);
+            _ = filter_.run(j.header.filters[i], &s, j.dest, false);
         }
-        const padded = j.data + c + (4 - c % 4) % 4;
-        for (in[j.data + c .. padded]) |b| if (b != 0) {
+        for (j.padding) |b| if (b != 0) {
             w.refused = true;
             return;
         };
-        if (!Native.verify(j.check, dest, in[padded..][0..j.check.size()])) w.refused = true;
+        if (!Native.verify(j.check, j.dest, j.stored)) w.refused = true;
     }
 };
 
@@ -116,51 +114,54 @@ pub fn decompress(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: 
 /// Walk the streams, handing each block to the next worker; null where the
 /// walk does not reach the end as the whole-buffer decoder would.
 fn plan(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: Native.Options, stats: *Statistics) (Io.Cancelable || error{Refused})!Native.Result {
-    var at: usize = 0;
-    var op: usize = 0;
+    // What is left of each, ends cut as they are taken.
+    var rest = in;
+    var room = out;
     var next: usize = 0;
     for (d.workers) |*w| w.refused = false;
     while (true) {
-        if (in.len - at < format.header_len) return error.Refused;
-        const check = switch (format.streamHeader(in[at..][0..format.header_len])) {
+        if (rest.len < format.header_len) return error.Refused;
+        const check = switch (format.streamHeader(rest[0..format.header_len])) {
             .check => |c| c,
             .fault => return error.Refused,
         };
-        var pos = at + format.header_len;
+        rest = rest[format.header_len..];
         var blocks: Native.Records = .{};
         while (true) {
-            if (pos == in.len) return error.Refused;
-            if (in[pos] == 0) break;
-            const header_len = (@as(usize, in[pos]) + 1) * 4;
-            if (in.len - pos < header_len) return error.Refused;
-            const h = switch (format.blockHeader(in[pos..][0..header_len], check)) {
+            if (rest.len == 0) return error.Refused;
+            if (rest[0] == 0) break;
+            const header_len = (@as(usize, rest[0]) + 1) * 4;
+            if (rest.len < header_len) return error.Refused;
+            const h = switch (format.blockHeader(rest[0..header_len], check)) {
                 .header => |h| h,
                 .fault => return error.Refused,
             };
             const c = h.compressed orelse return error.Refused;
             const u = h.uncompressed orelse return error.Refused;
-            const data = pos + header_len;
-            const padded = c + (4 - c % 4) % 4;
-            if (in.len - data < padded + check.size() or out.len - op < u) return error.Refused;
+            const block = rest[header_len..];
+            if (block.len < c or room.len < u) return error.Refused;
+            const data = block[0..@min(block.len, c)];
+            const after = block[data.len..];
+            const padding: u2 = @truncate(0 -% data.len);
+            if (after.len < @as(usize, padding) + check.size()) return error.Refused;
+            const dest = room[0..@min(room.len, u)];
             // The next worker, once its last block is done.
             const w = &d.workers[next];
             next = (next + 1) % d.workers.len;
             try w.group.await(io);
             if (w.refused) return error.Refused;
-            w.job = .{ .header = h, .data = data, .out_at = op, .check = check };
-            w.group.async(io, Worker.run, .{ w, in, out });
+            w.job = .{ .header = h, .data = data, .base = in.len - block.len, .padding = after[0..padding], .stored = after[padding..][0..check.size()], .dest = dest, .check = check };
+            w.group.async(io, Worker.run, .{w});
             stats.parallel += 1;
-            blocks.add(header_len + c + check.size(), u);
-            op += @intCast(u);
-            pos = data + @as(usize, @intCast(padded)) + check.size();
+            blocks.add(rest.len - after.len + check.size(), dest.len);
+            room = room[dest.len..];
+            rest = after[@as(usize, padding) + check.size() ..];
         }
-        pos = Native.readIndex(in, pos, check, blocks, null) catch return error.Refused;
-        at = pos;
-        if (options.streams == .one) return .{ .in_len = at, .out_len = op };
-        var p = at;
-        while (p < in.len and in[p] == 0) p += 1;
-        if ((p - at) % 4 != 0) return error.Refused;
-        if (p == in.len) return .{ .in_len = p, .out_len = op };
-        at = p;
+        rest = Native.readIndex(in, rest, check, blocks, null) catch return error.Refused;
+        if (options.streams == .one) return .{ .in_len = in.len - rest.len, .out_len = out.len - room.len };
+        const zeros = std.mem.findNone(u8, rest, &.{0}) orelse rest.len;
+        if (zeros % 4 != 0) return error.Refused;
+        rest = rest[zeros..];
+        if (rest.len == 0) return .{ .in_len = in.len, .out_len = out.len - room.len };
     }
 }

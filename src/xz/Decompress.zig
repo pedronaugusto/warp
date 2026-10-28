@@ -113,7 +113,8 @@ index_at: u64 = 0,
 index_len: u64 = 0,
 index_crc: Crc32 = .init,
 fields_left: u64 = 0,
-field: u64 = 0,
+/// Nine bytes of seven bits at most.
+field: u63 = 0,
 field_bytes: u6 = 0,
 unpadded: u64 = 0,
 count_read: bool = false,
@@ -262,7 +263,8 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
 fn blockHeader(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
     const len = (@as(usize, if (z.gathered == 0) in[ip.*] else z.gather[0]) + 1) * 4;
     if (!z.take(in, ip, len)) return false;
-    const start = z.offset + ip.* - len;
+    // Where the header starts, for the diagnostic.
+    const start = z.offset +| ip.* -| len;
     z.header = switch (format.blockHeader(z.gather[0..len], z.check)) {
         .header => |h| h,
         .fault => |f| return z.fail(error.InvalidStream, start + f.at, f.reason),
@@ -289,7 +291,7 @@ fn indexField(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
         const b = in[ip.*];
         z.index_crc.update(in[ip.*..][0..1]);
         ip.* += 1;
-        z.field |= @as(u64, b & 0x7f) << (z.field_bytes * 7);
+        z.field |= @as(u63, b & 0x7f) << (z.field_bytes * 7);
         z.field_bytes += 1;
         if (b & 0x80 == 0) {
             if (b == 0 and z.field_bytes > 1) return z.fail(error.InvalidStream, z.index_at, .index);
@@ -303,15 +305,18 @@ fn indexField(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
     if (!z.count_read) {
         z.count_read = true;
         if (v != z.blocks.count) return z.fail(error.InvalidStream, z.index_at, .index);
-        z.fields_left = 2 * v;
-    } else if (z.fields_left % 2 == 0) {
+        z.fields_left = 2 * @as(u64, v);
+        return true;
+    }
+    // A record's field is read only while one is left.
+    if (z.fields_left == 0) return z.fail(error.InvalidStream, z.index_at, .index);
+    if (z.fields_left % 2 == 0) {
         if (v < 5 or v > format.vli_max & ~@as(u64, 3)) return z.fail(error.InvalidStream, z.index_at, .index);
         z.unpadded = v;
-        z.fields_left -= 1;
     } else {
         z.records.add(z.unpadded, v);
-        z.fields_left -= 1;
     }
+    z.fields_left -= 1;
     return true;
 }
 
@@ -336,10 +341,17 @@ fn blockData(z: *Decompress, in: []const u8, ip: *usize, out: []u8, op: *usize) 
     const h = &z.header;
     while (true) {
         // The input the block may still take, and the output it may make.
-        const in_cap: usize = if (h.compressed) |c| @intCast(@min(in.len - ip.*, c - z.block_in)) else in.len - ip.*;
+        // The block takes no more than its sizes, so neither count passes them.
+        const in_cap: usize = if (h.compressed) |c| cap: {
+            if (z.block_in > c) return z.fail(error.InvalidStream, z.offset +| ip.*, .block_size);
+            break :cap @intCast(@min(in.len - ip.*, c - z.block_in));
+        } else in.len - ip.*;
         const filtered = h.filter_count != 0;
         const dest = if (filtered) z.pipe[z.fill..] else out[op.*..];
-        const out_cap: usize = if (h.uncompressed) |u| @intCast(@min(dest.len, u - z.block_out)) else dest.len;
+        const out_cap: usize = if (h.uncompressed) |u| cap: {
+            if (z.block_out > u) return z.fail(error.InvalidStream, z.offset +| ip.*, .block_size);
+            break :cap @intCast(@min(dest.len, u - z.block_out));
+        } else dest.len;
         const ended = z.lzma2.done();
         var produced: usize = 0;
         var short = false;
