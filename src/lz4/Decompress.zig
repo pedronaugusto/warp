@@ -151,7 +151,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             // The whole stored block in this call's input: decoded from it.
             const avail = in.len - ip;
             if (s.have == 0 and avail >= s.wanted) {
-                const data = in[ip..][0..s.wanted];
+                const data = in[ip..][0..@min(avail, s.wanted)];
                 ip += s.wanted;
                 s.offset +|= s.wanted;
                 try s.readBlock(data);
@@ -168,7 +168,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
         .legacy_payload => {
             const avail = in.len - ip;
             if (s.have == 0 and avail >= s.wanted) {
-                const data = in[ip..][0..s.wanted];
+                const data = in[ip..][0..@min(avail, s.wanted)];
                 ip += s.wanted;
                 s.offset +|= s.wanted;
                 try s.readLegacyBlock(data);
