@@ -2,6 +2,7 @@
 //! distances (RFC 7932 §4, §5, §6), as comptime tables.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 /// A prefix code's symbol stands for `offset` plus `extra` bits.
 pub const Range = struct { offset: u32, extra: u5 };
@@ -92,19 +93,21 @@ pub fn distanceAlphabet(npostfix: u2, ndirect: u7, large_window: bool) struct { 
 /// 2^NPOSTFIX symbols whose distances stay within `max_allowed_distance`.
 fn largeLimit(npostfix: u2, ndirect: u7) u32 {
     const max_distance: u32 = max_allowed_distance;
-    if (max_distance <= ndirect) return max_distance + short_distance_codes;
-    var offset = max_distance + 1 - ndirect - 1;
-    const postfix = (@as(u32, 1) << npostfix) - 1;
-    offset = (offset >> npostfix) + 4;
-    var ndistbits: u32 = 0;
-    var tmp = offset / 2;
-    while (tmp != 0) : (tmp >>= 1) ndistbits += 1;
-    ndistbits -= 1;
-    const half = (offset >> @intCast(ndistbits)) & 1;
-    var group = ((ndistbits - 1) << 1) | half;
+    // The largest distance less NDIRECT (at most 127, which bounds the
+    // second part): 31 bits.
+    const less = (max_distance - 127) + (127 - @as(u32, ndirect));
+    const reduced: u31 = @truncate(less >> npostfix);
+    const offset = @as(u32, reduced) + 4;
+    const postfix = ~(~@as(u4, 0) << npostfix);
+    // The bits of `offset / 2` (at least 2), less one: at most 30.
+    const ndistbits: u5 = @intCast(31 - @as(u32, @clz(offset / 2)));
+    const half: u1 = @truncate(offset >> ndistbits);
+    var group = (@as(u6, ndistbits - 1) << 1) | half;
     if (group == 0) return @as(u32, ndirect) + short_distance_codes;
     group -= 1;
-    return ((group << npostfix) | postfix) + ndirect + short_distance_codes + 1;
+    // At most 59 << 3: 10 bits.
+    const symbol = (@as(u10, group) << npostfix) | postfix;
+    return @as(u32, symbol) + ndirect + short_distance_codes + 1;
 }
 
 /// The largest distance alphabet any stream can have, for table sizes.
@@ -124,14 +127,21 @@ pub const max_distance_limit = blk: {
 /// A distance symbol at or past `16 + NDIRECT` stands for `offset` plus
 /// `extra` bits shifted by NPOSTFIX.
 pub fn distanceRange(symbol: u32, npostfix: u2, ndirect: u7) Range {
-    if (symbol < short_distance_codes + @as(u32, ndirect)) return .{ .offset = symbol - short_distance_codes + 1, .extra = 0 };
-    const x = symbol - ndirect - short_distance_codes;
-    const ndistbits = 1 + (x >> (@as(u5, npostfix) + 1));
-    const half = (x >> npostfix) & 1;
-    const postfix = x & ((@as(u32, 1) << npostfix) - 1);
+    const direct = short_distance_codes + @as(u32, ndirect);
+    if (symbol < direct) return .{ .offset = symbol - short_distance_codes + 1, .extra = 0 };
+    const x = symbol - direct;
+    // Shifted by at least one: 31 bits.
+    const ndistbits = @as(u32, @as(u31, @truncate(x >> (@as(u5, npostfix) + 1)))) + 1;
+    const half: u1 = @truncate(x >> npostfix);
+    const postfix = x & ~(~@as(u32, 0) << npostfix);
+    // The limit keeps a symbol's extra bits to five bits' count.
+    aegis.assert.invariant(ndistbits <= 31, "ndistbits <= 31");
     // Large-window offsets past 2^32 cannot be reached within the limit.
-    const start: u64 = ((@as(u64, 2) + half) << @intCast(ndistbits)) - 4;
-    return .{ .offset = @truncate(((start << npostfix) + postfix + ndirect + 1) & 0xffff_ffff), .extra = @intCast(ndistbits) };
+    const scaled = (@as(u64, 2) + half) << @intCast(ndistbits);
+    aegis.assert.invariant(scaled >= 4, "scaled >= 4");
+    const start: u64 = scaled - 4;
+    // Kept to 32 bits, as the reference keeps it: the sum wraps where it would pass them.
+    return .{ .offset = @truncate((start << npostfix) +% postfix +% ndirect +% 1), .extra = @intCast(ndistbits) };
 }
 
 test "commands match RFC 7932's table" {

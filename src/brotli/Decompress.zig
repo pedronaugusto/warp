@@ -11,6 +11,7 @@
 const Decompress = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const engine = @import("decode.zig");
 const bits = @import("bits.zig");
@@ -131,7 +132,7 @@ pub fn finish(z: *Decompress) Error!void {
     if (z.state.phase == .done) return;
     const between = z.state.phase == .stream_header and z.carry_len == 0 and z.bit_count == 0;
     if (between and z.streams != 0) return;
-    if (z.options.diagnostic) |d| d.* = .{ .bit_offset = .fromRaw(z.taken * 8), .reason = .truncated };
+    if (z.options.diagnostic) |d| d.* = .{ .bit_offset = .fromRaw(z.taken *| 8), .reason = .truncated };
     z.failure = error.Truncated;
     return error.Truncated;
 }
@@ -147,44 +148,53 @@ fn drain(z: *Decompress, out: []u8) usize {
 /// Run the engine over the carried bytes (topped up from `in`), then over
 /// `in` from `ip`, until it stops.
 fn feed(z: *Decompress, in: []const u8, ip: *usize) Error!engine.Status {
+    // The input after `ip`, cut as it is taken; `ip` follows it.
+    var rest = in[ip.*..];
     if (z.carry_len != 0) {
         const old = z.carry_len;
-        const take = @min(z.carry.len - old, in.len - ip.*);
-        @memcpy(z.carry[old..][0..take], in[ip.*..][0..take]);
-        ip.* += take;
-        z.carry_len += take;
-        z.taken += take;
-        const start = z.taken - z.carry_len;
-        var r: bits.Reader = .{ .in = z.carry[0..z.carry_len], .base = start * 8, .buf = z.bit_buf, .count = z.bit_count };
+        const fresh = rest[0..@min(z.carry.len - old, rest.len)];
+        @memcpy(z.carry[old..][0..fresh.len], fresh);
+        rest = rest[fresh.len..];
+        ip.* = in.len - rest.len;
+        z.carry_len += fresh.len;
+        z.taken +|= fresh.len;
+        const start = z.taken -| z.carry_len;
+        var r: bits.Reader = .{ .in = z.carry[0..z.carry_len], .base = start *| 8, .buf = z.bit_buf, .count = z.bit_count };
         const status = try z.run(&r);
         z.bit_buf = r.buf;
         z.bit_count = r.count;
-        const unread = z.carry_len - r.pos;
-        if (r.bitOffset() >= (start + old) * 8) {
+        aegis.assert.invariant(r.pos <= r.in.len, "r.pos <= r.in.len");
+        const unread = r.in[r.pos..];
+        // The next bit is past the old bytes where no more bits are left
+        // than the fresh bytes hold.
+        // (`count` is under 64: eight fresh bytes hold more than it.)
+        if (unread.len <= fresh.len and r.count <= @as(usize, @min(fresh.len - unread.len, 8)) * 8) {
             // The next bit is in bytes taken from `in`: read them there.
-            ip.* -= unread;
-            z.taken -= unread;
+            rest = in[in.len - rest.len - unread.len ..];
+            ip.* = in.len - rest.len;
+            z.taken -|= unread.len;
             z.carry_len = 0;
-            if (status != .need_input or ip.* == in.len) return status;
+            if (status != .need_input or rest.len == 0) return status;
         } else {
-            @memmove(z.carry[0..unread], z.carry[r.pos..z.carry_len]);
-            z.carry_len = unread;
+            @memmove(z.carry[0..unread.len], unread);
+            z.carry_len = unread.len;
             return status;
         }
     }
-    var r: bits.Reader = .{ .in = in[ip.*..], .base = z.taken * 8, .buf = z.bit_buf, .count = z.bit_count };
+    var r: bits.Reader = .{ .in = rest, .base = z.taken *| 8, .buf = z.bit_buf, .count = z.bit_count };
     const status = try z.run(&r);
-    ip.* += r.pos;
-    z.taken += r.pos;
+    aegis.assert.invariant(r.pos <= rest.len, "r.pos <= rest.len");
+    rest = rest[r.pos..];
+    ip.* = in.len - rest.len;
+    z.taken +|= r.pos;
     z.bit_buf = r.buf;
     z.bit_count = r.count;
     if (status == .need_input) {
-        const rest = in[ip.*..];
         std.debug.assert(rest.len <= z.carry.len);
         @memcpy(z.carry[0..rest.len], rest);
         z.carry_len = rest.len;
         ip.* = in.len;
-        z.taken += rest.len;
+        z.taken +|= rest.len;
     }
     return status;
 }

@@ -46,7 +46,8 @@ pub const Reader = struct {
 
     /// The bit the reader is at, counted from the stream's first.
     pub inline fn bitOffset(r: *const Reader) u64 {
-        return r.base + @as(u64, r.pos) * 8 - r.count;
+        // For diagnostics only: saturating, never past the stream's bits.
+        return r.base +| @as(u64, r.pos) *| 8 -| r.count;
     }
 
     /// Whether a fast unit may run: `margin` bytes past `pos`.
@@ -108,6 +109,8 @@ pub const Reader = struct {
     /// so `in[pos..]` is the next input byte.
     pub fn unload(r: *Reader) void {
         aegis.assert.invariant(r.count & 7 == 0, "r.count & 7 == 0");
+        // The loaded bytes came from before `pos`.
+        aegis.assert.invariant(r.count >> 3 <= r.pos, "r.count >> 3 <= r.pos");
         r.pos -= r.count >> 3;
         r.buf = 0;
         r.count = 0;

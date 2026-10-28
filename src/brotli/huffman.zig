@@ -28,7 +28,7 @@ pub fn maxEntries(alphabet: usize) usize {
 inline fn entry(len: u32, value: u32) Entry {
     std.debug.assert(len <= max_length);
     aegis.assert.invariant(value < 1 << 12, "value < 1 << 12");
-    return @intCast(len | (value << 4));
+    return (@as(Entry, @as(u12, @truncate(value))) << 4) | @as(u4, @truncate(len));
 }
 
 /// Decode one symbol from the table at `table[0..]`. Fast mode reads with
@@ -56,12 +56,12 @@ pub inline fn decode(r: *Reader, comptime careful: bool, table: [*]const Entry) 
 /// as wide as the codes still to place that share its prefix need.
 fn nextTableBits(count: *const [max_length + 1]u16, first_len: u32) u32 {
     var len = first_len;
-    var left: i32 = @as(i32, 1) << @intCast(len - root_bits);
+    // The slots left at this length, which the codes of it fill.
+    var left: u32 = @as(u32, 1) << @intCast(len - root_bits);
     while (len < max_length) {
-        left -= count[len];
-        if (left <= 0) break;
+        if (count[len] >= left) break;
+        left = (left - count[len]) << 1;
         len += 1;
-        left <<= 1;
     }
     return len - root_bits;
 }
@@ -104,6 +104,8 @@ pub fn build(table: []Entry, links: *const Links, count: *[max_length + 1]u16) u
     while (len <= table_bits) : (len += 1) {
         var at: usize = len;
         for (0..count[len]) |_| {
+            // `links` holds a symbol of the alphabet at each of its places.
+            aegis.assert.invariant(at < links.len, "at < links.len");
             const symbol = links[at];
             at = max_length + 1 + @as(usize, symbol);
             replicate(table[reverse(key)..], step, table_size, entry(len, symbol));
@@ -137,6 +139,7 @@ pub fn build(table: []Entry, links: *const Links, count: *[max_length + 1]u16) u
                 table[root] = entry(table_bits + root_bits, @intCast(used));
                 sub_key = 0;
             }
+            aegis.assert.invariant(at < links.len, "at < links.len");
             const symbol = links[at];
             at = max_length + 1 + @as(usize, symbol);
             replicate(table[used + reverse(sub_key) ..], step, table_size, entry(len - root_bits, symbol));
