@@ -18,6 +18,7 @@
 //! for the same reason.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const bits = @import("bits.zig");
 const fse = @import("fse.zig");
@@ -262,6 +263,12 @@ pub const Frame = struct {
     }
 
     fn literalStorage(f: *Frame, len: usize, op: usize) Literals {
+        // The literals section's caller has checked a section no longer
+        // than a block or than the room left.
+        aegis.assert.invariant(f.block_max <= block_max, "f.block_max <= block_max");
+        aegis.assert.invariant(len <= f.block_max, "len <= f.block_max");
+        aegis.assert.invariant(op <= f.out.len, "op <= f.out.len");
+        aegis.assert.invariant(len <= f.out.len - op, "len <= f.out.len - op");
         const room = f.out.len - op;
         if (room <= f.block_max + 2 * margin + len and len + margin <= f.literal_buffer.len) {
             @memset(f.literal_buffer[len..][0..margin], 0);
@@ -271,6 +278,13 @@ pub const Frame = struct {
     }
 
     fn inOut(f: *Frame, len: usize, op: usize) Literals {
+        // The literals section's caller has checked a section no longer
+        // than a block or than the room left.
+        aegis.assert.invariant(f.block_max <= block_max, "f.block_max <= block_max");
+        aegis.assert.invariant(len <= f.block_max, "len <= f.block_max");
+        aegis.assert.invariant(op <= f.out.len, "op <= f.out.len");
+        aegis.assert.invariant(len <= f.out.len - op, "len <= f.out.len - op");
+        aegis.assert.invariant(len <= f.out.len, "len <= f.out.len");
         const room = f.out.len - op;
         const limit = if (room > f.block_max + margin + len + margin) op + f.block_max + margin else f.out.len;
         return .{ .bytes = f.out[f.out.len - len ..], .len = len, .in_out = f.out.len - len, .limit = limit };
@@ -294,43 +308,50 @@ pub const Frame = struct {
 
     // ---- sequences ----
 
-    const SequenceHeader = struct { count: usize, ip: usize };
+    const SequenceHeader = struct {
+        count: usize,
+        /// The sequences' bitstream: the rest of the block.
+        stream: []const u8,
+        /// Where it starts in the block.
+        at: usize,
+    };
 
     fn sequenceHeader(f: *Frame, in: []const u8, lit_len: usize) Error!SequenceHeader {
-        var ip = lit_len;
-        const at = ip;
-        if (ip >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
-        var count: usize = in[ip];
-        ip += 1;
+        const at = lit_len;
+        if (at >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
+        // What is left of the block, cut as the header is read.
+        var rest = in[at..];
+        var count: usize = rest[0];
+        rest = rest[1..];
         if (count > 0x7f) {
             if (count == 0xff) {
-                if (ip + 2 > in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
-                count = @as(usize, std.mem.readInt(u16, in[ip..][0..2], .little)) + 0x7f00;
-                ip += 2;
+                if (rest.len < 2) return f.fail(error.InvalidStream, at, .bad_sequences_header);
+                count = @as(usize, std.mem.readInt(u16, rest[0..2], .little)) + 0x7f00;
+                rest = rest[2..];
             } else {
-                if (ip >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
-                count = ((count - 0x80) << 8) + in[ip];
-                ip += 1;
+                if (rest.len == 0) return f.fail(error.InvalidStream, at, .bad_sequences_header);
+                count = ((count - 0x80) << 8) | rest[0];
+                rest = rest[1..];
             }
         }
         if (count == 0) {
-            if (ip != in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
+            if (rest.len != 0) return f.fail(error.InvalidStream, at, .bad_sequences_header);
         } else {
-            if (ip >= in.len) return f.fail(error.InvalidStream, at, .bad_sequences_header);
-            const modes = in[ip];
-            if (modes & 3 != 0) return f.fail(error.InvalidStream, ip, .bad_sequences_header);
-            ip += 1;
-            ip += try f.codeTable(fse.LlTable, &f.tables.ll, &f.entropy.ll, @truncate(modes >> 6), codes.max_ll, codes.max_ll_log, &codes.ll_base, &codes.ll_bits, &fse.ll_default, in, ip);
-            ip += try f.codeTable(fse.OfTable, &f.tables.of, &f.entropy.of, @truncate(modes >> 4), codes.max_of, codes.max_of_log, &codes.of_base, &codes.of_bits, &fse.of_default, in, ip);
-            ip += try f.codeTable(fse.MlTable, &f.tables.ml, &f.entropy.ml, @truncate(modes >> 2), codes.max_ml, codes.max_ml_log, &codes.ml_base, &codes.ml_bits, &fse.ml_default, in, ip);
+            if (rest.len == 0) return f.fail(error.InvalidStream, at, .bad_sequences_header);
+            const modes = rest[0];
+            if (modes & 3 != 0) return f.fail(error.InvalidStream, in.len - rest.len, .bad_sequences_header);
+            rest = rest[1..];
+            rest = try f.codeTable(fse.LlTable, &f.tables.ll, &f.entropy.ll, @truncate(modes >> 6), codes.max_ll, codes.max_ll_log, &codes.ll_base, &codes.ll_bits, &fse.ll_default, in, rest);
+            rest = try f.codeTable(fse.OfTable, &f.tables.of, &f.entropy.of, @truncate(modes >> 4), codes.max_of, codes.max_of_log, &codes.of_base, &codes.of_bits, &fse.of_default, in, rest);
+            rest = try f.codeTable(fse.MlTable, &f.tables.ml, &f.entropy.ml, @truncate(modes >> 2), codes.max_ml, codes.max_ml_log, &codes.ml_base, &codes.ml_bits, &fse.ml_default, in, rest);
             f.entropy.fse_ready = true;
         }
-        return .{ .count = count, .ip = ip };
+        return .{ .count = count, .stream = rest, .at = in.len - rest.len };
     }
 
     fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals) Error!usize {
         const header = try f.sequenceHeader(in, lit_len);
-        const ip = header.ip;
+        const ip = header.at;
         const count = header.count;
         const at = lit_len;
         var op = op_start;
@@ -348,12 +369,12 @@ pub const Frame = struct {
             // output may not overtake the next unread one; elsewhere the
             // block's limit is fixed.
             if (partial) {
-                try f.execute(true, false, in[ip..], count, &op, &lp, lits, ip);
+                try f.execute(true, false, header.stream, count, &op, &lp, lits, ip);
                 if (f.stopped) return op - op_start;
             } else if (lits.in_out != null and lits.limit == f.out.len) {
-                try f.execute(false, true, in[ip..], count, &op, &lp, lits, ip);
+                try f.execute(false, true, header.stream, count, &op, &lp, lits, ip);
             } else {
-                try f.execute(false, false, in[ip..], count, &op, &lp, lits, ip);
+                try f.execute(false, false, header.stream, count, &op, &lp, lits, ip);
             }
         }
         // The literals after the last sequence.
@@ -400,8 +421,8 @@ pub const Frame = struct {
             return err;
         };
         prepared.count = header.count;
-        prepared.stream = in[header.ip..];
-        prepared.at = header.ip;
+        prepared.stream = header.stream;
+        prepared.at = header.at;
         prepared.tables.ll = f.entropy.ll.*;
         prepared.tables.ml = f.entropy.ml.*;
         prepared.tables.of = f.entropy.of.*;
@@ -416,10 +437,11 @@ pub const Frame = struct {
         var rep2 = f.entropy.reps[2];
         const out = f.out;
         const prefix = f.start;
-        const dict = f.dict;
         const literal_len = prepared.literal_len;
         const at = prepared.at;
         const lit = prepared.literals;
+        // The worker decoded `count` sequences into `seqs`.
+        aegis.assert.invariant(prepared.count <= prepared.seqs.len, "prepared.count <= prepared.seqs.len");
         for (prepared.seqs[0..prepared.count]) |q| {
             const ll: usize = q.ll;
             const ml: usize = q.ml;
@@ -455,30 +477,31 @@ pub const Frame = struct {
                 if (ll > 16) wildCopy16(dst + 16, lit.ptr + l + 16, ll - 16);
                 if (offset <= o_lit - prefix) {
                     const match = out.ptr + o_lit;
+                    aegis.assert.invariant(offset <= o_lit, "offset <= o_lit");
                     if (offset >= 16) wildCopy16(match, match - offset, ml) else overlapCopy(match, match - offset, offset, ml);
-                } else {
-                    const back = offset - (o_lit - prefix);
-                    if (back > dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
-                    const first = @min(ml, back);
-                    @memcpy(out[o_lit..][0..first], dict[dict.len - back ..][0..first]);
-                    if (first < ml) repeat(out[o_lit + first ..].ptr, out[prefix..].ptr, ml - first);
-                }
+                } else try f.fromDictionary(o_lit, ml, offset - (o_lit - prefix), at);
             } else {
-                try f.executeCarefully(o, lit[l..literal_len], ll, ml, offset, out.len, at);
+                try f.executeCarefully(o, lit, literal_len, l, ll, ml, offset, out.len, at);
             }
             o = o_end;
             l = l_end;
         }
         if (!prepared.complete) return f.fail(error.InvalidStream, at, .bitstream_left);
-        const last = literal_len - l;
-        if (last > out.len - o) return f.fail(error.OutputTooSmall, at, .bad_length);
-        @memcpy(out[o..][0..last], lit[l..][0..last]);
+        // Each sequence read its literals from the section and wrote
+        // inside the output.
+        aegis.assert.invariant(literal_len <= lit.len, "literal_len <= lit.len");
+        aegis.assert.invariant(l <= literal_len, "l <= literal_len");
+        aegis.assert.invariant(o <= out.len, "o <= out.len");
+        const rest = lit[l..literal_len];
+        if (rest.len > out.len - o) return f.fail(error.OutputTooSmall, at, .bad_length);
+        @memcpy(out[o..][0..rest.len], rest);
+        const last = rest.len;
         f.entropy.reps = .{ rep0, rep1, rep2 };
         return o + last - op_start;
     }
 
-    /// Set up one code's table from its mode; returns the bytes of its
-    /// description.
+    /// Set up one code's table from its mode, described at the start of
+    /// `rest` (the end of the block `in`); returns what follows it.
     fn codeTable(
         f: *Frame,
         comptime T: type,
@@ -491,31 +514,32 @@ pub const Frame = struct {
         extra: []const u8,
         default: *const T,
         in: []const u8,
-        ip: usize,
-    ) Error!usize {
+        rest: []const u8,
+    ) Error![]const u8 {
+        const ip = in.len - rest.len;
         switch (mode) {
             0 => {
                 current.* = default;
-                return 0;
+                return rest;
             },
             1 => {
-                if (ip >= in.len) return f.fail(error.InvalidStream, ip, .bad_fse_table);
-                if (in[ip] > max) return f.fail(error.InvalidStream, ip, .bad_fse_table);
-                own.rle(in[ip], base, extra);
+                if (rest.len == 0) return f.fail(error.InvalidStream, ip, .bad_fse_table);
+                if (rest[0] > max) return f.fail(error.InvalidStream, ip, .bad_fse_table);
+                own.rle(rest[0], base, extra);
                 current.* = own;
-                return 1;
+                return rest[1..];
             },
             2 => {
                 var counts: fse.Counts = undefined;
-                fse.readCounts(in[ip..], max, &counts) catch return f.fail(error.InvalidStream, ip, .bad_fse_table);
+                fse.readCounts(rest, max, &counts) catch return f.fail(error.InvalidStream, ip, .bad_fse_table);
                 if (counts.log > max_log) return f.fail(error.InvalidStream, ip, .bad_fse_table);
                 own.build(counts.norm[0 .. @as(usize, counts.max_symbol) + 1], counts.log, base, extra);
                 current.* = own;
-                return counts.len;
+                return rest[@min(rest.len, counts.len)..];
             },
             3 => {
                 if (!f.entropy.fse_ready) return f.fail(error.InvalidStream, ip, .repeat_first);
-                return 0;
+                return rest;
             },
         }
     }
@@ -572,6 +596,7 @@ pub const Frame = struct {
 
             // ---- execute ----
             if (partial) {
+                aegis.assert.invariant(l <= lits.len, "l <= lits.len");
                 try f.executePrefix(&o, lits.cursor.?, lits.len - l, ll, ml, offset, at);
                 if (f.stopped) {
                     op.* = o;
@@ -593,26 +618,20 @@ pub const Frame = struct {
                 const m = out.ptr + o_lit;
                 if (offset <= o_lit - prefix) {
                     @branchHint(.likely);
+                    aegis.assert.invariant(offset <= o_lit, "offset <= o_lit");
                     const src = m - offset;
                     if (offset >= 16) {
                         wildCopy32(m, src, ml);
                     } else {
                         overlapCopy(m, src, offset, ml);
                     }
-                } else {
-                    // From the dictionary, maybe on into the frame.
-                    const back = offset - (o_lit - prefix);
-                    if (back > f.dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
-                    const first = @min(ml, back);
-                    @memcpy(m[0..first], f.dict[f.dict.len - back ..][0..first]);
-                    if (first < ml) repeat(m + first, out.ptr + prefix, ml - first);
-                }
+                } else try f.fromDictionary(o_lit, ml, offset - (o_lit - prefix), at);
                 o = o_end;
                 continue;
             }
             // A literal length past the section puts the unread literal past
             // the output's end: the output's end comes first.
-            try f.executeCarefully(o, lits.bytes[l..lits.len], ll, ml, offset, @min(write_limit, lits_limit), at);
+            try f.executeCarefully(o, lits.bytes, lits.len, l, ll, ml, offset, @min(write_limit, lits_limit), at);
             l = l_end;
             o = o_end;
         }
@@ -620,6 +639,22 @@ pub const Frame = struct {
         f.entropy.reps = rep;
         op.* = o;
         lp.* = l;
+    }
+
+    /// A match from `back` bytes before the frame, in the dictionary, maybe
+    /// running on into the frame: out of line, as the frame's history
+    /// usually holds a match.
+    noinline fn fromDictionary(f: *Frame, o_lit: usize, ml: usize, back: usize, at: usize) Error!void {
+        if (back > f.dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
+        // The caller has room for the match, after the frame's start.
+        aegis.assert.invariant(f.start <= o_lit, "f.start <= o_lit");
+        aegis.assert.invariant(o_lit <= f.out.len, "o_lit <= f.out.len");
+        aegis.assert.invariant(ml <= f.out.len - o_lit, "ml <= f.out.len - o_lit");
+        const target = f.out[o_lit..][0..ml];
+        const from = f.dict[f.dict.len - back ..];
+        const first = @min(target.len, from.len);
+        @memcpy(target[0..first], from[0..first]);
+        if (first < target.len) repeat(target[first..].ptr, f.out[f.start..o_lit].ptr, target.len - first);
     }
 
     fn readLiterals(f: *Frame, cursor: *LiteralCursor, out: []u8, at: usize) Error!void {
@@ -634,42 +669,47 @@ pub const Frame = struct {
 
     fn executePartial(f: *Frame, o: usize, cursor: *LiteralCursor, remaining: usize, ll: usize, ml: usize, offset: usize, at: usize) Error!usize {
         if (ll > remaining) return f.fail(error.InvalidStream, at, .bad_length);
+        // The output so far is inside the output.
+        aegis.assert.invariant(o <= f.out.len, "o <= f.out.len");
         const lit = @min(ll, f.out.len - o);
         try f.readLiterals(cursor, f.out[o..][0..lit], at);
         if (lit < ll) return lit;
         const start = o + lit;
         const match = @min(ml, f.out.len - start);
         if (offset > start - f.start) {
-            const back = offset - (start - f.start);
-            if (back > f.dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
-            const first = @min(match, back);
-            @memcpy(f.out[start..][0..first], f.dict[f.dict.len - back ..][0..first]);
-            if (first < match) repeat(f.out[start + first ..].ptr, f.out[f.start..].ptr, match - first);
+            try f.fromDictionary(start, match, offset - (start - f.start), at);
         } else {
             if (offset == 0) return f.fail(error.InvalidStream, at, .bad_offset);
-            repeat(f.out[start..].ptr, f.out[start - offset ..].ptr, match);
+            aegis.assert.invariant(start <= f.out.len, "start <= f.out.len");
+            const written = f.out[0..start];
+            aegis.assert.invariant(offset <= written.len, "offset <= written.len");
+            repeat(f.out[start..].ptr, written[written.len - offset ..].ptr, match);
         }
         return lit + match;
     }
 
-    /// One sequence with every bound checked and exact copies; `lits` are
-    /// the literals not yet read, `limit` the end of what it may write.
-    fn executeCarefully(f: *Frame, o: usize, lits: []const u8, ll: usize, ml: usize, offset: usize, limit: usize, at: usize) Error!void {
-        const out = f.out;
-        if (o > limit or ll + ml > limit - o) return f.fail(error.OutputTooSmall, at, .bad_length);
+    /// One sequence with every bound checked and exact copies; the
+    /// section's literals are `section[0..len]`, those from `l` not yet
+    /// read, and `limit` the end of what it may write.
+    fn executeCarefully(f: *Frame, o: usize, section: []const u8, len: usize, l: usize, ll: usize, ml: usize, offset: usize, limit: usize, at: usize) Error!void {
+        // The literals read so far are a prefix of the section's.
+        aegis.assert.invariant(len <= section.len, "len <= section.len");
+        aegis.assert.invariant(l <= len, "l <= len");
+        const lits = section[l..len];
+        // The callers' limits are inside the output.
+        aegis.assert.invariant(limit <= f.out.len, "limit <= f.out.len");
+        const room = f.out[0..limit];
+        if (o > room.len or ll + ml > room.len - o) return f.fail(error.OutputTooSmall, at, .bad_length);
         if (ll > lits.len) return f.fail(error.InvalidStream, at, .bad_length);
-        @memmove(out[o..][0..ll], lits[0..ll]);
+        aegis.assert.invariant(ll <= room.len - o, "ll <= room.len - o");
+        @memmove(room[o..][0..ll], lits[0..ll]);
         const o_lit = o + ll;
-        if (offset > o_lit - f.start) {
-            // Into the dictionary, maybe on into the frame.
-            const back = offset - (o_lit - f.start);
-            if (back > f.dict.len) return f.fail(error.InvalidStream, at, .bad_offset);
-            const first = @min(ml, back);
-            @memcpy(out[o_lit..][0..first], f.dict[f.dict.len - back ..][0..first]);
-            if (first < ml) repeat(out[o_lit + first ..].ptr, out[f.start..].ptr, ml - first);
-            return;
-        }
-        repeat(out[o_lit..].ptr, out[o_lit - offset ..].ptr, ml);
+        if (offset > o_lit - f.start) return f.fromDictionary(o_lit, ml, offset - (o_lit - f.start), at);
+        // Behind the match, which the guard above keeps inside the room.
+        aegis.assert.invariant(o_lit <= room.len, "o_lit <= room.len");
+        const written = room[0..o_lit];
+        aegis.assert.invariant(offset <= written.len, "offset <= written.len");
+        repeat(room[o_lit..].ptr, written[written.len - offset ..].ptr, ml);
     }
 };
 
@@ -951,5 +991,8 @@ inline fn readState(comptime State: type, r: *bits.Reader, log: u4) State {
 
 /// Fetch a decoded prefix while its remaining sequence bits are read.
 inline fn prefetchMatch(out: []u8, o: usize, prefix: usize, offset: usize) void {
-    if (builtin.cpu.arch == .aarch64 and offset <= o - prefix) @prefetch(out.ptr + o - offset, .{});
+    if (builtin.cpu.arch == .aarch64 and offset <= o - prefix) {
+        aegis.assert.invariant(offset <= o, "offset <= o");
+        @prefetch(out.ptr + o - offset, .{});
+    }
 }

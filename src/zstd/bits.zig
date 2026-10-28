@@ -12,16 +12,17 @@
 //! them, so a broken stream is refused at the same point.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const Reader = struct {
-    /// Eight bytes of the stream, little-endian: `stream[at..][0..8]`, or
-    /// the whole stream when it is shorter.
+    /// Eight bytes of the stream, little-endian: the last eight of `head`,
+    /// or the whole stream when it is shorter.
     container: u64,
     /// Bits of `container` already read, counted from its top.
     consumed: u32,
-    /// Where `container` was loaded from.
-    at: usize,
-    stream: []const u8,
+    /// The stream up to the end of what `container` was loaded from: its
+    /// bytes not yet loaded, then the register's eight.
+    head: []const u8,
 
     pub const Status = enum(u2) {
         /// At least 57 bits are in the register.
@@ -43,12 +44,11 @@ pub const Reader = struct {
         // The closing bit and the zeros above it.
         const pad: u32 = 1 + @as(u32, @clz(last));
         if (stream.len >= 8) {
-            const at = stream.len - 8;
-            return .{ .container = std.mem.readInt(u64, stream[at..][0..8], .little), .consumed = pad, .at = at, .stream = stream };
+            return .{ .container = std.mem.readInt(u64, stream[stream.len - 8 ..][0..8], .little), .consumed = pad, .head = stream };
         }
         var container: u64 = 0;
         for (stream, 0..) |b, i| container |= @as(u64, b) << @intCast(8 * i);
-        return .{ .container = container, .consumed = pad + @as(u32, @intCast(8 - stream.len)) * 8, .at = 0, .stream = stream };
+        return .{ .container = container, .consumed = pad + @as(u32, @intCast(8 - stream.len)) * 8, .head = stream };
     }
 
     /// The next `n` bits (1 to 63) without taking them; zeros past the
@@ -80,10 +80,8 @@ pub const Reader = struct {
     /// Refill the register from the stream.
     pub inline fn reload(r: *Reader) Status {
         if (r.consumed > 64) return .overflow;
-        if (r.at >= 8) {
-            r.at -= r.consumed >> 3;
-            r.consumed &= 7;
-            r.container = std.mem.readInt(u64, r.stream[r.at..][0..8], .little);
+        if (r.head.len >= 16) {
+            r.back();
             return .unfinished;
         }
         return r.reloadNearStart();
@@ -93,30 +91,40 @@ pub const Reader = struct {
     /// stream's start, say `overflow` and leave the register as it is: a
     /// lock-step decoder stops there and finishes with `reload`.
     pub inline fn reloadFast(r: *Reader) Status {
-        if (r.at < 8 or r.consumed > 64) return .overflow;
-        r.at -= r.consumed >> 3;
-        r.consumed &= 7;
-        r.container = std.mem.readInt(u64, r.stream[r.at..][0..8], .little);
+        if (r.head.len < 16 or r.consumed > 64) return .overflow;
+        r.back();
         return .unfinished;
     }
 
+    /// Load the register again, back by the whole bytes read, with eight
+    /// bytes before it and at most 64 bits read.
+    inline fn back(r: *Reader) void {
+        const n = r.consumed >> 3;
+        // At most eight bytes back, and eight still before the register.
+        aegis.assert.invariant(n <= 8, "n <= 8");
+        aegis.assert.invariant(n <= r.head.len - 8, "n <= r.head.len - 8");
+        r.head = r.head[0 .. r.head.len - n];
+        r.consumed &= 7;
+        r.container = std.mem.readInt(u64, r.head[r.head.len - 8 ..][0..8], .little);
+    }
+
     fn reloadNearStart(r: *Reader) Status {
-        if (r.at == 0) return if (r.consumed < 64) .end_of_buffer else .completed;
-        var n: usize = r.consumed >> 3;
-        var status: Status = .unfinished;
-        if (n > r.at) {
-            n = r.at;
-            status = .end_of_buffer;
-        }
-        r.at -= n;
-        r.consumed -= @intCast(n * 8);
-        r.container = std.mem.readInt(u64, r.stream[r.at..][0..8], .little);
-        return status;
+        if (r.head.len <= 8) return if (r.consumed < 64) .end_of_buffer else .completed;
+        // The bytes not yet loaded.
+        const before = r.head.len - 8;
+        // `reload` has refused more than 64 bits read.
+        aegis.assert.invariant(r.consumed <= 64, "r.consumed <= 64");
+        const whole = r.consumed >> 3;
+        const n = @min(whole, before);
+        r.head = r.head[0 .. r.head.len - n];
+        r.consumed -= n * 8;
+        r.container = std.mem.readInt(u64, r.head[r.head.len - 8 ..][0..8], .little);
+        return if (whole > before) .end_of_buffer else .unfinished;
     }
 
     /// Every bit read, and no more.
     pub fn finished(r: *const Reader) bool {
-        return r.at == 0 and r.consumed == 64;
+        return r.head.len <= 8 and r.consumed == 64;
     }
 };
 
