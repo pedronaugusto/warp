@@ -96,7 +96,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "lzma", .patterns = &.{"src/lzma.zig"} },
     .{ .name = "xz parts", .patterns = &.{ "src/xz/filter.zig", "src/xz/format.zig" } },
     .{ .name = "xz frame", .patterns = &.{ "src/xz/Decompressor.zig", "src/xz/Compressor.zig" } },
-    .{ .name = "xz stream", .patterns = &.{ "src/xz/Decompress.zig", "src/xz/Compress.zig" } },
+    .{ .name = "xz stream", .patterns = &.{ "src/xz/Decompress.zig", "src/xz/Compress.zig", "src/xz/FilterReader.zig" } },
     .{ .name = "xz parallel decode", .patterns = &.{ "src/xz/parallel/Decompressor.zig", "src/xz/parallel/Compressor.zig" } },
     .{ .name = "xz parallel", .patterns = &.{"src/xz/parallel.zig"} },
     .{ .name = "xz", .patterns = &.{"src/xz.zig"} },

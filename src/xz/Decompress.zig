@@ -79,8 +79,6 @@ const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .stream_header, 
     .{ .from = .stream_padding, .on = .next, .to = .stream_header },
 } });
 
-const pipe_len = 4096;
-
 /// A running check over a block's output.
 const Hasher = format.Hasher;
 
@@ -101,11 +99,8 @@ block_in: u64 = 0,
 block_out: u64 = 0,
 pad: u64 = 0,
 /// The pipe of a block with filters: bytes from LZMA2 not yet given out,
-/// and how many of them each converter has done.
-pipe: [pipe_len]u8 = undefined,
-fill: usize = 0,
-converted: [3]usize = @splat(0),
-states: [3]filter_.State = undefined,
+/// and the converters over them.
+pipe: filter_.Pipe = .{},
 /// The blocks' records and the index's, hashed; the index's fields.
 blocks: Decompressor.Records = .{},
 records: Decompressor.Records = .{},
@@ -276,9 +271,7 @@ fn blockHeader(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
     z.block_in = 0;
     z.block_out = 0;
     z.pad = 0;
-    z.fill = 0;
-    z.converted = @splat(0);
-    for (z.header.filters[0..z.header.filter_count], 0..) |f, i| z.states[i] = .init(f);
+    if (z.header.filter_count != 0) z.pipe.reset(z.header.filters[0..z.header.filter_count]);
     z.gathered = 0;
     return true;
 }
@@ -347,7 +340,7 @@ fn blockData(z: *Decompress, in: []const u8, ip: *usize, out: []u8, op: *usize) 
             break :cap @intCast(@min(in.len - ip.*, c - z.block_in));
         } else in.len - ip.*;
         const filtered = h.filter_count != 0;
-        const dest = if (filtered) z.pipe[z.fill..] else out[op.*..];
+        const dest = if (filtered) z.pipe.room() else out[op.*..];
         const out_cap: usize = if (h.uncompressed) |u| cap: {
             if (z.block_out > u) return z.fail(error.InvalidStream, z.offset +| ip.*, .block_size);
             break :cap @intCast(@min(dest.len, u - z.block_out));
@@ -372,44 +365,26 @@ fn blockData(z: *Decompress, in: []const u8, ip: *usize, out: []u8, op: *usize) 
             }
         }
         if (filtered) {
-            z.fill += produced;
-            z.convert(z.lzma2.done());
+            z.pipe.added(produced);
+            z.pipe.convert(z.lzma2.done());
             // Give out what every converter has done.
-            const ready = z.converted[h.filter_count - 1];
-            const n = @min(ready, out.len - op.*);
-            @memcpy(out[op.*..][0..n], z.pipe[0..n]);
-            z.hasher.update(z.pipe[0..n]);
+            const ready = z.pipe.ready();
+            const n = @min(ready.len, out.len - op.*);
+            @memcpy(out[op.*..][0..n], ready[0..n]);
+            z.hasher.update(ready[0..n]);
             op.* += n;
-            @memmove(z.pipe[0 .. z.fill - n], z.pipe[n..z.fill]);
-            z.fill -= n;
-            for (z.converted[0..h.filter_count]) |*c| c.* -= n;
+            z.pipe.take(n);
         } else {
             z.hasher.update(dest[0..produced]);
             op.* += produced;
         }
-        if (z.lzma2.done() and z.fill == 0) {
+        if (z.lzma2.done() and (!filtered or z.pipe.empty())) {
             if (h.compressed) |c| if (z.block_in != c) return z.fail(error.InvalidStream, z.offset + ip.*, .block_size);
             if (h.uncompressed) |u| if (z.block_out != u) return z.fail(error.InvalidStream, z.offset + ip.*, .block_size);
             return .done;
         }
         if (op.* == out.len) return .output_full;
         if (short) return .need_input;
-    }
-}
-
-/// Each converter over what the one before it has done; at the block's end
-/// a converter's tail goes on as it is.
-fn convert(z: *Decompress, ended: bool) void {
-    const h = &z.header;
-    var i: usize = 0;
-    while (i < h.filter_count) : (i += 1) {
-        // Decoding runs the chain from the last filter to the first.
-        const f = h.filters[h.filter_count - 1 - i];
-        const avail = if (i == 0) z.fill else z.converted[i - 1];
-        const n = filter_.run(f, &z.states[i], z.pipe[z.converted[i]..avail], false);
-        z.converted[i] += n;
-        const before_done = i == 0 or z.converted[i - 1] == z.fill;
-        if (ended and before_done) z.converted[i] = avail;
     }
 }
 

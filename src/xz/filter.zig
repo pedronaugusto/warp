@@ -7,6 +7,7 @@
 //! decoders keep the tail and the converter's state between calls.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const Id = enum(u64) {
     delta = 0x03,
@@ -98,6 +99,79 @@ pub const State = struct {
             .delta => .{},
             .bcj => |b| .{ .pos = b.start },
         };
+    }
+};
+
+/// A decoding chain of up to three filters over a buffer: bytes go in at
+/// the end, each converter runs over what the one before it has done (the
+/// last filter of the chain first), and what the chain's first filter has
+/// done comes out from the front. Each converter holds back the tail it
+/// cannot convert yet, as liblzma's do, until the input ends.
+pub const Pipe = struct {
+    buf: [len]u8 = undefined,
+    /// The bytes in `buf`.
+    fill: usize = 0,
+    /// How many of them each converter, in decoding order, has done.
+    converted: [3]usize = @splat(0),
+    /// The converters in decoding order, each with its state.
+    filters: [3]Filter = undefined,
+    states: [3]State = undefined,
+    count: usize = 0,
+
+    pub const len = 4096;
+
+    /// Empty, for `chain` in the stream's order (the filter applied first
+    /// when encoding first), one to three filters.
+    pub fn reset(p: *Pipe, chain: []const Filter) void {
+        aegis.assert.invariant(chain.len >= 1, "chain.len >= 1");
+        aegis.assert.invariant(chain.len <= 3, "chain.len <= 3");
+        p.fill = 0;
+        p.converted = @splat(0);
+        p.count = chain.len;
+        for (0..chain.len) |i| {
+            const f = chain[chain.len - 1 - i];
+            p.filters[i] = f;
+            p.states[i] = .init(f);
+        }
+    }
+
+    /// Where more input goes; `added` takes what was put there.
+    pub fn room(p: *Pipe) []u8 {
+        return p.buf[p.fill..];
+    }
+
+    pub fn added(p: *Pipe, n: usize) void {
+        aegis.assert.invariant(n <= len - p.fill, "n <= len - p.fill");
+        p.fill += n;
+    }
+
+    /// Run each converter over what the one before it has done; once the
+    /// input has `ended`, a converter's tail goes on as it is.
+    pub fn convert(p: *Pipe, ended: bool) void {
+        for (0..p.count) |i| {
+            const avail = if (i == 0) p.fill else p.converted[i - 1];
+            p.converted[i] += run(p.filters[i], &p.states[i], p.buf[p.converted[i]..avail], false);
+            const before_done = i == 0 or p.converted[i - 1] == p.fill;
+            if (ended and before_done) p.converted[i] = avail;
+        }
+    }
+
+    /// What the whole chain has done, ready to give out.
+    pub fn ready(p: *const Pipe) []const u8 {
+        return p.buf[0..p.converted[p.count - 1]];
+    }
+
+    /// Give out the first `n` ready bytes.
+    pub fn take(p: *Pipe, n: usize) void {
+        aegis.assert.invariant(n <= p.converted[p.count - 1], "n <= p.converted[p.count - 1]");
+        @memmove(p.buf[0 .. p.fill - n], p.buf[n..p.fill]);
+        p.fill -= n;
+        for (p.converted[0..p.count]) |*c| c.* -= n;
+    }
+
+    /// Whether every byte put in has been given out.
+    pub fn empty(p: *const Pipe) bool {
+        return p.fill == 0;
     }
 };
 

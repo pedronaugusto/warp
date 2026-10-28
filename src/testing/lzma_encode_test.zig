@@ -138,6 +138,23 @@ fn xzRoundTrip(gpa: std.mem.Allocator, options: xz.Compressor.Options, in: []con
     const r = try d.decompress(out[0..n], back, .{});
     try testing.expectEqual(n, r.in_len);
     try testing.expectEqualSlices(u8, in, back[0..r.out_len]);
+    // The resumable decoder, given the stream and room for its output in
+    // pieces, pairs each converter with its own filter as the whole-buffer
+    // one does (a chain with a start offset once decoded wrong).
+    const window = try gpa.alloc(u8, xz.Decompress.windowLength(options.lzma.dictionary));
+    defer gpa.free(window);
+    var z: xz.Decompress = .init(window, .{ .streams = .one });
+    var ip: usize = 0;
+    var op: usize = 0;
+    while (true) {
+        const step = try z.decode(out[ip..n][0..@min(n - ip, 777)], back[op..][0..@min(back.len - op, 1001)]);
+        ip += step.in_len;
+        op += step.out_len;
+        if (step.status == .done) break;
+        try testing.expect(step.in_len != 0 or step.out_len != 0);
+    }
+    try testing.expectEqual(n, ip);
+    try testing.expectEqualSlices(u8, in, back[0..op]);
     // Every block header names its sizes: the parallel decoder splits them.
     var stats: xz.parallel.Decompressor.Statistics = .{};
     var p: xz.parallel.Decompressor = try .init(gpa, .{ .concurrency = 2, .statistics = &stats });

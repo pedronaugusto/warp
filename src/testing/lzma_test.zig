@@ -368,3 +368,49 @@ test "the parallel .xz decoder answers as the whole-buffer one, and decodes mult
     // ones with sizes.
     try testing.expect(parallel_blocks >= 14);
 }
+
+test "liblzma's filtered .xz streams: their LZMA2 through xz.FilterReader, one reader a filter, is the input" {
+    const format = @import("../xz/format.zig");
+    const gpa = testing.allocator;
+    const c = try corpus.Corpus.parse(streams_corpus);
+    var it = c.records();
+    var count: usize = 0;
+    while (it.next()) |r| {
+        if (!std.mem.eql(u8, r.fields[1], "xz") or std.mem.find(u8, r.fields[2], "filters ") == null) continue;
+        errdefer std.debug.print("{s} ({s}): {s}\n", .{ r.fields[1], r.fields[2], r.fields[3] });
+        count += 1;
+        const in = try input(gpa, r.fields[3]);
+        defer gpa.free(in);
+        const stream = r.fields[4];
+        const check = switch (format.streamHeader(stream[0..format.header_len])) {
+            .check => |k| k,
+            .fault => return error.TestUnexpectedResult,
+        };
+        const block = stream[format.header_len..];
+        const header = switch (format.blockHeader(block[0 .. (@as(usize, block[0]) + 1) * 4], check)) {
+            .header => |h| h,
+            .fault => return error.TestUnexpectedResult,
+        };
+        // liblzma's filtered bytes: the block's LZMA2, decoded alone.
+        var source: std.Io.Reader = .fixed(block[header.len..]);
+        const window = try gpa.alloc(u8, lzma.Decompress.windowLength(header.dictionary));
+        defer gpa.free(window);
+        var lzma_buffer: [4096]u8 = undefined;
+        var lzma2: lzma.Decompress.Reader = .init(&source, &lzma_buffer, window, .{ .lzma2 = .{ .dictionary = header.dictionary } }, .{});
+        // Each filter undone, the last applied first.
+        var readers: [3]xz.FilterReader = undefined;
+        var buffers: [3][300]u8 = undefined;
+        var top: *std.Io.Reader = &lzma2.interface;
+        var i: usize = header.filter_count;
+        while (i > 0) {
+            i -= 1;
+            readers[i] = .init(top, &buffers[i], header.filters[i]);
+            top = &readers[i].interface;
+        }
+        const out = try gpa.alloc(u8, in.len + 1);
+        defer gpa.free(out);
+        const n = try top.readSliceShort(out);
+        try testing.expectEqualSlices(u8, in, out[0..n]);
+    }
+    try testing.expectEqual(12, count);
+}
