@@ -97,7 +97,7 @@ const ReaderSource = struct {
         src.r.toss(used);
         s.in_base += used;
         s.bitsleft &= 7;
-        s.bitbuf &= (@as(u64, 1) << @intCast(s.bitsleft)) - 1;
+        s.bitbuf &= ~(~@as(u64, 0) << s.bitsleft);
         const before = src.r.bufferedLen();
         src.r.fillMore() catch |err| switch (err) {
             error.EndOfStream => src.ended = true,

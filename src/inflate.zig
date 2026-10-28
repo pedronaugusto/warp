@@ -128,8 +128,9 @@ pub const Stream = struct {
     /// input that does not exist.
     ip: usize,
     bitbuf: u64 = 0,
-    /// How many of `bitbuf`'s low bits are loaded and not consumed.
-    bitsleft: u32 = 0,
+    /// How many of `bitbuf`'s low bits are loaded and not consumed: at
+    /// most 63, as loads stop at 56 and add at most 7 more.
+    bitsleft: u6 = 0,
     /// Zero bytes loaded past the end of the input. They sit above every
     /// real bit, so consuming one of their bits leaves `bitsleft` below
     /// `8 * virtual`.
@@ -199,7 +200,7 @@ pub const Stream = struct {
     /// The low `n` bits.
     pub inline fn peek(s: *const Stream, n: u6) u32 {
         // safe: at most 32 bits asked for
-        return @truncate(s.bitbuf & ((@as(u64, 1) << n) - 1));
+        return @truncate(s.bitbuf & ~(~@as(u64, 0) << n));
     }
 
     /// At least `n` bits in hand (`n` <= 56): real ones while the input has
@@ -207,8 +208,9 @@ pub const Stream = struct {
     pub inline fn need(s: *Stream, source: anytype, n: u32) void {
         if (s.bitsleft >= n) return;
         if (s.ip + 8 <= s.in.len) {
-            s.bitbuf |= std.mem.readInt(u64, s.in[s.ip..][0..8], .little) << @intCast(s.bitsleft);
-            s.ip += (63 - s.bitsleft) >> 3;
+            s.bitbuf |= std.mem.readInt(u64, s.in[s.ip..][0..8], .little) << s.bitsleft;
+            // `~bitsleft` is 63 less it: the whole bytes that fit.
+            s.ip += ~s.bitsleft >> 3;
             s.bitsleft |= 56;
             return;
         }
@@ -224,7 +226,7 @@ pub const Stream = struct {
                 s.virtual += 1;
                 break :blk 0;
             };
-            s.bitbuf |= byte << @intCast(s.bitsleft);
+            s.bitbuf |= byte << s.bitsleft;
             s.ip += 1;
             s.bitsleft += 8;
         }
@@ -243,7 +245,7 @@ pub const Stream = struct {
     /// bytes still in the bit buffer: `ip` is then the next byte. Those
     /// bytes were loaded from `in` (a unit finished in this input).
     pub fn alignToByte(s: *Stream) void {
-        s.consume(@intCast(s.bitsleft & 7));
+        s.consume(s.bitsleft & 7);
         aegis.assert.invariant(s.bitsleft / 8 <= s.ip, "s.bitsleft / 8 <= s.ip");
         s.ip -= s.bitsleft / 8;
         s.bitbuf = 0;
@@ -381,7 +383,7 @@ inline fn blockHeader(s: *Stream, source: anytype, state: *State) Error!State.Ph
     const final = header & 1 != 0;
     switch (header >> 1) {
         0 => {
-            s.consume(@intCast(s.bitsleft & 7));
+            s.consume(s.bitsleft & 7);
             state.go(.header, .stored);
         },
         1 => {
@@ -434,7 +436,7 @@ fn precode(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     defer state.read = read;
     if (read == 0) t.pre = @splat(0);
     while (read < state.hclen) {
-        const len: u8 = @intCast(try s.take(source, 3));
+        const len: u3 = @truncate(try s.take(source, 3));
         t.pre[precode_order[read]] = len;
         read += 1;
         source.commit(s);
@@ -478,13 +480,13 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
             17 => 3,
             else => 7,
         };
-        const repeat_base: u16 = switch (sym) {
+        const repeat_base: u4 = switch (sym) {
             16 => 3,
             17 => 3,
             else => 11,
         };
         s.consume(len);
-        const repeat = repeat_base + @as(u16, @intCast(try s.take(source, repeat_bits)));
+        const repeat = @as(u16, repeat_base) + @as(u7, @truncate(try s.take(source, repeat_bits)));
         const fill: u8 = if (sym == 16) blk: {
             if (i == 0) return s.fail(.bad_code_lengths);
             break :blk lens[i - 1];
@@ -679,7 +681,7 @@ fn leaveFast(s: *Stream, output: anytype, r: *const Fast, op: usize, exit: FastE
     s.ip = r.ip;
     output.finish(s, op);
     s.bitbuf = r.bitbuf;
-    s.bitsleft = r.bitsleft & 63;
+    s.bitsleft = @truncate(r.bitsleft);
     switch (exit) {
         .stop => return false,
         .end => return true,

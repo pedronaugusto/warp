@@ -285,7 +285,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .in = in,
         .ip = 0,
         .bitbuf = z.bitbuf,
-        .bitsleft = z.bitsleft,
+        .bitsleft = @intCast(z.bitsleft),
         .in_base = z.in_total,
         .out = out,
         .op = op,
@@ -353,10 +353,10 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
 /// in hand: fewer bits than the unit needs, so fewer than 64.
 fn absorb(z: *Inflate, s: *inflate_.Stream) void {
     // Zero bytes loaded past the end are not the input's.
-    s.bitsleft -= 8 * s.virtual;
+    s.bitsleft -= @intCast(8 * s.virtual);
     s.ip -= s.virtual;
-    var bits = s.bitbuf & ((@as(u64, 1) << @intCast(s.bitsleft)) - 1);
-    var n = s.bitsleft;
+    var bits = s.bitbuf & ~(~@as(u64, 0) << s.bitsleft);
+    var n: u32 = s.bitsleft;
     for (s.in[s.ip..]) |byte| {
         aegis.assert.invariant(n + 8 <= 64, "n + 8 <= 64");
         bits |= @as(u64, byte) << @intCast(n);
@@ -389,7 +389,7 @@ fn ringAppend(z: *Inflate, bytes_in: []const u8) void {
 const Resume = struct {
     ip: usize = 0,
     bitbuf: u64 = 0,
-    bitsleft: u32 = 0,
+    bitsleft: u6 = 0,
     virtual: u32 = 0,
     op: usize = 0,
 
