@@ -11,6 +11,7 @@
 //! it is refused, never depends on the spare output.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Diagnostic = @import("Diagnostic.zig");
 const copy = @import("../match/copy.zig");
 const chainless = copy.chainless;
@@ -58,11 +59,12 @@ pub noinline fn decode(in: []const u8, out: []u8, start: usize, options: Options
     var d: Decoder = .{ .in = in, .out = out, .op = start, .history = options.history, .options = options };
     while (true) {
         d.fast();
-        switch (try d.careful()) {
-            .more => {},
-            .done => return .{ .written = d.out[start..d.op], .finished = true },
-            .full => return .{ .written = d.out[start..d.op], .finished = false },
-        }
+        const next = try d.careful();
+        if (next == .more) continue;
+        // The output cursor only moves forward, inside `out`.
+        aegis.assert.invariant(start <= d.op, "start <= d.op");
+        aegis.assert.invariant(d.op <= d.out.len, "d.op <= d.out.len");
+        return .{ .written = d.out[start..d.op], .finished = next == .done };
     }
 }
 
@@ -133,7 +135,7 @@ const Decoder = struct {
             if (lit != 15) {
                 out[op..][0..16].* = in[ip..][0..16].*;
             } else {
-                lit += extra(in, &ip, in_end) orelse {
+                lit += extra(in[0..in_end], &ip) orelse {
                     ip = seq_ip;
                     return;
                 };
@@ -161,7 +163,7 @@ const Decoder = struct {
         const out = d.out;
         var len = code + min_match;
         if (code == 15) {
-            len += extra(in, ip, in.len - 16) orelse {
+            len += extra(in[0 .. in.len - 16], ip) orelse {
                 ip.* = seq_ip;
                 op.* -= lit;
                 return false;
@@ -181,66 +183,74 @@ const Decoder = struct {
     fn careful(d: *Decoder) Error!Next {
         const in = d.in;
         const out = d.out;
+        // The loops leave both cursors inside their buffers.
+        aegis.assert.invariant(d.ip <= in.len, "d.ip <= in.len");
+        aegis.assert.invariant(d.op <= out.len, "d.op <= out.len");
         const seq_ip = d.ip;
-        if (seq_ip >= in.len) return d.fail(seq_ip, .truncated, error.Truncated);
-        const token = in[d.ip];
-        var ip = d.ip + 1;
+        // What is left of the input, cut as the sequence is read.
+        var rest = in[seq_ip..];
+        if (rest.len == 0) return d.fail(seq_ip, .truncated, error.Truncated);
+        const token = rest[0];
+        rest = rest[1..];
         var lit: usize = token >> 4;
-        if (lit == 15) lit = try d.long(seq_ip, &ip, lit);
-        if (lit > in.len - ip) return d.fail(seq_ip, .truncated, error.Truncated);
-        if (lit > out.len - d.op) {
+        if (lit == 15) lit = try d.long(seq_ip, &rest, lit);
+        if (lit > rest.len) return d.fail(seq_ip, .truncated, error.Truncated);
+        // What is left of the output, cut as it is written.
+        var room = out[d.op..];
+        if (lit > room.len) {
             if (!d.options.partial) return error.OutputTooSmall;
-            const n = out.len - d.op;
-            @memcpy(out[d.op..][0..n], in[ip..][0..n]);
-            d.op += n;
+            @memcpy(room, rest[0..room.len]);
+            d.op = out.len;
             return .full;
         }
-        @memcpy(out[d.op..][0..lit], in[ip..][0..lit]);
-        d.op += lit;
-        ip += lit;
-        d.ip = ip;
+        @memcpy(room[0..lit], rest[0..lit]);
+        room = room[lit..];
+        d.op = out.len - room.len;
+        rest = rest[lit..];
+        d.ip = in.len - rest.len;
         // The last sequence ends the block after its literals.
-        if (ip == in.len) return .done;
-        if (in.len - ip < 2) return d.fail(seq_ip, .truncated, error.Truncated);
-        const offset: usize = std.mem.readInt(u16, in[ip..][0..2], .little);
-        ip += 2;
+        if (rest.len == 0) return .done;
+        if (rest.len < 2) return d.fail(seq_ip, .truncated, error.Truncated);
+        const offset: usize = std.mem.readInt(u16, rest[0..2], .little);
+        rest = rest[2..];
         var len: usize = token & 15;
-        if (len == 15) len = try d.long(seq_ip, &ip, len);
+        if (len == 15) len = try d.long(seq_ip, &rest, len);
         len = std.math.add(usize, len, min_match) catch return d.fail(seq_ip, .length_overflow, error.InvalidStream);
         if (offset == 0) return d.fail(seq_ip, .zero_offset, error.InvalidStream);
-        if (offset > d.op + d.history.len) return d.fail(seq_ip, .offset_too_far, error.InvalidStream);
-        var n = len;
-        if (len > out.len - d.op) {
+        if (offset > d.op and offset - d.op > d.history.len) return d.fail(seq_ip, .offset_too_far, error.InvalidStream);
+        const n = if (len > room.len) n: {
             if (!d.options.partial) return error.OutputTooSmall;
-            n = out.len - d.op;
-        }
+            break :n room.len;
+        } else len;
+        const target = room[0..n];
         if (offset > d.op) {
             // The match starts in the history and may run on into the output.
             const back = offset - d.op;
             const from_history = @min(n, back);
-            const at = d.history.len - back;
-            @memcpy(out[d.op..][0..from_history], d.history[at..][0..from_history]);
-            for (out[d.op + from_history ..][0 .. n - from_history], 0..) |*byte, i| byte.* = out[i];
-        } else for (out[d.op..][0..n], d.op - offset..) |*byte, from| byte.* = out[from];
+            const history = d.history[d.history.len - back ..];
+            @memcpy(target[0..from_history], history[0..from_history]);
+            for (target[from_history..], 0..) |*byte, i| byte.* = out[i];
+        } else for (target, d.op - offset..) |*byte, from| byte.* = out[from];
         d.op += n;
-        d.ip = ip;
+        d.ip = in.len - rest.len;
         return if (n < len) .full else .more;
     }
 
-    /// A length's bytes after its token field's 15, added to `base`.
-    fn long(d: *Decoder, seq_ip: usize, ip: *usize, base: usize) Error!usize {
+    /// A length's bytes after its token field's 15, added to `base`, cut
+    /// from `rest`.
+    fn long(d: *Decoder, seq_ip: usize, rest: *[]const u8, base: usize) Error!usize {
         var total = base;
         while (true) {
-            if (ip.* >= d.in.len) return d.fail(seq_ip, .truncated, error.Truncated);
-            const byte = d.in[ip.*];
-            ip.* += 1;
+            if (rest.len == 0) return d.fail(seq_ip, .truncated, error.Truncated);
+            const byte = rest.*[0];
+            rest.* = rest.*[1..];
             total = std.math.add(usize, total, byte) catch return d.fail(seq_ip, .length_overflow, error.InvalidStream);
             if (byte != 255) return total;
         }
     }
 
     fn fail(d: *Decoder, at: usize, reason: Diagnostic.Reason, err: Error) Error {
-        if (d.options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(d.options.in_base + at), .reason = reason };
+        if (d.options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(d.options.in_base +| at), .reason = reason };
         return err;
     }
 };
@@ -251,12 +261,13 @@ inline fn read16(p: [*]const u8) u16 {
 }
 
 /// A length's bytes after its token field's 15, read while `ip` stays
-/// below `limit`; null where it would not, or where the sum would not fit
-/// a `usize` (the careful loop then refuses it).
-inline fn extra(in: []const u8, ip: *usize, limit: usize) ?usize {
+/// inside `in` (the input cut where the fast loop stops); null where it
+/// would not, or where the sum would not fit a `usize` (the careful loop
+/// then refuses it).
+inline fn extra(in: []const u8, ip: *usize) ?usize {
     var total: usize = 0;
     while (true) {
-        if (ip.* >= limit) return null;
+        if (ip.* >= in.len) return null;
         const byte = in[ip.*];
         ip.* += 1;
         total = std.math.add(usize, total, byte) catch return null;
