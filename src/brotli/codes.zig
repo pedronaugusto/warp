@@ -96,7 +96,7 @@ fn largeLimit(npostfix: u2, ndirect: u7) u32 {
     // The largest distance less NDIRECT (at most 127, which bounds the
     // second part): 31 bits.
     const less = (max_distance - 127) + (127 - @as(u32, ndirect));
-    const reduced: u31 = @truncate(less >> npostfix);
+    const reduced: u31 = @intCast(less >> npostfix);
     const offset = @as(u32, reduced) + 4;
     const postfix = ~(~@as(u4, 0) << npostfix);
     // The bits of `offset / 2` (at least 2), less one: at most 30.
@@ -131,7 +131,7 @@ pub fn distanceRange(symbol: u32, npostfix: u2, ndirect: u7) Range {
     if (symbol < direct) return .{ .offset = symbol - short_distance_codes + 1, .extra = 0 };
     const x = symbol - direct;
     // Shifted by at least one: 31 bits.
-    const ndistbits = @as(u32, @as(u31, @truncate(x >> (@as(u5, npostfix) + 1)))) + 1;
+    const ndistbits = @as(u32, @as(u31, @intCast(x >> (@as(u5, npostfix) + 1)))) + 1;
     const half: u1 = @truncate(x >> npostfix);
     const postfix = x & ~(~@as(u32, 0) << npostfix);
     // The limit keeps a symbol's extra bits to five bits' count.

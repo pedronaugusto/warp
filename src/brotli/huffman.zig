@@ -28,7 +28,7 @@ pub fn maxEntries(alphabet: usize) usize {
 inline fn entry(len: u32, value: u32) Entry {
     std.debug.assert(len <= max_length);
     aegis.assert.invariant(value < 1 << 12, "value < 1 << 12");
-    return (@as(Entry, @as(u12, @truncate(value))) << 4) | @as(u4, @truncate(len));
+    return (@as(Entry, @as(u12, @intCast(value))) << 4) | @as(u4, @intCast(len));
 }
 
 /// Decode one symbol from the table at `table[0..]`. Fast mode reads with

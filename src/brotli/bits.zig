@@ -101,7 +101,16 @@ pub const Reader = struct {
     /// Take `n` (≤ 31) bits.
     pub inline fn bits(r: *Reader, comptime careful: bool, n: u5) NeedInput!u32 {
         try r.fill(careful, n);
-        const v: u31 = @truncate(r.peek(n));
+        const v: u31 = @intCast(r.peek(n));
+        r.drop(n);
+        return v;
+    }
+
+    /// Take `n` (≤ 31) bits, in an integer of their width.
+    pub inline fn take(r: *Reader, comptime careful: bool, comptime n: u5) NeedInput!@Int(.unsigned, n) {
+        try r.fill(careful, n);
+        // The next `n` bits are the low ones loaded.
+        const v: @Int(.unsigned, n) = @truncate(r.buf);
         r.drop(n);
         return v;
     }
