@@ -42,13 +42,28 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
             total_prefix += @reduce(.Add, @as(@Vector(4, u64), prefix[v]));
             total_weighted += @reduce(.Add, @as(@Vector(4, u64), weighted[v]));
         }
-        s2 = (s2 + n * s1 + 64 * total_prefix + total_weighted) % base;
+        // Each sum reduced before it is weighted: every term within base and n times it.
+        s2 = (s2 + n * s1 + 64 * (total_prefix % base) + total_weighted % base) % base;
         s1 = (s1 + total_sum) % base;
         rest = rest[chunks * 64 ..];
     }
-    for (rest) |b| {
-        s1 += b;
-        s2 += s1;
+    // The last bytes as one chunk, zero-padded in front: zeros add nothing to s1 and s1 to s2
+    // once each, so k bytes add k·s1 and their sums weighted k down to 1.
+    if (rest.len != 0) {
+        const k = @min(rest.len, 64);
+        var padded: [64]u8 = @splat(0);
+        @memcpy(padded[64 - k ..], rest[0..k]);
+        var sum: u32x4 = @splat(0);
+        var weighted: u32x4 = @splat(0);
+        inline for (0..4) |v| {
+            const data: u8x16 = padded[v * 16 ..][0..16].*;
+            sum = udot(sum, data, ones);
+            weighted = udot(weighted, data, weights[v]);
+        }
+        const total: u64 = @reduce(.Add, @as(@Vector(4, u64), sum));
+        const total_weighted: u64 = @reduce(.Add, @as(@Vector(4, u64), weighted));
+        s2 = (s2 + k * s1 + total_weighted % base) % base;
+        s1 = (s1 + total % base) % base;
     }
     return @intCast(((s2 % base) << 16) | (s1 % base));
 }

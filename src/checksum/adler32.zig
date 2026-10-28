@@ -89,7 +89,7 @@ pub fn vector(adler: u32, bytes: []const u8) u32 {
     };
     while (rest.len >= block) {
         // A run whose s2 cannot pass 2^32 before it is reduced.
-        const blocks: usize = @min(rest.len / block, max_blocks, nmax / block);
+        const blocks: usize = @min(rest.len / block, @min(max_blocks, nmax / block));
         var columns: @Vector(block, u16) = @splat(0);
         var running: @Vector(8, u32) = @splat(0);
         var prefix: @Vector(8, u32) = @splat(0);
@@ -104,36 +104,53 @@ pub fn vector(adler: u32, bytes: []const u8) u32 {
                 @shuffle(u16, w, undefined, [8]i32{ 24, 25, 26, 27, 28, 29, 30, 31 });
             running +%= @as(@Vector(8, u32), quarters);
         }
-        // In 64 bits: 32 times the prefix sums alone can pass 2^32.
+        // In 64 bits: 32 times the prefix sums alone can pass 2^32. Each sum is reduced
+        // before it is weighted, so every term is within base and n times it.
         const n: u64 = blocks * block;
         const c32: @Vector(block, u32) = columns;
         const prefix_sum: u64 = @reduce(.Add, @as(@Vector(8, u64), prefix));
         const weighted: u64 = @reduce(.Add, c32 * weights);
-        s2 = @intCast((s2 + n * s1 + block * prefix_sum + weighted) % base);
+        s2 = @intCast((s2 + n * s1 + block * (prefix_sum % base) + weighted % base) % base);
         s1 = (s1 + @reduce(.Add, c32)) % base;
         rest = rest[blocks * block ..];
     }
     return tail(s1, s2, rest);
 }
 
-/// The last bytes, one at a time; `rest.len` < nmax.
+/// The last bytes, a block at a time, each zero-padded in front to `tail_block` bytes. Zeros
+/// in front add nothing to s1 and s1 to s2 once each, so k bytes add k·s1 and their
+/// sums weighted k down to 1, and no sum is carried from one byte to the next.
 pub fn tail(s1_in: u32, s2_in: u32, rest: []const u8) u32 {
-    var s1 = s1_in;
-    var s2 = s2_in;
-    for (rest) |b| {
-        s1 += b;
-        s2 += s1;
+    const weights: @Vector(tail_block, u32) = comptime blk: {
+        var w: [tail_block]u32 = undefined;
+        for (&w, 0..) |*x, i| x.* = tail_block - i;
+        break :blk w;
+    };
+    var s1: u32 = s1_in % base;
+    var s2: u32 = s2_in % base;
+    var left = rest;
+    while (left.len != 0) {
+        const k = @min(left.len, tail_block);
+        var padded: [tail_block]u8 = @splat(0);
+        @memcpy(padded[tail_block - k ..], left[0..k]);
+        const v: @Vector(tail_block, u32) = padded;
+        const sum: u32 = @reduce(.Add, v);
+        const weighted: u32 = @reduce(.Add, v * weights);
+        s2 = (s2 + @as(u32, @intCast(k)) * s1 + weighted % base) % base;
+        s1 = (s1 + sum % base) % base;
+        left = left[k..];
     }
-    return ((s2 % base) << 16) | (s1 % base);
+    return (s2 << 16) | s1;
 }
+
+const tail_block = 32;
 
 /// The Adler-32 of A ++ B from those of A and B and the length of B.
 pub fn adler32Combine(adler_a: u32, adler_b: u32, len_b: u64) u32 {
-    const rem: u32 = @intCast(len_b % base);
-    var sum1: u32 = adler_a & 0xffff;
-    var sum2: u32 = @intCast((@as(u64, rem) * sum1) % base);
-    sum1 += (adler_b & 0xffff) + base - 1;
-    sum2 += (adler_a >> 16) + (adler_b >> 16) + base - rem;
+    const rem = len_b % base;
+    const a1 = adler_a & 0xffff;
+    var sum1: u32 = a1 + (adler_b & 0xffff) + base - 1;
+    var sum2: u32 = @intCast((rem * a1) % base + (adler_a >> 16) + (adler_b >> 16) + (base - rem));
     if (sum1 >= base) sum1 -= base;
     if (sum1 >= base) sum1 -= base;
     if (sum2 >= base << 1) sum2 -= base << 1;

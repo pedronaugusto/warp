@@ -21,6 +21,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Adler-32's portable and AArch64 DotProd kernels take the last bytes as one zero-padded block (k·s1 and the block's weighted sums, as a full block's), not byte by byte, and reduce each vector sum before weighting it, so every term of the per-run reduction is bounded; the per-block loops are unchanged. The marked decoder's copy states its contract: the match fits the tokens, and past the window's markers its distance is within what is written.
 - Re-pinned onto preflight 0.18.0, aegis 0.1.18, shakedown 0.4.18 and ensign 0.3.0, with aegis's safety rules at gate but A009 and A010 (reported). The decoders' states are `aegis.state.Machine`s (DEFLATE's blocks and wrappers, the gzip header, LZ4 and zstd frames, Brotli), each phase changed in one place along an edge checked at compile time; LZ4's and zstd's streaming decoders keep a refusal in `failure` alone. CPU detection keeps its cell in `aegis.Atomic`, contracts on input are `aegis.assert.invariant`, and the benchmarks and the size gate read files through `aegis.own.readFile` with a limit.
 
 ## [0.4.5] - 2026-10-27

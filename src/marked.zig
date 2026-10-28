@@ -2,6 +2,7 @@
 //! are bytes; larger values name a byte in the unknown 32 KiB window.
 //! Header parsing, tables and symbol validation belong to the ordinary engine.
 const std = @import("std");
+const aegis = @import("aegis");
 const engine = @import("inflate.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const huffman = @import("huffman.zig").decode;
@@ -115,13 +116,20 @@ pub const Decoder = struct {
     };
 
     fn copy(d: *Decoder, comptime wild: bool, back: usize, len: usize) void {
+        aegis.assert.invariant(d.written + len <= d.tokens.len, "every caller checks the match's room first");
         var count: usize = 0;
         if (back > d.written) {
             const missing = back - d.written;
             d.required = @max(d.required, missing);
             count = @min(len, missing);
             for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // aegis: no-danger: window markers fit u16
+            if (count == len) {
+                d.written += len;
+                return;
+            }
         }
+        // What is left of the match copies from tokens already written.
+        aegis.assert.invariant(back <= d.written + count, "a distance past the tokens written is a window marker");
         if (wild and count < len) {
             engine.copyMatch(u16, d.tokens, d.written + count, back, len - count);
             d.written += len;
