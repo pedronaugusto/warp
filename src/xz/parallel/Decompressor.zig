@@ -14,6 +14,7 @@ const Decompressor = @This();
 
 const std = @import("std");
 const Io = std.Io;
+const aegis = @import("aegis");
 const Native = @import("../Decompressor.zig");
 const lzma = @import("../../lzma/Decompressor.zig");
 const format = @import("../format.zig");
@@ -132,10 +133,9 @@ fn plan(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: Native.Opt
             if (rest[0] == 0) break;
             const header_len = (@as(usize, rest[0]) + 1) * 4;
             if (rest.len < header_len) return error.Refused;
-            const h = switch (format.blockHeader(rest[0..header_len], check)) {
-                .header => |h| h,
-                .fault => return error.Refused,
-            };
+            var fault: format.Fault = undefined;
+            const h = aegis.input.Untrusted([]const u8).init(rest[0..header_len]).parse(format.HeaderContext{ .check = check, .fault = &fault }, format.blockHeader) catch
+                return error.Refused;
             const c = h.compressed orelse return error.Refused;
             const u = h.uncompressed orelse return error.Refused;
             const block = rest[header_len..];

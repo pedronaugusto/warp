@@ -7,6 +7,7 @@
 const Decompressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const lzma = @import("../lzma/Decompressor.zig");
 const format = @import("format.zig");
 const filter_ = @import("filter.zig");
@@ -82,10 +83,9 @@ fn stream(d: *Decompressor, in: []const u8, start: []const u8, room: *[]u8, diag
         const block_start = rest;
         const header_len = (@as(usize, rest[0]) + 1) * 4;
         if (rest.len < header_len) return fail(diag, error.Truncated, in.len, .truncated);
-        const h = switch (format.blockHeader(rest[0..header_len], check)) {
-            .header => |h| h,
-            .fault => |f| return fail(diag, error.InvalidStream, in.len - rest.len +| f.at, f.reason),
-        };
+        var fault: format.Fault = undefined;
+        const h = aegis.input.Untrusted([]const u8).init(rest[0..header_len]).parse(format.HeaderContext{ .check = check, .fault = &fault }, format.blockHeader) catch
+            return fail(diag, error.InvalidStream, in.len - rest.len +| fault.at, fault.reason);
         const data = rest[header_len..];
         const b = try d.block(in, data, room.*, h, diag);
         room.* = room.*[b.output.len..];

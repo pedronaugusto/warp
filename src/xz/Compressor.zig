@@ -168,7 +168,7 @@ pub fn writeIndex(out: []u8, first: usize, end: usize, check: Check) Error!usize
     var len: usize = 1;
     var at = first;
     while (at < end) : (count += 1) {
-        const r = record(out, at, check);
+        const r = record(out[at..end], check);
         len += format.vliLen(r.unpadded) + format.vliLen(r.uncompressed);
         at += r.span;
     }
@@ -181,7 +181,7 @@ pub fn writeIndex(out: []u8, first: usize, end: usize, check: Check) Error!usize
     format.putVli(index, &pos, count);
     at = first;
     while (at < end) {
-        const r = record(out, at, check);
+        const r = record(out[at..end], check);
         format.putVli(index, &pos, r.unpadded);
         format.putVli(index, &pos, r.uncompressed);
         at += r.span;
@@ -193,14 +193,14 @@ pub fn writeIndex(out: []u8, first: usize, end: usize, check: Check) Error!usize
 
 const Record = struct { unpadded: u64, uncompressed: u64, span: usize };
 
-/// A block warp wrote: its index record and its length.
-fn record(out: []const u8, at: usize, check: Check) Record {
-    const header_len = (@as(usize, out[at]) + 1) * 4;
-    const h = format.blockHeader(out[at..][0..header_len], check).header;
+/// The block warp wrote at the start of `blocks`: its index record and its length.
+fn record(blocks: []const u8, check: Check) Record {
+    var fault: format.Fault = undefined;
+    const h = aegis.input.Untrusted([]const u8).init(blocks).parse(format.HeaderContext{ .check = check, .fault = &fault }, format.blockHeader) catch unreachable; // warp wrote this header
     const data: usize = @intCast(h.compressed.?);
     return .{
-        .unpadded = header_len + data + check.size(),
+        .unpadded = h.len + data + check.size(),
         .uncompressed = h.uncompressed.?,
-        .span = header_len + std.mem.alignForward(usize, data, 4) + check.size(),
+        .span = h.len + std.mem.alignForward(usize, data, 4) + check.size(),
     };
 }
