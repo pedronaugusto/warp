@@ -69,7 +69,7 @@ pub const LenCoder = struct {
     high: [len_high]Prob = @splat(range.prob_init),
 
     /// A match length less 2.
-    inline fn decode(l: *LenCoder, d: *range.Decoder, pos_state: u32, comptime careful: bool, log: *Log) range.NeedInput!u32 {
+    inline fn decode(l: *LenCoder, d: *range.Decoder, pos_state: u4, comptime careful: bool, log: *Log) range.NeedInput!u32 {
         if (try d.bit(&l.choice, careful, log) == 0) return d.tree(&l.low[pos_state], 3, careful, log);
         if (try d.bit(&l.choice2, careful, log) == 0) return len_low + try d.tree(&l.mid[pos_state], 3, careful, log);
         return len_low + len_mid + try d.tree(&l.high, 8, careful, log);
@@ -201,10 +201,10 @@ pub fn dictionary(declared: u64) u64 {
 
 /// The dictionary an LZMA2 property byte names (40 is 4 GiB less one);
 /// null past 40.
-pub fn lzma2Dictionary(byte: u8) ?u64 {
+pub fn lzma2Dictionary(byte: u8) ?u32 {
     if (byte > 40) return null;
     if (byte == 40) return 0xffff_ffff;
-    return @as(u64, 2 | (byte & 1)) << @intCast(byte / 2 + 11);
+    return @as(u32, 2 | (byte & 1)) << @intCast(byte / 2 + 11);
 }
 
 /// Where a symbol leaves the stream. `literal`, `match`, `rep` and
@@ -325,13 +325,14 @@ pub fn run(c: *Coder, d: *range.Decoder, w: anytype, base: u64) (Error || range.
 inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime careful: bool, log: *Log) (Error || range.NeedInput)!bool {
     const p = &c.probs;
     const at = w.at();
-    const pos_state: u32 = @intCast(at & ((@as(usize, 1) << c.props.pb) - 1));
+    // pb and lc + lp are at most 4: both are under 16.
+    const pos_state: u4 = @truncate(at & ~(~@as(usize, 0) << c.props.pb));
     const sym_at = base + d.pos;
     if (try d.bit(&p.is_match[c.state][pos_state], careful, log) == 0) {
         if (c.marker_next) return c.fail(sym_at, .size_without_end);
         const prev: u32 = if (w.full() == 0) 0 else w.back(0);
-        const lp_mask = (@as(usize, 1) << c.props.lp) - 1;
-        const coder = ((at & lp_mask) << c.props.lc) + (prev >> @intCast(@as(u4, 8) - c.props.lc));
+        const lp_mask = ~(~@as(usize, 0) << c.props.lp);
+        const coder: u4 = @truncate(((at & lp_mask) << c.props.lc) | (prev << c.props.lc >> 8));
         const probs = &p.literal[coder];
         var v: u32 = 1;
         if (c.state >= 7) {

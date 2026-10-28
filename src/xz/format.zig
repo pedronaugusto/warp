@@ -85,7 +85,7 @@ pub fn streamHeader(in: *const [header_len]u8) union(enum) { check: Check, fault
     if (!std.mem.eql(u8, in[0..6], &header_magic)) return .{ .fault = .stream_magic };
     if (std.hash.Crc32.hash(in[6..8]) != std.mem.readInt(u32, in[8..12], .little)) return .{ .fault = .stream_header_crc };
     if (in[6] != 0 or in[7] & 0xf0 != 0) return .{ .fault = .stream_flags };
-    return .{ .check = @fromBackingInt(@intCast(@as(u4, @truncate(in[7])))) };
+    return .{ .check = @fromBackingInt(@as(u4, @truncate(in[7]))) };
 }
 
 pub const Footer = struct { backward_size: u64, check: Check };
@@ -97,7 +97,7 @@ pub fn streamFooter(in: *const [footer_len]u8) union(enum) { footer: Footer, fau
     if (in[8] != 0 or in[9] & 0xf0 != 0) return .{ .fault = .stream_flags };
     return .{ .footer = .{
         .backward_size = (@as(u64, std.mem.readInt(u32, in[4..8], .little)) + 1) * 4,
-        .check = @fromBackingInt(@intCast(@as(u4, @truncate(in[9])))),
+        .check = @fromBackingInt(@as(u4, @truncate(in[9]))),
     } };
 }
 
@@ -167,12 +167,12 @@ pub fn blockHeader(in: []const u8, check: Check) union(enum) { header: BlockHead
         if (props_len > n - pos) return .{ .fault = .{ .reason = .block_header, .at = at } };
         const props = in[pos..][0..@intCast(props_len)];
         pos += props.len;
-        const fid: filter_.Id = @fromBackingInt(@intCast(id));
+        const fid: filter_.Id = @fromBackingInt(id);
         if (fid == .lzma2) {
             // Last and only last; one property byte, the dictionary.
             if (i != count - 1 or props.len != 1) return .{ .fault = .{ .reason = .filter_options, .at = at } };
             const dict = decode.lzma2Dictionary(props[0]) orelse return .{ .fault = .{ .reason = .filter_options, .at = at } };
-            lzma2 = @intCast(dict);
+            lzma2 = dict;
             continue;
         }
         const f = filter_.parse(fid, props) orelse return .{ .fault = .{

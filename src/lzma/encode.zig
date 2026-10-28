@@ -182,9 +182,10 @@ pub const Coder = struct {
         *Coder => *[0x300]Prob,
         else => *const [0x300]Prob,
     } {
-        const lp_mask = (@as(u32, 1) << c.props.lp) - 1;
+        // lc + lp is at most 4: the index is under 16.
+        const lp_mask = ~(~@as(u32, 0) << c.props.lp);
         const at: u32 = @truncate(position);
-        const index = ((at & lp_mask) << c.props.lc) + (@as(u32, prev) >> @intCast(@as(u4, 8) - c.props.lc));
+        const index: u4 = @truncate(((at & lp_mask) << c.props.lc) | (@as(u32, prev) << c.props.lc >> 8));
         return &c.probs.literal[index];
     }
 
