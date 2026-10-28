@@ -29,7 +29,7 @@ const Slot = struct {
         slot.prepared.decode() catch |err| {
             slot.failure = err;
             slot.reason = slot.prepared.failure;
-            slot.offset = slot.at + 3 + (if (slot.reason == .literals_size) slot.prepared.literal_at else slot.prepared.at);
+            slot.offset = slot.at +| 3 +| (if (slot.reason == .literals_size) slot.prepared.literal_at else slot.prepared.at);
         };
     }
 };
@@ -172,23 +172,26 @@ fn apply(f: *decode.Frame, slots: []Slot, out: []u8, op: *usize, hash: *std.hash
     for (slots) |*slot| {
         if (slot.kind == .compressed) {
             if (slot.prepared.literal_len > out.len - op.*) return fail(options, error.OutputTooSmall, slot.at + 3, .bad_literals_header);
-            if (slot.prepared.count != 0 and op.* == out.len and (slot.failure == null or slot.reason == .bitstream_left)) return fail(options, error.OutputTooSmall, slot.at + 3 + slot.prepared.sequence_at, .bad_sequences_header);
+            if (slot.prepared.count != 0 and op.* == out.len and (slot.failure == null or slot.reason == .bitstream_left)) return fail(options, error.OutputTooSmall, slot.at +| 3 +| slot.prepared.sequence_at, .bad_sequences_header);
         }
         if (slot.failure) |err| return fail(options, err, slot.offset, slot.reason);
         const before = op.*;
         switch (slot.kind) {
             .raw => {
-                if (slot.bytes.len > out.len - op.*) return fail(options, error.OutputTooSmall, slot.at, .truncated);
-                @memcpy(out[op.*..][0..slot.bytes.len], slot.bytes);
-                op.* += slot.bytes.len;
+                // What is left of the output, cut past what the block writes.
+                const room = out[op.*..];
+                if (slot.bytes.len > room.len) return fail(options, error.OutputTooSmall, slot.at, .truncated);
+                @memcpy(room[0..slot.bytes.len], slot.bytes);
+                op.* = out.len - room[slot.bytes.len..].len;
             },
             .rle => {
-                if (slot.regenerated > out.len - op.*) return fail(options, error.OutputTooSmall, slot.at, .truncated);
-                @memset(out[op.*..][0..slot.regenerated], slot.bytes[0]);
-                op.* += slot.regenerated;
+                const room = out[op.*..];
+                if (slot.regenerated > room.len) return fail(options, error.OutputTooSmall, slot.at, .truncated);
+                @memset(room[0..slot.regenerated], slot.bytes[0]);
+                op.* = out.len - room[slot.regenerated..].len;
             },
             .compressed => {
-                op.* += f.applyBlock(&slot.prepared, op.*) catch |err| return fail(options, err, slot.at + 3 + f.fault.offset, f.fault.reason);
+                op.* += f.applyBlock(&slot.prepared, op.*) catch |err| return fail(options, err, slot.at +| 3 +| f.fault.offset, f.fault.reason);
             },
             .reserved => unreachable, // aegis: no-danger: prepare refuses reserved blocks
         }
@@ -205,30 +208,33 @@ fn prepare(f: *decode.Frame, slot: *Slot, in: []const u8, at: *usize) void {
     slot.kind = .raw;
     slot.prepared.literal_len = 0;
     slot.prepared.count = 0;
-    if (in.len - at.* < 3) {
+    // What is left of the input, cut as the block is read.
+    const rest = in[at.*..];
+    if (rest.len < 3) {
         slot.failure = error.Truncated;
         return;
     }
-    const block = frame.blockHeader(in[at.*..][0..3]);
+    const block = frame.blockHeader(rest[0..3]);
     slot.kind = block.kind;
     slot.last = block.last;
-    at.* += 3;
+    const body = rest[3..];
+    at.* = in.len - body.len;
     if (block.kind == .reserved or (block.kind == .compressed and block.size > f.block_max)) {
         slot.failure = error.InvalidStream;
         slot.reason = if (block.kind == .reserved) .bad_block_type else .block_too_large;
         return;
     }
-    if (block.size > in.len - at.*) {
+    if (block.size > body.len) {
         slot.failure = error.Truncated;
         return;
     }
-    slot.bytes = in[at.*..][0..block.size];
+    slot.bytes = body[0..block.size];
     slot.regenerated = block.regenerated;
     if (block.kind == .compressed) f.prepareBlock(slot.bytes, &slot.prepared) catch |err| {
         slot.failure = err;
         slot.reason = f.fault.reason;
-        slot.offset = slot.at + 3 + f.fault.offset;
+        slot.offset = slot.at +| 3 +| f.fault.offset;
         return;
     };
-    at.* += block.size;
+    at.* = in.len - body[block.size..].len;
 }

@@ -129,8 +129,13 @@ fn parseFields(h: []const u8, format: Format, fault: *Fault) ParseError!Header {
             fault.* = .{ .offset = pos - 1, .reason = .window_too_large };
             return error.WindowTooLarge;
         }
-        window = @as(u64, 1) << log;
-        window += (window >> 3) * (wd & 7);
+        const base = @as(u64, 1) << log;
+        // A base of 2^31 at most and seven eighths more: no u64 overflows, and the sum is
+        // checked all the same, as it decides the window.
+        window = std.math.add(u64, base, (base >> 3) * (wd & 7)) catch {
+            fault.* = .{ .offset = pos - 1, .reason = .window_too_large };
+            return error.WindowTooLarge;
+        };
     }
     var id: u32 = 0;
     switch (@as(u2, @truncate(fhd))) {
@@ -207,34 +212,36 @@ pub fn extent(in: []const u8, format: Format, fault: *Fault) ParseError!Extent {
     switch (try parse(in, format, fault)) {
         .skippable => |s| return .{ .len = try skippableLen(in, s), .bound = 0 },
         .zstd => |h| {
-            var pos: usize = h.header_len;
+            // What follows the header, cut past each block as it is walked.
+            var rest = in[h.header_len..];
             var blocks: u64 = 0;
             while (true) {
-                if (in.len - pos < 3) {
-                    fault.* = .{ .offset = pos, .reason = .truncated };
+                if (rest.len < 3) {
+                    fault.* = .{ .offset = in.len - rest.len, .reason = .truncated };
                     return error.Truncated;
                 }
-                const b = blockHeader(in[pos..][0..3]);
+                const b = blockHeader(rest[0..3]);
                 if (b.kind == .reserved) {
-                    fault.* = .{ .offset = pos, .reason = .bad_block_type };
+                    fault.* = .{ .offset = in.len - rest.len, .reason = .bad_block_type };
                     return error.InvalidStream;
                 }
-                if (in.len - pos - 3 < b.size) {
-                    fault.* = .{ .offset = pos, .reason = .truncated };
+                const body = rest[3..];
+                if (body.len < b.size) {
+                    fault.* = .{ .offset = in.len - rest.len, .reason = .truncated };
                     return error.Truncated;
                 }
-                pos += 3 + b.size;
+                rest = body[b.size..];
                 blocks += 1;
                 if (b.last) break;
             }
             if (h.checksum) {
-                if (in.len - pos < 4) {
-                    fault.* = .{ .offset = pos, .reason = .truncated };
+                if (rest.len < 4) {
+                    fault.* = .{ .offset = in.len - rest.len, .reason = .truncated };
                     return error.Truncated;
                 }
-                pos += 4;
+                rest = rest[4..];
             }
-            return .{ .len = pos, .bound = h.content_size orelse (blocks * h.blockMax()) };
+            return .{ .len = in.len - rest.len, .bound = h.content_size orelse (blocks * h.blockMax()) };
         },
     }
 }

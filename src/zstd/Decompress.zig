@@ -85,8 +85,12 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
     while (true) switch (s.phase) {
         .done => return .{ .in_len = ip, .out_len = op, .status = .done },
         .drain => {
-            const n = @min(out.len - op, s.pending_end - s.pending);
-            @memcpy(out[op..][0..n], s.window[s.pending..][0..n]);
+            // The block's output not handed out yet, inside the window.
+            aegis.assert.invariant(s.pending <= s.pending_end, "s.pending <= s.pending_end");
+            aegis.assert.invariant(s.pending_end <= s.window.len, "s.pending_end <= s.window.len");
+            const left = s.window[s.pending..s.pending_end];
+            const n = @min(out.len - op, left.len);
+            @memcpy(out[op..][0..n], left[0..n]);
             s.pending += n;
             op += n;
             if (s.pending != s.pending_end) return .{ .in_len = ip, .out_len = op, .status = .output_full };
@@ -114,6 +118,8 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             if (s.skip == 0) s.next(.skip, .read, if (s.options.format == .standard) 5 else 1) else return .{ .in_len = ip, .out_len = op, .status = .need_input };
         },
         .header, .block_header, .payload, .checksum => {
+            // A unit is gathered up to what it wants, no further.
+            aegis.assert.invariant(s.have <= s.wanted, "s.have <= s.wanted");
             const n = @min(in.len - ip, s.wanted - s.have);
             @memcpy(s.buffer[s.have..][0..n], in[ip..][0..n]);
             s.have += n;
@@ -169,7 +175,7 @@ fn readHeader(s: *Decompress) Error!void {
             s.wanted = if (skippable) 8 else frame.headerLen(s.buffer[if (s.options.format == .standard) @as(usize, 4) else 0], s.options.format);
             return;
         }
-        return s.fail(err, s.offset - s.have + fault.offset, if (s.frames > 0 and fault.reason == .bad_magic) .trailing_data else fault.reason);
+        return s.fail(err, s.offset -| s.have +| fault.offset, if (s.frames > 0 and fault.reason == .bad_magic) .trailing_data else fault.reason);
     };
     switch (parsed) {
         .skippable => |h| {
@@ -210,30 +216,47 @@ fn readBlockHeader(s: *Decompress) Error!void {
 }
 
 fn readBlock(s: *Decompress) Error!void {
-    const keep = @min(s.history, @as(usize, @intCast(s.header.window_size)));
-    if (keep < s.history) {
-        @memmove(s.window[0..keep], s.window[s.history - keep ..][0..keep]);
+    // The history earlier blocks left, inside the window.
+    aegis.assert.invariant(s.history <= s.window.len, "s.history <= s.window.len");
+    const written = s.window[0..s.history];
+    // What of it the frame's window keeps, moved to the front.
+    const keep: usize = @min(written.len, s.header.window_size);
+    if (keep < written.len) {
+        @memmove(written[0..keep], written[written.len - keep ..]);
         s.dictionary = &.{};
     }
-    var f: decode_.Frame = .{ .tables = &s.tables, .entropy = s.entropy, .out = s.window[0 .. keep + s.header.blockMax()], .start = 0, .dict = s.dictionary, .block_max = s.header.blockMax() };
+    const block_max = s.header.blockMax();
+    const end = keep + block_max;
+    // readHeader took the frame only with its window and one block inside the window.
+    aegis.assert.invariant(end <= s.window.len, "end <= s.window.len");
+    // Where this block's output goes, after the history.
+    const block = s.window[keep..end];
+    var f: decode_.Frame = .{ .tables = &s.tables, .entropy = s.entropy, .out = s.window[0..end], .start = 0, .dict = s.dictionary, .block_max = block_max };
     const len: usize = switch (s.block.kind) {
         .raw => blk: {
-            @memcpy(s.window[keep..][0..s.have], s.buffer[0..s.have]);
+            // readBlockHeader refused a block that regenerates more than a block, and a raw
+            // block's payload is what it regenerates.
+            aegis.assert.invariant(s.have <= block.len, "s.have <= block.len");
+            @memcpy(block[0..s.have], s.buffer[0..s.have]);
             break :blk s.have;
         },
         .rle => blk: {
-            @memset(s.window[keep..][0..s.block.regenerated], s.buffer[0]);
+            aegis.assert.invariant(s.block.regenerated <= block.len, "s.block.regenerated <= block.len");
+            @memset(block[0..s.block.regenerated], s.buffer[0]);
             break :blk s.block.regenerated;
         },
         .compressed => f.block(s.buffer[0..s.have], keep) catch |err| {
             if (err == error.OutputTooSmall) return s.fail(error.InvalidStream, s.block_at, .block_too_large);
-            return s.fail(err, s.block_at + 3 + f.fault.offset, f.fault.reason);
+            return s.fail(err, s.block_at +| 3 +| f.fault.offset, f.fault.reason);
         },
         .reserved => unreachable, // aegis: no-danger: readBlockHeader refuses a reserved block before its payload is read
     };
+    // A block writes inside its own part of the window.
+    aegis.assert.invariant(len <= block.len, "len <= block.len");
     s.entropy = f.entropy;
-    if (s.header.checksum and s.options.verify_checksum) s.hash.update(s.window[keep..][0..len]);
-    s.produced += len;
+    if (s.header.checksum and s.options.verify_checksum) s.hash.update(block[0..len]);
+    // What the frame produced, compared with its declared content size.
+    s.produced = std.math.add(u64, s.produced, len) catch return s.fail(error.InvalidStream, s.frame_at, .content_size);
     s.history = keep + len;
     s.pending = keep;
     s.pending_end = keep + len;
