@@ -3,6 +3,7 @@
 //! index once, then reuse it for seeks and parallel decoding.
 const Index = @This();
 const std = @import("std");
+const aegis = @import("aegis");
 const Inflate = @import("stream/Inflate.zig");
 const container = @import("container.zig");
 const Io = std.Io;
@@ -25,19 +26,23 @@ pub fn build(gpa: std.mem.Allocator, in: []const u8, accept: container.Accept, s
     const output = try gpa.alloc(u8, 65536);
     defer gpa.free(output);
     var z: Inflate = .init(window, .{ .accept = accept });
-    var at: usize = 0;
+    // The input left, cut as it is taken.
+    var rest = in;
     var last: u64 = 0;
     while (true) {
-        const step = try z.decode(in[at..], output);
-        at += step.in_len;
+        const step = try z.decode(rest, output);
+        aegis.assert.invariant(step.in_len <= rest.len, "step.in_len <= rest.len");
+        rest = rest[step.in_len..];
+        // Checkpoints are taken in output order.
+        aegis.assert.invariant(last <= z.out_total, "last <= z.out_total");
         if (step.status == .block_end and z.out_total - last >= @max(spacing, 1)) {
             try points.append(gpa, z.checkpoint() catch unreachable); // aegis: no-danger: decode just returned block_end
             last = z.out_total;
         }
-        if (step.status == .done or (step.status == .member_end and at == in.len)) break;
-        if (step.status == .need_input and at == in.len) return error.Truncated;
+        if (step.status == .done or (step.status == .member_end and rest.len == 0)) break;
+        if (step.status == .need_input and rest.len == 0) return error.Truncated;
     }
-    return .{ .points = try points.toOwnedSlice(gpa), .in_len = at, .out_len = z.out_total, .accept = accept, .gpa = gpa };
+    return .{ .points = try points.toOwnedSlice(gpa), .in_len = in.len - rest.len, .out_len = z.out_total, .accept = accept, .gpa = gpa };
 }
 
 pub fn deinit(index: *Index) void {

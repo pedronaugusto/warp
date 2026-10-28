@@ -102,6 +102,9 @@ pub const State = struct {
 
     /// Count the output written since the last call, into the checksum.
     pub fn sum(st: *State, s: *const inflate.Stream) void {
+        // The output is summed up to where it was written, and no further.
+        aegis.assert.invariant(st.checked <= s.op, "st.checked <= s.op");
+        aegis.assert.invariant(s.op <= s.out.len, "s.op <= s.out.len");
         const bytes = s.out[st.checked..s.op];
         st.checked = s.op;
         switch (st.wrapper) {
@@ -299,13 +302,17 @@ fn gzipHeader(st: *State, s: *inflate.Stream, source: anytype, options: Options)
         source.commit(s);
         if (fed.status == .done) return headerDone(st, s, fields, options.keep_history);
     }
-    // Only zero bytes past the end, if anything, are left in hand.
+    // Only zero bytes past the end, if anything, are left in hand: `ip`
+    // counts them.
+    aegis.assert.invariant(s.virtual <= s.ip, "s.virtual <= s.ip");
     s.ip -= s.virtual;
     s.virtual = 0;
     s.bitbuf = 0;
     s.bitsleft = 0;
     while (true) {
         if (s.ip >= s.in.len and !source.more(s)) return s.failEnd();
+        // More input came where there was none.
+        aegis.assert.invariant(s.ip < s.in.len, "s.ip < s.in.len");
         if (trailing(st, s.in[s.ip])) return refuse(st, s, .bad_gzip_header);
         const fed = feed(st, s.in[s.ip..], fields);
         s.ip += fed.used;

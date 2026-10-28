@@ -236,6 +236,8 @@ pub const Parser = struct {
                     }
                 },
                 .extra => {
+                    // The field's bytes are taken no further than its length.
+                    aegis.assert.invariant(p.at <= p.extra_len, "p.at <= p.extra_len");
                     const n = @min(in.len - i, p.extra_len - p.at);
                     sink.bytes(.extra, in[i..][0..n], i);
                     p.sum(in[i..][0..n]);
