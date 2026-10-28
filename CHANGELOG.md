@@ -21,6 +21,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- An xz block header is read by one parser through `aegis.input.Untrusted`: it takes the bytes the header starts with, reads its length from the first, and returns the header with each number in a type that holds its range (the length in 11 bits, the sizes in 63, as a variable-length integer's nine bytes carry them); a refusal names its reason and byte as before. The decoders and the encoder's index, which reads back the headers it wrote, go through it.
 - Re-pinned onto preflight 0.18.0, aegis 0.1.18, shakedown 0.4.18 and ensign 0.3.0, with aegis's safety rules at gate but A009 and A010 (reported). The decoders' states are `aegis.state.Machine`s (DEFLATE's blocks and wrappers, the gzip header, LZ4 and zstd frames, Brotli), each phase changed in one place along an edge checked at compile time; LZ4's and zstd's streaming decoders keep a refusal in `failure` alone. CPU detection keeps its cell in `aegis.Atomic`, contracts on input are `aegis.assert.invariant`, and the benchmarks and the size gate read files through `aegis.own.readFile` with a limit.
 
 ## [0.4.5] - 2026-10-27

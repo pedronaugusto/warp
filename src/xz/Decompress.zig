@@ -260,10 +260,9 @@ fn blockHeader(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
     if (!z.take(in, ip, len)) return false;
     // Where the header starts, for the diagnostic.
     const start = z.offset +| ip.* -| len;
-    z.header = switch (format.blockHeader(z.gather[0..len], z.check)) {
-        .header => |h| h,
-        .fault => |f| return z.fail(error.InvalidStream, start + f.at, f.reason),
-    };
+    var fault: format.Fault = undefined;
+    z.header = aegis.input.Untrusted([]const u8).init(z.gather[0..len]).parse(format.HeaderContext{ .check = z.check, .fault = &fault }, format.blockHeader) catch
+        return z.fail(error.InvalidStream, start + fault.at, fault.reason);
     if (windowLength(z.header.dictionary) > z.window.len) return z.fail(error.WindowTooLarge, start, .memory_limit);
     z.lzma2 = Stream.init(z.window, z.header.dictionary, .lzma2);
     z.lzma2.offset = z.offset + ip.*;

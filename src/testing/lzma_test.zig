@@ -387,10 +387,8 @@ test "liblzma's filtered .xz streams: their LZMA2 through xz.FilterReader, one r
             .fault => return error.TestUnexpectedResult,
         };
         const block = stream[format.header_len..];
-        const header = switch (format.blockHeader(block[0 .. (@as(usize, block[0]) + 1) * 4], check)) {
-            .header => |h| h,
-            .fault => return error.TestUnexpectedResult,
-        };
+        var fault: format.Fault = undefined;
+        const header = try format.blockHeader(.{ .check = check, .fault = &fault }, block[0 .. (@as(usize, block[0]) + 1) * 4]);
         // liblzma's filtered bytes: the block's LZMA2, decoded alone.
         var source: std.Io.Reader = .fixed(block[header.len..]);
         const window = try gpa.alloc(u8, lzma.Decompress.windowLength(header.dictionary));
