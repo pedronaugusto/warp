@@ -929,6 +929,7 @@ const fast_room = 48;
 /// path takes up.
 noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepError!?Status {
     const H = @typeInfo(@TypeOf(h)).pointer.child;
+    aegis.assert.invariant(r.in.len >= bits_.margin, "r.in.len >= bits_.margin");
     const end = r.in.len - bits_.margin;
     var f: Fast = .load(s, r, h);
     const buf = h.buf.ptr;
@@ -945,7 +946,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         if (f.counts[1] == 0) {
             f.save(s, r, h);
             try blockSwitch(false, s, t, r, 1, at);
-            f = .load(s, r, h);
+            f.reload(s, r, h);
             command_table = t.command[s.blocks.command_tree..].ptr;
         }
         const c = codes.commands[decodeOk(&f.br, command_table)];
@@ -970,12 +971,13 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             if (f.counts[0] == 0) {
                 f.save(s, r, h);
                 try blockSwitch(false, s, t, r, 0, f.br.bitOffset());
-                f = .load(s, r, h);
+                f.reload(s, r, h);
             }
             const batch = @min(left, f.counts[0]);
             const p1 = H.backAt(buf, limit, f.pos, base +% f.pos, 1);
             const p2 = H.backAt(buf, limit, f.pos, base +% f.pos, 2);
             const done = literalBatch(s, t, &f, buf, batch, end, p1, p2);
+            aegis.assert.invariant(done <= left and done <= f.counts[0], "done <= left and done <= f.counts[0]");
             left -= done;
             f.counts[0] -= done;
         }
@@ -998,7 +1000,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             if (f.counts[2] == 0) {
                 f.save(s, r, h);
                 try blockSwitch(false, s, t, r, 2, dat);
-                f = .load(s, r, h);
+                f.reload(s, r, h);
             }
             const symbol = decodeOk(&f.br, t.distance[t.distance_contexts[c.distance_context]..].ptr);
             f.counts[2] -= 1;
@@ -1037,7 +1039,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 .word => h.pos += s.word_len,
             }
             s.copy = 0;
-            f = .load(s, r, h);
+            f.reload(s, r, h);
         }
         if (f.remaining <= 0) {
             f.save(s, r, h);
@@ -1070,6 +1072,14 @@ const Fast = struct {
         var br: Reader = .{ .in = r.in, .base = r.base };
         br.restore(r.mark());
         return .{ .br = br, .pos = h.pos, .remaining = s.remaining, .distances = s.distances, .counts = s.blocks.counts };
+    }
+
+    /// `load` after a call, the input kept as it was: in a register, the
+    /// loop's bound on it still holds.
+    inline fn reload(f: *Fast, s: *const State, r: *const Reader, h: anytype) void {
+        const in = f.br.in;
+        f.* = .load(s, r, h);
+        f.br.in = in;
     }
 
     inline fn save(f: *const Fast, s: *State, r: *Reader, h: anytype) void {
@@ -1125,6 +1135,8 @@ inline fn literals(comptime by: enum { trivial, contexts, bytes }, s: *const Sta
         p1 = literal;
     }
     f.pos = pos;
+    // `left` counts down from `n`.
+    aegis.assert.invariant(left <= n, "left <= n");
     return n - left;
 }
 

@@ -52,6 +52,8 @@ pub const Reader = struct {
 
     /// Whether a fast unit may run: `margin` bytes past `pos`.
     pub inline fn roomy(r: *const Reader) bool {
+        // Loads stop at the input's end.
+        aegis.assert.invariant(r.pos <= r.in.len, "r.pos <= r.in.len");
         return r.in.len - r.pos >= margin;
     }
 
@@ -60,6 +62,10 @@ pub const Reader = struct {
     pub inline fn fill(r: *Reader, comptime careful: bool, n: u6) NeedInput!void {
         if (r.count >= n) return;
         if (!careful) {
+            // A fast unit runs with `margin` bytes past it, more than its
+            // loads take.
+            aegis.assert.invariant(8 <= r.in.len, "8 <= r.in.len");
+            aegis.assert.invariant(r.pos <= r.in.len - 8, "r.pos <= r.in.len - 8");
             r.buf |= std.mem.readInt(u64, r.in[r.pos..][0..8], .little) << r.count;
             // `~count` is 63 less the count: the whole bytes that fit.
             r.pos += ~r.count >> 3;
@@ -72,6 +78,7 @@ pub const Reader = struct {
 
     /// Load bytes until `n` bits are loaded or the input ends.
     pub inline fn fillAvailable(r: *Reader, n: u6) void {
+        aegis.assert.invariant(n <= 56, "n <= 56");
         while (r.count < n and r.pos < r.in.len) {
             r.buf |= @as(u64, r.in[r.pos]) << r.count;
             r.pos += 1;
@@ -85,6 +92,8 @@ pub const Reader = struct {
     }
 
     pub inline fn drop(r: *Reader, n: u6) void {
+        // Taken bits were loaded first.
+        aegis.assert.invariant(n <= r.count, "n <= r.count");
         r.buf >>= n;
         r.count -= n;
     }
