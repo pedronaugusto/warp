@@ -135,7 +135,9 @@ fn readLong(max_symbol: u8, in: []const u8) ReadError!Counts {
     if (remaining != 1) return error.InvalidStream;
     if (charnum > symbols) return error.InvalidStream;
     if (bit_count > 32) return error.InvalidStream;
-    return .{ .norm = norm, .max_symbol = @intCast(charnum - 1), .log = log, .len = ip + ((bit_count + 7) >> 3) };
+    const len = ip + ((bit_count + 7) >> 3);
+    if (len > in.len) return error.InvalidStream;
+    return .{ .norm = norm, .max_symbol = @intCast(charnum - 1), .log = log, .len = len };
 }
 
 /// The table's step between the positions of one symbol.
