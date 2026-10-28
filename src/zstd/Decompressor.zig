@@ -208,9 +208,9 @@ fn run(d: *Decompressor, source: anytype, out: []u8, options: Options) Error!Res
         var fault: frame.Fault = undefined;
         const header_bytes = source.upTo(18);
         const parsed = frame.parse(header_bytes, options.format, &fault) catch |err| switch (err) {
-            error.Truncated => return fail(options, error.Truncated, at + fault.offset, .truncated),
-            error.WindowTooLarge => return fail(options, error.WindowTooLarge, at + fault.offset, fault.reason),
-            error.InvalidStream => return fail(options, error.InvalidStream, at + fault.offset, if (frames != 0 and fault.reason == .bad_magic) .trailing_data else fault.reason),
+            error.Truncated => return fail(options, error.Truncated, at +| fault.offset, .truncated),
+            error.WindowTooLarge => return fail(options, error.WindowTooLarge, at +| fault.offset, fault.reason),
+            error.InvalidStream => return fail(options, error.InvalidStream, at +| fault.offset, if (frames != 0 and fault.reason == .bad_magic) .trailing_data else fault.reason),
         };
         switch (parsed) {
             .skippable => |s| {
@@ -275,32 +275,33 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
         const before = op.*;
         switch (b.kind) {
             .raw => {
-                const room = out.len - op.*;
-                if (b.size > room) {
+                // What is left of the output, cut past what the block writes.
+                const room = out[op.*..];
+                if (b.size > room.len) {
                     if (!options.partial) {
                         if (!source.available(b.size)) return fail(options, error.Truncated, block_at, .truncated);
                         return fail(options, error.OutputTooSmall, block_at, .truncated);
                     }
-                    if (!source.copy(out[op.*..][0..room])) return fail(options, error.Truncated, block_at, .truncated);
-                    op.* += room;
+                    if (!source.copy(room)) return fail(options, error.Truncated, block_at, .truncated);
+                    op.* = out.len;
                     return .stopped;
                 }
-                if (!source.copy(out[op.*..][0..b.size])) return fail(options, error.Truncated, block_at, .truncated);
-                op.* += b.size;
+                if (!source.copy(room[0..b.size])) return fail(options, error.Truncated, block_at, .truncated);
+                op.* = out.len - room[b.size..].len;
             },
             .rle => {
                 const byte = source.bytes(1) orelse return fail(options, error.Truncated, block_at, .truncated);
-                const room = out.len - op.*;
-                if (b.regenerated > room) {
+                const room = out[op.*..];
+                if (b.regenerated > room.len) {
                     if (!options.partial) return fail(options, error.OutputTooSmall, block_at, .truncated);
-                    @memset(out[op.*..], byte[0]);
+                    @memset(room, byte[0]);
                     op.* = out.len;
                     source.advance(1);
                     return .stopped;
                 }
-                @memset(out[op.*..][0..b.regenerated], byte[0]);
+                @memset(room[0..b.regenerated], byte[0]);
                 source.advance(1);
-                op.* += b.regenerated;
+                op.* = out.len - room[b.regenerated..].len;
             },
             .compressed => {
                 if (b.size > f.block_max) return fail(options, error.InvalidStream, block_at, .block_too_large);
@@ -308,7 +309,7 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
                 const decoded = if (options.partial) f.blockPartial(content, op.*) else f.block(content, op.*);
                 const n = decoded catch |err| {
                     if (err == error.OutputTooSmall and options.partial) return .stopped;
-                    return fail(options, err, block_at + 3 + f.fault.offset, f.fault.reason);
+                    return fail(options, err, block_at +| 3 +| f.fault.offset, f.fault.reason);
                 };
                 source.advance(b.size);
                 op.* += n;
