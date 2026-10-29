@@ -246,7 +246,7 @@ fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lan
 /// captured once from other implementations (pedronaugusto/trials, warp/),
 /// the inputs it names, and the benchmarks' input generator.
 fn addTestImports(b: *std.Build, p: *std.Build, module: *std.Build.Module) void {
-    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries", "deflate64", "lz4-blocks", "lz4-frames", "lz4-invalid", "brotli-streams", "brotli-invalid", "gdeflate", "bzip2-streams", "bzip2-invalid", "xz-streams", "xz-invalid", "snappy-blocks", "snappy-invalid", "snappy-streams", "snappy-stream-invalid" }) |name| {
+    for ([_][]const u8{ "streams", "sizes", "invalid", "zstd-frames", "zstd-sizes", "zstd-invalid", "zstd-dictionaries", "deflate64", "lz4-blocks", "lz4-frames", "lz4-invalid", "brotli-streams", "brotli-invalid", "gdeflate", "bzip2-streams", "bzip2-invalid", "xz-streams", "xz-invalid", "bcj2", "snappy-blocks", "snappy-invalid", "snappy-streams", "snappy-stream-invalid" }) |name| {
         module.addAnonymousImport(b.fmt("{s}.corpus", .{name}), .{ .root_source_file = p.path(b.fmt("testdata/{s}.corpus", .{name})) });
     }
     module.addAnonymousImport("gen", .{ .root_source_file = p.path("bench/gen.zig") });
