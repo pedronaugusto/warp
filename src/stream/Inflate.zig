@@ -291,7 +291,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
         .in = in,
         .ip = 0,
         .bitbuf = z.bitbuf,
-        .bitsleft = @truncate(z.bitsleft),
+        .bitsleft = @intCast(z.bitsleft),
         .in_base = z.in_total,
         .out = out,
         .op = op,
@@ -364,14 +364,14 @@ fn absorb(z: *Inflate, s: *inflate_.Stream) void {
     // `ip` and `bitsleft` count them: at most seven.
     aegis.assert.invariant(s.virtual <= s.ip, "s.virtual <= s.ip");
     aegis.assert.invariant(8 * s.virtual <= s.bitsleft, "8 * s.virtual <= s.bitsleft");
-    s.bitsleft -= @truncate(8 * s.virtual);
+    s.bitsleft -= @intCast(8 * s.virtual);
     s.ip -= s.virtual;
     aegis.assert.invariant(s.ip <= s.in.len, "s.ip <= s.in.len");
     var bits = s.bitbuf & ~(~@as(u64, 0) << s.bitsleft);
     var n: u7 = s.bitsleft;
     for (s.in[s.ip..]) |byte| {
         aegis.assert.invariant(n + 8 <= 64, "n + 8 <= 64");
-        bits |= @as(u64, byte) << @as(u6, @truncate(n));
+        bits |= @as(u64, byte) << @as(u6, @intCast(n));
         n += 8;
     }
     z.bitbuf = bits;

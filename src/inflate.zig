@@ -269,10 +269,10 @@ pub const Stream = struct {
         s.bitbuf = 0;
         s.bitsleft = 0;
         // Zero bytes handed back were never consumed.
-        const past = s.ip -| s.in.len;
+        const past = if (s.ip > s.in.len) s.ip - s.in.len else 0;
         // At most the register's bytes run past the input.
         aegis.assert.invariant(past <= 8, "past <= 8");
-        s.virtual = @truncate(past);
+        s.virtual = @intCast(past);
     }
 };
 
@@ -457,7 +457,7 @@ fn precode(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
     defer state.read = read;
     if (read == 0) t.pre = @splat(0);
     while (read < state.hclen) {
-        const len: u3 = @truncate(try s.take(source, 3));
+        const len: u3 = @intCast(try s.take(source, 3));
         t.pre[precode_order[read]] = len;
         read += 1;
         source.commit(s);
@@ -510,7 +510,7 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
             else => 11,
         };
         s.consume(len);
-        const repeat = @as(u16, repeat_base) + @as(u7, @truncate(try s.take(source, repeat_bits)));
+        const repeat = @as(u16, repeat_base) + @as(u7, @intCast(try s.take(source, repeat_bits)));
         const fill: u8 = if (sym == 16) blk: {
             if (i == 0) return s.fail(.bad_code_lengths);
             break :blk lens[i - 1];
