@@ -414,7 +414,7 @@ fn tally(o: *const State, length: usize) block.Counts {
     while (i < length) {
         const item = o.nodes[i].item;
         const len = item.len;
-        if (len == 1) counts.literal(@truncate(item.payload)) else counts.match(len, item.payload);
+        if (len == 1) counts.literal(@intCast(item.payload)) else counts.match(len, item.payload);
         i += len;
     }
     return counts;
@@ -524,7 +524,7 @@ fn emitPath(c: anytype, o: *State, h: match.History, start: usize, length: usize
         const item = o.nodes[i].item;
         const len = item.len;
         if (len == 1) {
-            const byte: u8 = @truncate(item.payload);
+            const byte: u8 = @intCast(item.payload);
             b.counts.literal(byte);
             if (keep) {
                 b.lits[b.n_lits] = byte;
@@ -532,7 +532,7 @@ fn emitPath(c: anytype, o: *State, h: match.History, start: usize, length: usize
             }
             run += 1;
         } else {
-            const distance: u16 = @truncate(item.payload);
+            const distance: u16 = @intCast(item.payload);
             b.counts.match(len, distance);
             b.seqs[b.n] = .{ .literals = run, .length = len, .distance = distance };
             b.n += 1;
