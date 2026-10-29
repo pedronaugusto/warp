@@ -61,11 +61,12 @@ const Worker = struct {
     result: usize = 0,
 
     fn frame(w: *Worker, options: Encoder.Frame) void {
-        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // aegis: no-danger: output holds the whole-buffer bound
+        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // aegis: no-danger: output is config's output_len, at least Encoder.bound(job_len), and bytes are at most job_len
     }
 
     fn run(w: *Worker, params: Encoder.Params) void {
-        w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // aegis: no-danger: each block reserves raw bytes plus all possible partition headers
+        w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // aegis: no-danger: output is config's output_len, at least job_len + 591 per block: the raw bytes and 197 partition headers of 3
+
     }
 };
 

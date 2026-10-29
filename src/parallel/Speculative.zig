@@ -205,7 +205,8 @@ fn setBit(s: *engine.Stream, bit: usize) void {
     s.bitsleft = 0;
     s.virtual = 0;
     if (bit % 8 != 0) {
-        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger: pending bits belong to this byte
+        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger: bit is a decoded block's end inside in, so ip = bit / 8 is the byte holding its 1-7 pending bits
+
         s.bitsleft = @intCast(8 - bit % 8); // safe: 1-7 pending bits
         s.ip += 1;
     }

@@ -122,7 +122,8 @@ pub const Decoder = struct {
             const missing = back - d.written;
             d.required = @max(d.required, missing);
             count = @min(len, missing);
-            for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // aegis: no-danger: window markers fit u16
+            for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // aegis: no-danger: callers refuse back > max_distance, so missing <= max_distance and i < missing: a marker in 256 .. 255 + max_distance
+
             if (count == len) {
                 d.written += len;
                 return;

@@ -92,12 +92,13 @@ fn emit(b: *Bgzf, out: *Io.Writer) WriteError!void {
     var extra = [_]u8{ 'B', 'C', 2, 0, 0, 0 };
     const frame: Compressor.Frame = .{ .container = .gzip, .gzip = .{ .extra = &extra } };
     var take = b.filled;
-    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output has the whole-buffer bound
+    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65536
     if (n > 65536) {
         // 65,280 bytes fit even as stored blocks. Keep the rest for the
         // next member; this is determined by bytes, never write chunking.
         take = @min(take, 65280);
-        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output has the whole-buffer bound
+        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65280
+
     }
     aegis.assert.invariant(n <= 65536, "n <= 65536");
     std.mem.writeInt(u16, b.output[16..18], @intCast(n - 1), .little);

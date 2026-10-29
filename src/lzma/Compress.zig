@@ -278,7 +278,8 @@ fn produceChunk(s: *Compress, f: anytype) bool {
         s.in_chunk = true;
     }
     if (s.chunks.code(s.coder, f) == .need_input) return false;
-    const n = s.chunks.end(s.coder, f, s.output) catch unreachable; // aegis: no-danger: output holds a chunk's header, 64 KiB and what may be stored
+    const n = s.chunks.end(s.coder, f, s.output) catch unreachable; // aegis: no-danger: output is output_len (128 KiB): a chunk's header, its 64 KiB and what may be stored
+
     s.queue(n);
     s.in_chunk = false;
     return true;
