@@ -155,7 +155,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
                             aegis.assert.invariant(stream.op <= output.len, "stream.op <= output.len");
                             aegis.assert.invariant(block.token <= w.tokens.len, "block.token <= w.tokens.len");
                             aegis.assert.invariant(block.len <= w.tokens.len - block.token, "block.len <= w.tokens.len - block.token");
-                            if (block.required > stream.op - stream.start +| stream.history.len() or
+                            if (block.required > stream.op - stream.start + stream.history.len() or
                                 block.max_distance > stream.window or block.len > output.len - stream.op) break;
                             resolve(w.tokens[block.token..][0..block.len], &stream, block.required);
                             state.checked = stream.op - block.len;
