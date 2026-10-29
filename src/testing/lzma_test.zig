@@ -433,23 +433,27 @@ fn repeated(comptime s: []const u8, comptime n: usize) *const [s.len * n]u8 {
 }
 
 /// `in` as one .xz stream, compressed at liblzma's preset `level`.
-fn xzStream(gpa: std.mem.Allocator, in: []const u8, level: u4) ![]u8 {
-    const options: xz.Compressor.Options = .{ .lzma = .preset(level, false) };
-    var c: xz.Compressor = try .init(gpa, options);
-    defer c.deinit();
-    const out = try gpa.alloc(u8, xz.Compressor.bound(options, in.len));
-    errdefer gpa.free(out);
-    const n = try c.compress(in, out);
-    return gpa.realloc(out, n);
+/// `in` as one .xz stream from the streaming encoder: one block whose
+/// header declares no sizes, or blocks of `block_size` whose headers do.
+fn xzStream(gpa: std.mem.Allocator, in: []const u8, level: u4, block_size: ?u64) ![]u8 {
+    var state: xz.Compress = try .init(gpa, .{ .lzma = .preset(level, false), .block_size = block_size });
+    defer state.deinit();
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    var staging: [4096]u8 = undefined;
+    var writer: xz.Compress.Writer = .init(&state, &out.writer, &staging);
+    try writer.interface.writeAll(in);
+    try writer.finish();
+    return out.toOwnedSlice();
 }
 
-test "the .xz reader sizes its window from each block's header: grown for a larger dictionary, refused past its limit" {
+test "the .xz reader sizes its window from each block's header: grown for a larger dictionary, refused past its limit, no larger than a declared size" {
     const gpa = testing.allocator;
     const first = comptime repeated("a first stream, at preset 0: a 256 KiB dictionary. ", 40);
     const second = comptime repeated("a second stream, at preset 1: a 1 MiB dictionary. ", 40);
-    const small = try xzStream(gpa, first, 0);
+    const small = try xzStream(gpa, first, 0, null);
     defer gpa.free(small);
-    const large = try xzStream(gpa, second, 1);
+    const large = try xzStream(gpa, second, 1, null);
     defer gpa.free(large);
     const both = try std.mem.concat(gpa, u8, &.{ small, large });
     defer gpa.free(both);
@@ -478,5 +482,19 @@ test "the .xz reader sizes its window from each block's header: grown for a larg
         try testing.expectEqual(lzma.Diagnostic.Reason.memory_limit, diagnostic.reason);
         // The second stream's header, then its block's.
         try testing.expectEqual(small.len + 12, diagnostic.offset.raw());
+    }
+
+    // A block whose header declares its size keeps no more history than
+    // it: the 1 MiB dictionary's block, sized, fits the smallest window.
+    {
+        const sized = try xzStream(gpa, second, 1, 1 << 20);
+        defer gpa.free(sized);
+        var source: std.Io.Reader = .fixed(sized);
+        var reader: xz.Decompress.Reader = .init(gpa, &source, &buffer, xz.Decompress.windowLength(second.len), .{});
+        defer reader.deinit();
+        const got = try reader.interface.allocRemaining(gpa, .unlimited);
+        defer gpa.free(got);
+        try testing.expectEqualStrings(second, got);
+        try testing.expectEqual(xz.Decompress.windowLength(second.len), reader.state.window.len);
     }
 }

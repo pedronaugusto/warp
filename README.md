@@ -470,7 +470,8 @@ byte; the window is the caller's, `windowLength(dictionary)` bytes. An `.lzma`
 or raw stream naming a larger dictionary is `WindowTooLarge`. An `.xz` stream
 names its dictionary in each block's header, so `xz.Decompress` stops there
 when the window is too small (`need_window`) and takes a larger one
-(`setWindow`) or refuses it (`refuseWindow`); its `Reader` allocates the
+(`setWindow`) or refuses it (`refuseWindow`); a block whose header declares
+its size needs no window larger than it. Its `Reader` allocates the
 window so, up to a limit, for a stream whose dictionary is known only from
 its blocks (xz in zip). They read input in place and stage only a symbol or
 header cut short, so a stream's end is exact. Each has a `Reader`. `xz.parallel.Decompressor` decodes the blocks whose headers carry

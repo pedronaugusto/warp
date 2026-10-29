@@ -140,7 +140,7 @@ pub fn init(window: []u8, options: Options) Decompress {
 }
 
 /// The window the block whose header stopped the decoder needs
-/// (`need_window`): `windowLength` of its dictionary.
+/// (`need_window`): `windowLength` of the history it keeps (`held`).
 pub fn windowNeeded(z: *const Decompress) usize {
     return z.window_needed;
 }
@@ -220,7 +220,7 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
             },
             .block_header => {
                 if (z.window_needed == 0 and !try z.blockHeader(in, &ip)) return .{ .in_len = ip, .out_len = op, .status = .need_input };
-                const needed = windowLength(z.header.dictionary);
+                const needed = windowLength(held(z.header));
                 if (needed > z.window.len) {
                     z.window_needed = needed;
                     return .{ .in_len = ip, .out_len = op, .status = .need_window };
@@ -316,8 +316,15 @@ fn blockHeader(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
 
 /// The block whose header was read begun, its data from input offset `at`,
 /// its dictionary in the window.
+/// The history a block keeps: its dictionary, or the uncompressed size its
+/// header declares where that is less. Each block starts its dictionary
+/// afresh and ends at its declared size, so no distance reaches further.
+fn held(h: format.BlockHeader) u64 {
+    return @min(h.dictionary, h.uncompressed orelse h.dictionary);
+}
+
 fn beginBlock(z: *Decompress, at: u64) void {
-    z.lzma2 = Stream.init(z.window, z.header.dictionary, .lzma2);
+    z.lzma2 = Stream.init(z.window, held(z.header), .lzma2);
     z.lzma2.offset = at;
     z.hasher = .init(z.check);
     z.block_in = 0;
