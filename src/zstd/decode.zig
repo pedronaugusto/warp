@@ -208,13 +208,11 @@ pub const Frame = struct {
                         // Read in place: the block's own bytes follow.
                         lits.* = .{ .bytes = in[header..], .len = len, .in_out = null, .limit = f.out.len };
                     } else {
-                        lits.* = f.literalStorage(len, op);
-                        @memcpy(@constCast(lits.bytes[0..len]), in[header..][0..len]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
+                        @memcpy(f.literalStorage(len, op, lits), in[header..][0..len]);
                     }
                     return header + len;
                 }
-                lits.* = f.literalStorage(len, op);
-                @memset(@constCast(lits.bytes[0..len]), in[header]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
+                @memset(f.literalStorage(len, op, lits), in[header]);
                 return header + 1;
             },
             2, 3 => {
@@ -247,8 +245,7 @@ pub const Frame = struct {
                 if (csize + header > in.len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
                 if (expected < len) return f.fail(error.OutputTooSmall, 0, .bad_literals_header);
                 const src = in[header..][0..csize];
-                lits.* = f.literalStorage(len, op);
-                const dst = @constCast(lits.bytes[0..len]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
+                const dst = f.literalStorage(len, op, lits);
                 if (kind == 2) {
                     try f.huffmanTable(src, header, !single and huffman.chooseDouble(@intCast(len), @intCast(csize)));
                     const used = f.tables.weights.len;
@@ -262,7 +259,10 @@ pub const Frame = struct {
         }
     }
 
-    fn literalStorage(f: *Frame, len: usize, op: usize) Literals {
+    /// Storage for `len` literals the section writes: `lits.*` describes
+    /// them where they will be read, and the returned slice is where they
+    /// are written, the decoder's scratch or the end of its output.
+    fn literalStorage(f: *Frame, len: usize, op: usize, lits: *Literals) []u8 {
         // The literals section's caller has checked a section no longer
         // than a block or than the room left.
         aegis.assert.invariant(f.block_max <= block_max, "f.block_max <= block_max");
@@ -272,12 +272,13 @@ pub const Frame = struct {
         const room = f.out.len - op;
         if (room <= f.block_max + 2 * margin + len and len + margin <= f.literal_buffer.len) {
             @memset(f.literal_buffer[len..][0..margin], 0);
-            return .{ .bytes = f.literal_buffer, .len = len, .in_out = null, .limit = f.out.len };
+            lits.* = .{ .bytes = f.literal_buffer, .len = len, .in_out = null, .limit = f.out.len };
+            return f.literal_buffer[0..len];
         }
-        return f.inOut(len, op);
+        return f.inOut(len, op, lits);
     }
 
-    fn inOut(f: *Frame, len: usize, op: usize) Literals {
+    fn inOut(f: *Frame, len: usize, op: usize, lits: *Literals) []u8 {
         // The literals section's caller has checked a section no longer
         // than a block or than the room left.
         aegis.assert.invariant(f.block_max <= block_max, "f.block_max <= block_max");
@@ -287,7 +288,9 @@ pub const Frame = struct {
         aegis.assert.invariant(len <= f.out.len, "len <= f.out.len");
         const room = f.out.len - op;
         const limit = if (room > f.block_max + margin + len + margin) op + f.block_max + margin else f.out.len;
-        return .{ .bytes = f.out[f.out.len - len ..], .len = len, .in_out = f.out.len - len, .limit = limit };
+        const at = f.out.len - len;
+        lits.* = .{ .bytes = f.out[at..], .len = len, .in_out = at, .limit = limit };
+        return f.out[at..];
     }
 
     fn huffmanTable(f: *Frame, src: []const u8, at: usize, double: bool) Error!void {

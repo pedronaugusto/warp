@@ -270,7 +270,7 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
     while (true) {
         const block_at = source.offset();
         const bh = source.bytes(3) orelse return fail(options, error.Truncated, block_at, .truncated);
-        const b = frame.blockHeader(bh[0..3]);
+        const b = frame.blockHeader(bh[0..3]) orelse return fail(options, error.InvalidStream, block_at, .bad_block_type);
         source.advance(3);
         const before = op.*;
         switch (b.kind) {
@@ -315,7 +315,6 @@ fn decodeFrame(d: *Decompressor, source: anytype, header: frame.Header, out: []u
                 op.* += n;
                 if (f.stopped) return .stopped;
             },
-            .reserved => return fail(options, error.InvalidStream, block_at, .bad_block_type),
         }
         if (verify) hash.update(out[before..op.*]);
         if (b.last) break;

@@ -209,8 +209,7 @@ fn readHeader(s: *Decompress) Error!void {
 
 fn readBlockHeader(s: *Decompress) Error!void {
     s.block_at = s.offset - 3;
-    s.block = frame.blockHeader(s.buffer[0..3]);
-    if (s.block.kind == .reserved) return s.fail(error.InvalidStream, s.block_at, .bad_block_type);
+    s.block = frame.blockHeader(s.buffer[0..3]) orelse return s.fail(error.InvalidStream, s.block_at, .bad_block_type);
     if (s.block.regenerated > s.header.blockMax()) return s.fail(error.InvalidStream, s.block_at, .block_too_large);
     s.next(.block_header, .read, s.block.size);
 }
@@ -249,7 +248,6 @@ fn readBlock(s: *Decompress) Error!void {
             if (err == error.OutputTooSmall) return s.fail(error.InvalidStream, s.block_at, .block_too_large);
             return s.fail(err, s.block_at +| 3 +| f.fault.offset, f.fault.reason);
         },
-        .reserved => unreachable, // aegis: no-danger: readBlockHeader refuses a reserved block before its payload is read
     };
     // A block writes inside its own part of the window.
     aegis.assert.invariant(len <= block.len, "len <= block.len");

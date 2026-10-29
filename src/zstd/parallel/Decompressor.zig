@@ -193,7 +193,6 @@ fn apply(f: *decode.Frame, slots: []Slot, out: []u8, op: *usize, hash: *std.hash
             .compressed => {
                 op.* += f.applyBlock(&slot.prepared, op.*) catch |err| return fail(options, err, slot.at +| 3 +| f.fault.offset, f.fault.reason);
             },
-            .reserved => unreachable, // aegis: no-danger: prepare refuses reserved blocks
         }
         if (verify) hash.update(out[before..op.*]);
     }
@@ -214,14 +213,18 @@ fn prepare(f: *decode.Frame, slot: *Slot, in: []const u8, at: *usize) void {
         slot.failure = error.Truncated;
         return;
     }
-    const block = frame.blockHeader(rest[0..3]);
+    const block = frame.blockHeader(rest[0..3]) orelse {
+        slot.failure = error.InvalidStream;
+        slot.reason = .bad_block_type;
+        return;
+    };
     slot.kind = block.kind;
     slot.last = block.last;
     const body = rest[3..];
     at.* = in.len - body.len;
-    if (block.kind == .reserved or (block.kind == .compressed and block.size > f.block_max)) {
+    if (block.kind == .compressed and block.size > f.block_max) {
         slot.failure = error.InvalidStream;
-        slot.reason = if (block.kind == .reserved) .bad_block_type else .block_too_large;
+        slot.reason = .block_too_large;
         return;
     }
     if (block.size > body.len) {

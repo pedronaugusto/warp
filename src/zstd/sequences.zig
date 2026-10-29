@@ -46,7 +46,11 @@ pub fn updateReps(reps: [3]u32, off: u32, zero_literals: bool) [3]u32 {
 pub const SeqStore = struct {
     seqs: []Sequence,
     count: usize = 0,
-    lits: []u8,
+    /// The literals, where the block's emission reads them: the buffer
+    /// below, or for a block of literals alone, the input itself.
+    lits: []const u8,
+    /// Where `store` and `storeLast` write the literals; `lits` views it.
+    lit_buffer: []u8,
     lit_len: usize = 0,
     /// The one sequence of a block whose literal or match length does not
     /// fit 16 bits (at most one can, a block being 128 KiB).
@@ -73,7 +77,7 @@ pub const SeqStore = struct {
     /// read: literals that end 32 bytes before it are copied 16 at a time.
     pub inline fn store(s: *SeqStore, in: []const u8, from: usize, to: usize, limit: usize, off: u32, match_len: usize) void {
         const len = to - from;
-        const dst = s.lits[s.lit_len..];
+        const dst = s.lit_buffer[s.lit_len..];
         if (to + 32 <= limit) {
             copy16(dst.ptr, in[from..].ptr);
             var i: usize = 16;
@@ -91,7 +95,7 @@ pub const SeqStore = struct {
 
     /// The literals after the last sequence.
     pub fn storeLast(s: *SeqStore, literals: []const u8) void {
-        @memcpy(s.lits[s.lit_len..][0..literals.len], literals);
+        @memcpy(s.lit_buffer[s.lit_len..][0..literals.len], literals);
         s.lit_len += literals.len;
     }
 

@@ -291,7 +291,7 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
         .optimal = undefined,
         .hash3_table = hash3_table,
         .opt_workspace = opt_workspace,
-        .store = .{ .seqs = seqs, .lits = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
+        .store = .{ .seqs = seqs, .lits = lits, .lit_buffer = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
         .entropy = undefined,
         .next_index = first_index,
         .owned = &.{},
@@ -353,7 +353,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
     }
     var o = try c.header(out, p, in.len, f);
-    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lit_buffer.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
     var prev: usize = 0;
     c.startEntropy();
@@ -447,7 +447,7 @@ pub fn compressLong(c: *Encoder, in: []const u8, out: []u8, f: Frame, limit: u32
     var base: u32 = first_index;
     c.prepare(p, base);
     var o = try c.header(out, p, in.len, f);
-    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lit_buffer.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
     var prev: usize = 0;
     var pos: usize = 0;
@@ -520,7 +520,7 @@ pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: boo
     c.prepare(p, base);
     var reps: [3]u32 = if (first_job) c.initialReps() else .{ 0, 0, 0 };
     if (!first_job) c.entropy[0].reset();
-    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lit_buffer.len - 32, @as(usize, 1) << p.window_log);
     var at: usize = 0;
     var prime_reps: [3]u32 = .{ 0, 0, 0 };
     while (at < prefix) {
@@ -624,7 +624,7 @@ fn writeLiteralTargets(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_li
         var part = c.store;
         part.count = 0;
         part.long = null;
-        part.lits = @constCast(in[at..][0..len]); // aegis: no-danger: emission only reads literals
+        part.lits = in[at..][0..len];
         part.lit_len = len;
         o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, reps.*, prev, first and at == 0, last and at + len == in.len);
         at += len;

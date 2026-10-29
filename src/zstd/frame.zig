@@ -181,13 +181,16 @@ pub const Block = struct {
     /// Bytes it decodes to, for raw and RLE blocks.
     regenerated: usize,
 
-    pub const Kind = enum(u2) { raw, rle, compressed, reserved };
+    pub const Kind = enum(u2) { raw, rle, compressed };
 };
 
-/// The block header at the start of `in` (three bytes).
-pub fn blockHeader(in: *const [3]u8) Block {
+/// The block header at the start of `in` (three bytes); null for the
+/// reserved fourth kind, which no block may be.
+pub fn blockHeader(in: *const [3]u8) ?Block {
     const h = std.mem.readInt(u24, in, .little);
-    const kind: Block.Kind = @fromBackingInt(@as(u2, @truncate(h >> 1)));
+    const field: u2 = @truncate(h >> 1);
+    if (field == 3) return null;
+    const kind: Block.Kind = @fromBackingInt(field);
     const size: usize = h >> 3;
     return .{
         .last = h & 1 != 0,
@@ -220,11 +223,10 @@ pub fn extent(in: []const u8, format: Format, fault: *Fault) ParseError!Extent {
                     fault.* = .{ .offset = in.len - rest.len, .reason = .truncated };
                     return error.Truncated;
                 }
-                const b = blockHeader(rest[0..3]);
-                if (b.kind == .reserved) {
+                const b = blockHeader(rest[0..3]) orelse {
                     fault.* = .{ .offset = in.len - rest.len, .reason = .bad_block_type };
                     return error.InvalidStream;
-                }
+                };
                 const body = rest[3..];
                 if (body.len < b.size) {
                     fault.* = .{ .offset = in.len - rest.len, .reason = .truncated };
