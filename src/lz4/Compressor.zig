@@ -99,27 +99,34 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compressor {
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var c = initBuffer(buffer, options);
+    var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
     c.gpa = gpa;
     return c;
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-    std.debug.assert(buffer.len >= memory(options));
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    var c = carve(fba.allocator(), options) catch return error.BufferTooSmall;
+    c.storage = buffer;
+    return c;
+}
+
+fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compressor {
     const top = @max(options.level, options.max_level orelse options.level);
-    var at: usize = 0;
-    const table = take(fast.Table, buffer, &at);
+    const table = try a.alignedCreate(fast.Table, .@"64");
     table.* = .empty;
     var chains: ?*hc.Chains = null;
-    if (band(top) != .fast) chains = hc.Chains.initBuffer(takeBytes(buffer, &at, hc.Chains.memory(top >= 10)), top >= 10);
+    if (band(top) != .fast) chains = try hc.Chains.create(a, top >= 10);
     var attached: ?Bound = null;
     if (options.dictionary) |bytes| {
-        const dict_table = take(fast.Table, buffer, &at);
+        const dict_table = try a.alignedCreate(fast.Table, .@"64");
         const indexed = fast.load(dict_table, bytes);
         var dict_chains: ?*hc.Chains = null;
         if (band(top) != .fast) {
-            dict_chains = hc.Chains.initBuffer(takeBytes(buffer, &at, hc.Chains.memory(false)), false);
+            dict_chains = try hc.Chains.create(a, false);
             dict_chains.?.load(indexed, band(options.level) == .mid);
         }
         attached = .{ .bytes = indexed, .table = dict_table, .chains = dict_chains };
@@ -132,19 +139,8 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
         .top_level = @min(top, max_level),
         .favor_decompression_speed = options.favor_decompression_speed,
         .gpa = null,
-        .storage = buffer,
+        .storage = &.{},
     };
-}
-
-fn take(comptime T: type, buffer: []align(64) u8, at: *usize) *T {
-    const bytes = takeBytes(buffer, at, @sizeOf(T));
-    return @ptrCast(@alignCast(bytes.ptr)); // aegis: no-danger: 64-aligned bytes of T's size, which no T exceeds in alignment
-}
-
-fn takeBytes(buffer: []align(64) u8, at: *usize, len: usize) []align(64) u8 {
-    const bytes: []align(64) u8 = @alignCast(buffer[at.*..][0..len]); // aegis: no-danger: every piece starts at a multiple of 64
-    at.* += std.mem.alignForward(usize, len, 64);
-    return bytes;
 }
 
 pub fn deinit(c: *Compressor) void {

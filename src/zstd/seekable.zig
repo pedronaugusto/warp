@@ -229,18 +229,23 @@ pub const Writer = struct {
         const size = memory(options);
         if (size == std.math.maxInt(usize)) return error.OutOfMemory;
         const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-        var w = initBuffer(buffer, output, options);
+        var w = initBuffer(buffer, output, options) catch unreachable; // unreachable: buffer is memory(options) bytes
         w.owned = buffer;
         w.gpa = gpa;
         return w;
     }
 
-    pub fn initBuffer(buffer: []align(64) u8, output: *Io.Writer, options: Options) Writer {
-        std.debug.assert(buffer.len >= memory(options));
-        const size = Compressor.memory(encoderOptions(options));
-        const records_size = @as(usize, options.max_frames) * @sizeOf(Record);
+    /// Refused when `buffer` is shorter than `memory(options)`.
+    pub fn initBuffer(buffer: []align(64) u8, output: *Io.Writer, options: Options) error{BufferTooSmall}!Writer {
+        if (buffer.len < memory(options)) return error.BufferTooSmall;
+        var fba: std.heap.FixedBufferAllocator = .init(buffer);
+        return carve(fba.allocator(), output, options) catch error.BufferTooSmall;
+    }
+
+    fn carve(a: Allocator, output: *Io.Writer, options: Options) error{ OutOfMemory, BufferTooSmall }!Writer {
         const len = options.frameLen();
-        return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = .initBuffer(buffer[0..size], encoderOptions(options)), .entries = @alignCast(std.mem.bytesAsSlice(Record, buffer[size..][0..records_size])), .input = buffer[size + records_size ..][0..len], .encoded = buffer[size + records_size + len ..][0..Compressor.bound(len)], .checksum = options.checksum, .frame_checksum = options.frame_checksum }; // aegis: no-danger: Record has four-byte alignment and compressor storage is a multiple of 64
+        const compressor = try a.alignedAlloc(u8, .@"64", Compressor.memory(encoderOptions(options)));
+        return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = try .initBuffer(compressor, encoderOptions(options)), .entries = try a.alloc(Record, options.max_frames), .input = try a.alloc(u8, len), .encoded = try a.alloc(u8, Compressor.bound(len)), .checksum = options.checksum, .frame_checksum = options.frame_checksum };
     }
 
     pub fn deinit(w: *Writer) void {

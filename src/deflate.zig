@@ -269,41 +269,51 @@ pub fn EngineFor(comptime window: u32) type {
         /// last few wait for the input's first bytes, which their hashes read.
         primed: isize = 0,
 
-        /// Lay the tables out in `buffer` (`buffer.len >= sizes.memory()`).
-        pub fn init(buffer: []align(64) u8, sizes: Sizes) Self {
+        /// Lay the tables out in `buffer`; refused when it is shorter than
+        /// `sizes.memory()`.
+        pub fn init(buffer: []align(64) u8, sizes: Sizes) error{BufferTooSmall}!Self {
+            if (buffer.len < sizes.memory()) return error.BufferTooSmall;
+            const finders = buffer[0..sizes.finderMemory()];
+            return carve(finders, buffer[finders.len..], sizes) catch error.BufferTooSmall;
+        }
+
+        fn carve(finders: []u8, rest: []u8, sizes: Sizes) std.mem.Allocator.Error!Self {
             var e: Self = .{ .sizes = sizes, .hc = undefined, .ht = undefined, .bt = undefined, .opt = undefined, .b = .{ .seqs = &.{} } };
             // The matchfinders overlap: one is in use at a time.
             if (sizes.chains) {
-                var at: usize = 0;
+                var fba: std.heap.FixedBufferAllocator = .init(finders);
+                const a = fba.allocator();
                 e.hc = .{
-                    .prev = take(Pos, buffer, &at, sizes.window),
-                    .hash4 = take(Pos, buffer, &at, @as(usize, 1) << sizes.hash4_bits),
-                    .hash3 = take(Pos, buffer, &at, @as(usize, 1) << sizes.hash3_bits),
+                    .prev = try a.alloc(Pos, sizes.window),
+                    .hash4 = try a.alloc(Pos, @as(usize, 1) << sizes.hash4_bits),
+                    .hash3 = try a.alloc(Pos, @as(usize, 1) << sizes.hash3_bits),
                 };
             }
             if (sizes.table) {
-                var at: usize = 0;
+                var fba: std.heap.FixedBufferAllocator = .init(finders);
                 e.ht = .{
-                    .table = take([2]Pos, buffer, &at, @as(usize, 1) << sizes.ht_bits),
+                    .table = try fba.allocator().alloc([2]Pos, @as(usize, 1) << sizes.ht_bits),
                     .window = @intCast(sizes.window),
                 };
             }
             if (sizes.trees) {
-                var at: usize = 0;
+                var fba: std.heap.FixedBufferAllocator = .init(finders);
+                const a = fba.allocator();
                 e.bt = .{
-                    .hash3 = take([2]Pos, buffer, &at, @as(usize, 1) << sizes.tree_bits),
-                    .hash4 = take(Pos, buffer, &at, @as(usize, 1) << sizes.tree_bits),
-                    .child = take(Pos, buffer, &at, 2 * sizes.window),
+                    .hash3 = try a.alloc([2]Pos, @as(usize, 1) << sizes.tree_bits),
+                    .hash4 = try a.alloc(Pos, @as(usize, 1) << sizes.tree_bits),
+                    .child = try a.alloc(Pos, 2 * sizes.window),
                     .window = @intCast(sizes.window),
                 };
             }
-            var at = sizes.finderMemory();
+            var fba: std.heap.FixedBufferAllocator = .init(rest);
+            const a = fba.allocator();
             if (sizes.nodes != 0) {
-                e.opt = &take(optimal.State, buffer, &at, 1)[0];
-                const nodes = take(optimal.Node, buffer, &at, sizes.nodes);
+                e.opt = try a.create(optimal.State);
+                const nodes = try a.alloc(optimal.Node, sizes.nodes);
                 e.opt.* = .{
                     .nodes = nodes,
-                    .cache = take(optimal.Match, buffer, &at, sizes.cache),
+                    .cache = try a.alloc(optimal.Match, sizes.cache),
                     .cache_limit = sizes.cacheLimit(),
                     .block_max = sizes.block_max,
                     .scan = sizes.scan,
@@ -311,15 +321,9 @@ pub fn EngineFor(comptime window: u32) type {
                 // A block's sequences are made from its path, over the nodes'
                 // memory (see `optimal.emitPath`); the other parsers' fit too.
                 e.b.seqs = @as([*]block.Sequence, @ptrCast(nodes.ptr))[0..nodes.len]; // aegis: no-danger: two u32 and two u32-aligned u16 pairs, 8 bytes each
-            } else e.b.seqs = take(block.Sequence, buffer, &at, sizes.sequences);
-            e.b.lits = take(u8, buffer, &at, sizes.literals);
+            } else e.b.seqs = try a.alloc(block.Sequence, sizes.sequences);
+            e.b.lits = try a.alloc(u8, sizes.literals);
             return e;
-        }
-
-        fn take(comptime T: type, buf: []align(64) u8, offset: *usize, count: usize) []T {
-            const bytes = buf[offset.*..][0 .. count * @sizeOf(T)];
-            offset.* += bytes.len;
-            return @alignCast(std.mem.bytesAsSlice(T, bytes)); // aegis: no-danger: every table starts at a multiple of its entry size in a 64-byte aligned buffer, and sequences at a multiple of 64
         }
 
         /// Start a stream at position `first` of `h` (a whole input, its

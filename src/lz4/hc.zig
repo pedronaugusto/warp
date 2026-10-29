@@ -81,8 +81,9 @@ pub const Chains = struct {
         return @sizeOf(Chains) + if (optimal) costs else 0;
     }
 
-    pub fn initBuffer(buffer: []align(64) u8, optimal: bool) *Chains {
-        const c: *Chains = @ptrCast(@alignCast(buffer.ptr)); // aegis: no-danger: 64-aligned bytes of `memory`, the Chains first
+    /// Chains from `a`, which has `memory(optimal)` bytes for them.
+    pub fn create(a: std.mem.Allocator, optimal: bool) std.mem.Allocator.Error!*Chains {
+        const c = try a.alignedCreate(Chains, .@"64");
         c.hash = @splat(0);
         c.chain = @splat(0xFFFF);
         c.prefix_idx = window_gap;
@@ -90,7 +91,8 @@ pub const Chains = struct {
         c.next_to_update = window_gap;
         c.end_idx = window_gap;
         c.mid = false;
-        c.costs = if (optimal) @ptrCast(@alignCast(buffer[@sizeOf(Chains)..].ptr)) else null; // aegis: no-danger: the costs follow at a multiple of Chains' 8-byte alignment
+        c.costs = if (optimal) try a.create([opt_num + trailing_literals]Cost) else null;
+
         return c;
     }
 

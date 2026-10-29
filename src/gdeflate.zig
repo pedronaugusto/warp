@@ -182,18 +182,16 @@ pub const Compressor = struct {
 
     pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
         const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-        var c = initBuffer(buffer, options);
+        var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
         c.owned = buffer;
         c.gpa = gpa;
         return c;
     }
 
-    /// A compressor in caller memory: `buffer.len >= memory(options)`;
-    /// `deinit` then frees nothing.
-    pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-        const s = sizes(options);
-        std.debug.assert(buffer.len >= s.memory());
-        return .{ .engine = .init(buffer, s), .level = options.level, .owned = &.{}, .gpa = undefined };
+    /// A compressor in caller memory, refused when shorter than
+    /// `memory(options)`; `deinit` then frees nothing.
+    pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
+        return .{ .engine = try .init(buffer, sizes(options)), .level = options.level, .owned = &.{}, .gpa = undefined };
     }
 
     pub fn deinit(c: *Compressor) void {

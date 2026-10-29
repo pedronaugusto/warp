@@ -56,7 +56,8 @@ const State = struct {
     header_ready: bool = false,
     dictionary_id: ?u32 = null,
     accept: container.Accept = .zlib,
-    engine_bytes: usize = 0,
+    /// The encoder's tables, after State in the same allocation.
+    engine: []align(64) u8 = &.{},
     gzip_header: ?*Header = null,
     header_at: usize = 0,
     header_check: u32 = 0,
@@ -85,7 +86,8 @@ fn create(z: *Stream, bytes: usize) ?*State {
         std.heap.page_allocator.rawAlloc(n, .@"64", @returnAddress()) orelse return null;
     const address = std.mem.alignForward(usize, @intFromPtr(original), 64);
     const s: *State = @ptrFromInt(address); // aegis: no-danger: the aligned address and State's size lie within the allocation
-    s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode };
+    const engine: [*]align(64) u8 = @ptrFromInt(address + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger: n reserves `bytes` after State's padded size, past the aligned address
+    s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode, .engine = engine[0..bytes] };
     z.state = s;
     z.total_in = 0;
     z.total_out = 0;
@@ -169,11 +171,11 @@ pub fn deflateInit2(stream: ?*Stream, value: c_int, method: c_int, window_bits: 
     if (method != 8 or bits < 8 or bits > 15 or mem_level < 1 or mem_level > 9 or (bits == 8 and kind != .zlib)) return stream_error;
     if (bits == 8) bits = 9;
     const options: Deflate.Options = .{ .level = lv, .strategy = st, .container = kind, .window_bits = @intCast(bits), .hash_bits = @intCast(mem_level + 7) };
-    const n = Deflate.memory(options);
-    const s = create(z, n) orelse return mem_error;
-    const buffer: [*]align(64) u8 = @ptrFromInt(@intFromPtr(s) + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger: create reserved the aligned engine region after State
-    s.encoder = .initBuffer(buffer[0..n], options);
-    s.engine_bytes = n;
+    const s = create(z, Deflate.memory(options)) orelse return mem_error;
+    s.encoder = Deflate.initBuffer(s.engine, options) catch {
+        destroy(z, s);
+        return mem_error;
+    };
     z.adler = if (kind == .gzip) 0 else 1;
     return ok;
 }
@@ -747,14 +749,16 @@ pub export fn deflatePending(stream: ?*Stream, pending: ?*c_uint, bit_count: ?*c
 fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State {
     dest.* = source.*;
     dest.state = null;
-    const fresh = create(dest, old.engine_bytes) orelse return null;
+    const fresh = create(dest, old.engine.len) orelse return null;
     const original = fresh.original;
     const allocation_len = fresh.allocation_len;
+    const engine = fresh.engine;
     const release = fresh.free;
     const userdata = fresh.@"opaque";
     fresh.* = old.*;
     fresh.original = original;
     fresh.allocation_len = allocation_len;
+    fresh.engine = engine;
     fresh.free = release;
     fresh.@"opaque" = userdata;
     dest.* = source.*;
@@ -787,10 +791,8 @@ pub export fn deflateCopy(destination: ?*Stream, source: ?*Stream) c_int {
     if (dest == src) return stream_error;
     const old = state(src, .encode) orelse return stream_error;
     const fresh = copiedState(dest, src, old) orelse return mem_error;
-    const padding = std.mem.alignForward(usize, @sizeOf(State), 64);
-    const from: [*]const u8 = @ptrCast(old); // aegis: no-danger: the engine allocation follows State at padding
-    const to: [*]u8 = @ptrCast(fresh); // aegis: no-danger: copiedState reserved the same engine bytes
-    @memcpy(to[padding..][0..old.engine_bytes], from[padding..][0..old.engine_bytes]);
+    @memcpy(fresh.engine, old.engine);
+
     fresh.encoder.window = moved(old.encoder.window, old, fresh);
     fresh.encoder.pending = moved(old.encoder.pending, old, fresh);
     fresh.encoder.options.dictionary = moved(old.encoder.options.dictionary, old, fresh);

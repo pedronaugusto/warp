@@ -129,30 +129,29 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var d = initBuffer(buffer, options);
+    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     d.owned = buffer;
     d.gpa = gpa;
     return d;
 }
 
-/// Valid options and aligned storage of `memory(options)` bytes.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Decompressor {
-    std.debug.assert(buffer.len >= memory(options));
-    const workers = @as([*]Worker, @ptrCast(buffer.ptr))[0..options.concurrency]; // aegis: no-danger: aligned memory reserves all worker records
-    var at = std.mem.alignForward(usize, @sizeOf(Worker) * workers.len, 64);
-    const tt = vectorAt(buffer, &at);
-    for (workers) |*w| {
-        const wtt = vectorAt(buffer, &at);
-        w.* = .{ .tt = wtt, .out = buffer[at..][0..options.blockOut()] };
-        at += std.mem.alignForward(usize, options.blockOut(), 64);
-    }
-    return .{ .options = options, .workers = workers, .tt = tt };
+/// Aligned storage, refused when the options are not valid or it is
+/// shorter than `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Decompressor {
+    if (options.concurrency == 0 or options.blockOut() == 0) return error.InvalidOptions;
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), options) catch error.BufferTooSmall;
 }
 
-fn vectorAt(buffer: []align(64) u8, at: *usize) []u32 {
-    const tt = @as([*]u32, @ptrCast(@alignCast(buffer[at.*..].ptr)))[0..engine.block_max]; // aegis: no-danger: each vector starts at a 64-byte boundary reserved by memory
-    at.* += tt_bytes;
-    return tt;
+fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Decompressor {
+    const workers = try a.alignedAlloc(Worker, .@"64", options.concurrency);
+    const tt = try a.alignedAlloc(u32, .@"64", engine.block_max);
+    for (workers) |*w| w.* = .{
+        .tt = try a.alignedAlloc(u32, .@"64", engine.block_max),
+        .out = try a.alignedAlloc(u8, .@"64", options.blockOut()),
+    };
+    return .{ .options = options, .workers = workers, .tt = tt };
 }
 
 pub fn deinit(d: *Decompressor) void {

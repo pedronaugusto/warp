@@ -143,11 +143,12 @@ fn dictTables(c: *Compressor, comptime T: type) []T {
     return std.mem.bytesAsSlice(T, c.memory_)[workMemory(c.options) / @sizeOf(T) ..];
 }
 
-/// A compressor over the caller's `buffer` (at least `memory(options)`
-/// bytes, aligned to 16).
-pub fn initBuffer(buffer: []align(16) u8, options: Options) error{InvalidOptions}!Compressor {
+/// A compressor over the caller's `buffer` (aligned to 16), refused when
+/// shorter than `memory(options)`.
+pub fn initBuffer(buffer: []align(16) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    std.debug.assert(buffer.len >= memory(options));
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+
     var c: Compressor = .{ .options = options, .memory_ = buffer[0..memory(options)], .gpa = null };
     c.indexDictionary();
     return c;

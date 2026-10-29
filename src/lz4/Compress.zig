@@ -66,21 +66,23 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compress {
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options);
+    var s = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
-    std.debug.assert(buffer.len >= memory(options));
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compress {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const b = blockLen(options);
     const c_len = std.mem.alignForward(usize, Compressor.memory(options.compressor), 64);
     const rest = buffer[c_len..];
     return .{
         .options = options,
-        .compressor = Compressor.initBuffer(buffer[0..c_len], options.compressor),
+        .compressor = try Compressor.initBuffer(buffer[0..c_len], options.compressor),
+
         .input = rest[0 .. history_len + b],
         .output = rest[history_len + b ..],
     };

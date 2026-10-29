@@ -24,20 +24,22 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bgzf {
     const owned = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var b = initBuffer(owned, options);
+    var b = initBuffer(owned, options) catch unreachable; // unreachable: owned is memory(options) bytes
     b.owned = owned;
     b.gpa = gpa;
     return b;
 }
 
-/// Caller memory, aligned to 64 bytes; deinit frees nothing.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Bgzf {
-    std.debug.assert(buffer.len >= memory(options));
+/// Caller memory, aligned to 64 bytes, refused when shorter than
+/// `memory(options)`; deinit frees nothing.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Bgzf {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const owned = buffer[0..memory(options)];
     const compressor_options: Compressor.Options = .{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes };
     const n = std.mem.alignForward(usize, Compressor.memory(compressor_options), 64);
     return .{
-        .compressor = .initBuffer(owned[0..n], compressor_options),
+        .compressor = try .initBuffer(owned[0..n], compressor_options),
+
         .input = owned[n..][0..65536],
         .output = owned[n + 65536 ..],
         .owned = &.{},

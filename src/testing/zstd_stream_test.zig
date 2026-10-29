@@ -298,7 +298,7 @@ test "zstd streaming encode: allocation failures and caller storage" {
     const options: zstd.Compress.Options = .{ .level = 6, .pledged_size = .fromRaw(37) };
     const buffer = try testing.allocator.alignedAlloc(u8, .@"64", zstd.Compress.memory(options));
     defer testing.allocator.free(buffer);
-    var s: zstd.Compress = .initBuffer(buffer, options);
+    var s: zstd.Compress = try .initBuffer(buffer, options);
     defer s.deinit();
     var out: [128]u8 = undefined;
     const in: [37]u8 = @splat('z');

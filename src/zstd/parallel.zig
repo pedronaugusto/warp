@@ -148,26 +148,29 @@ pub const Compressor = struct {
         const size = memory(options);
         if (size == std.math.maxInt(usize)) return error.OutOfMemory;
         const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-        var p = initBuffer(buffer, options);
+        var p = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
         p.owned = buffer;
         p.gpa = gpa;
         return p;
     }
 
-    /// Caller storage must hold `memory(options)` bytes and valid options.
-    pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-        std.debug.assert(buffer.len >= memory(options));
-        const cfg = config(options) catch unreachable; // unreachable: valid options are a caller precondition
-        const workers: []Worker = @alignCast(std.mem.bytesAsSlice(Worker, buffer[0 .. @sizeOf(Worker) * @as(usize, options.concurrency)])); // aegis: no-danger: buffer is 64-byte aligned
-        var at = std.mem.alignForward(usize, @sizeOf(Worker) * workers.len, 64);
-        const enc_size = Encoder.memory(cfg.encoder);
+    /// Caller storage, refused when the options are not valid or it is
+    /// shorter than `memory(options)`.
+    pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compressor {
+        const cfg = try config(options);
+        if (buffer.len < memory(options)) return error.BufferTooSmall;
+        var fba: std.heap.FixedBufferAllocator = .init(buffer);
+        return carve(fba.allocator(), options, cfg) catch error.BufferTooSmall;
+    }
+
+    fn carve(a: std.mem.Allocator, options: Options, cfg: Config) error{ OutOfMemory, BufferTooSmall }!Compressor {
+        const workers = try a.alignedAlloc(Worker, .@"64", options.concurrency);
         for (workers) |*w| {
-            w.* = .{ .encoder = .initBuffer(@alignCast(buffer[at..][0..enc_size]), cfg.encoder), .input = buffer[at + enc_size ..][0 .. cfg.job_len + cfg.overlap], .output = buffer[at + enc_size + cfg.job_len + cfg.overlap ..][0..cfg.output_len] }; // aegis: no-danger: each worker starts at a 64-byte boundary
-            at += enc_size + std.mem.alignForward(usize, cfg.job_len + cfg.overlap + cfg.output_len, 64);
+            const encoder = try a.alignedAlloc(u8, .@"64", Encoder.memory(cfg.encoder));
+            w.* = .{ .encoder = try .initBuffer(encoder, cfg.encoder), .input = try a.alloc(u8, cfg.job_len + cfg.overlap), .output = try a.alloc(u8, cfg.output_len) };
         }
-        const history = buffer[at..][0..cfg.overlap];
-        at = std.mem.alignForward(usize, at + cfg.overlap, 64);
-        const jobs: []Job = @alignCast(std.mem.bytesAsSlice(Job, buffer[at..][0 .. workers.len * @sizeOf(Job)])); // aegis: no-danger: jobs follow aligned worker storage
+        const history = try a.alloc(u8, cfg.overlap);
+        const jobs = try a.alignedAlloc(Job, .@"64", workers.len);
         for (jobs) |*job| job.* = .{};
         return .{ .options = options, .cfg = cfg, .workers = workers, .jobs = jobs, .history = history };
     }

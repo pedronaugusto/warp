@@ -56,23 +56,29 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var d = initBuffer(buffer, options);
+    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     d.owned = buffer;
     d.gpa = gpa;
     return d;
 }
 
-/// Valid options and aligned storage of `memory(options)` bytes.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Decompressor {
-    std.debug.assert(buffer.len >= memory(options));
-    const slots: []Slot = @alignCast(std.mem.bytesAsSlice(Slot, buffer[0 .. @as(usize, options.concurrency) * 2 * @sizeOf(Slot)])); // aegis: no-danger: caller buffer is 64-byte aligned
-    var at = std.mem.alignForward(usize, @sizeOf(Slot) * slots.len, 64);
-    const seq_size = max_sequences * @sizeOf(decode.PreparedSequence);
-    const stride = std.mem.alignForward(usize, seq_size + decode.block_max + decode.margin, 64);
-    for (slots) |*slot| {
-        slot.* = .{ .prepared = .{ .tables = undefined, .cursor = undefined, .seqs = @alignCast(std.mem.bytesAsSlice(decode.PreparedSequence, buffer[at..][0..seq_size])), .literals = buffer[at + seq_size ..][0 .. decode.block_max + decode.margin] } }; // aegis: no-danger: each worker starts at a 64-byte boundary
-        at += stride;
-    }
+/// Aligned storage, refused when the options are not valid or it is
+/// shorter than `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Decompressor {
+    if (options.concurrency == 0) return error.InvalidOptions;
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), options) catch error.BufferTooSmall;
+}
+
+fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Decompressor {
+    const slots = try a.alignedAlloc(Slot, .@"64", @as(usize, options.concurrency) * 2);
+    for (slots) |*slot| slot.* = .{ .prepared = .{
+        .tables = undefined,
+        .cursor = undefined,
+        .seqs = try a.alignedAlloc(decode.PreparedSequence, .@"64", max_sequences),
+        .literals = try a.alloc(u8, decode.block_max + decode.margin),
+    } };
     return .{ .slots = slots };
 }
 

@@ -78,23 +78,25 @@ pub fn memory(options: Options) usize {
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
     if (!options.compressor.valid() or !Compressor.validStream(options.compressor, options.stream)) return error.InvalidOptions;
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked
+    var s = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) error{InvalidOptions}!Compress {
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compress {
     if (!options.compressor.valid() or !Compressor.validStream(options.compressor, options.stream)) return error.InvalidOptions;
-    std.debug.assert(buffer.len >= memory(options));
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const b = Compressor.blockSize(options.compressor, options.stream);
     const c_len = std.mem.alignForward(usize, Compressor.memory(options.compressor), 64);
     const e_len = entriesLen(options) * @sizeOf(Index.Entry);
     const rest = buffer[c_len + e_len ..];
     return .{
         .options = options,
-        .compressor = Compressor.initBuffer(buffer[0..c_len], options.compressor) catch unreachable, // unreachable: the options were checked
+        .compressor = try Compressor.initBuffer(buffer[0..c_len], options.compressor),
+
         .entries = std.mem.bytesAsSlice(Index.Entry, std.mem.alignInBytes(buffer[c_len..][0..e_len], @alignOf(Index.Entry)).?),
         .input = rest[0..b],
         .output = rest[b..][0..stageLen(options)],

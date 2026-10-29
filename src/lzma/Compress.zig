@@ -119,16 +119,18 @@ pub fn memory(options: Options) usize {
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
     if (!options.valid()) return error.InvalidOptions;
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options) catch unreachable;
+    var s = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// A compressor in caller memory (`buffer.len >= memory(options)`).
-pub fn initBuffer(buffer: []align(64) u8, options: Options) error{InvalidOptions}!Compress {
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compress {
     if (!options.valid()) return error.InvalidOptions;
-    std.debug.assert(buffer.len >= memory(options));
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+
     const o = options.lzma;
     const coder = std.mem.bytesAsValue(encode.Coder, buffer[0..@sizeOf(encode.Coder)]);
     coder.* = .{};

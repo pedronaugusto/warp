@@ -164,7 +164,7 @@ the second length.
 | `Options.accept` | Raw DEFLATE, RFC 1950 or gzip; optional detection of wrapped versus raw input, or either wrapper |
 | `Options.partial` | Stops when `out` is full instead of failing; `Result.finished` says which |
 | `Options.dictionary` | History before the output: what a raw stream refers into, or the bytes an RFC 1950 stream identifies by Adler-32 |
-| `Compressor.init(gpa, options)`, `initBuffer(buffer, options)` | A compressor for a level (0 stored, 1-9, 10-12 near-optimal) and strategy, in allocated or given memory |
+| `Compressor.init(gpa, options)`, `initBuffer(buffer, options)` | A compressor for a level (0 stored, 1-9, 10-12 near-optimal) and strategy, in allocated or given memory (`error.BufferTooSmall` when shorter than `memory`) |
 | `Compressor.memory(options)` | The bytes `initBuffer` needs |
 | `compressor.compress(in, out, frame)` | One complete stream of `in`; `frame` picks the container, dictionary and gzip header |
 | `Compressor.bound(len, frame)` | The longest stream `compress` writes for `len` bytes: an `out` this long never fails |
@@ -197,7 +197,9 @@ lower level to a near-optimal one. `Compressor.Options.passes` and
 standard stream. `parallel.Options` chooses the container, level, 128 KiB chunk
 size, worker count, and whether chunks refer to the preceding 32 KiB. The bytes
 are identical for every worker count. `memory` and `initBuffer` support caller
-storage for the parallel codecs and BGZF writer.
+storage for the parallel codecs and BGZF writer. Every `initBuffer` in warp
+refuses a buffer shorter than its `memory` with `error.BufferTooSmall`.
+
 
 `gzip.Index.build(gpa, input, accept, spacing)` validates a compressed stream
 and saves block boundaries, checksums, and history. `write` and `read` persist

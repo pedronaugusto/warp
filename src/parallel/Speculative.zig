@@ -81,17 +81,19 @@ pub fn memory(concurrency: u16, options: Options) usize {
             std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64)) * concurrency;
 }
 
-pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) Speculative {
-    std.debug.assert(buffer.len >= memory(concurrency, options));
-    const workers = @as([*]Worker, @ptrCast(buffer.ptr))[0..concurrency]; // aegis: no-danger: aligned memory reserves all worker records
-    var at = std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64);
-    for (workers) |*w| {
-        const tokens = @as([*]u16, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.chunkLen()]; // aegis: no-danger: padded, aligned token regions are reserved by memory
-        at += std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64);
-        const blocks = @as([*]Block, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.max_blocks]; // aegis: no-danger: padded, aligned descriptor regions are reserved by memory
-        at += std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64);
-        w.* = .{ .tokens = tokens, .blocks = blocks };
-    }
+/// Refused when `buffer` is shorter than `memory(concurrency, options)`.
+pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) error{BufferTooSmall}!Speculative {
+    if (buffer.len < memory(concurrency, options)) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), concurrency, options) catch error.BufferTooSmall;
+}
+
+fn carve(a: std.mem.Allocator, concurrency: u16, options: Options) std.mem.Allocator.Error!Speculative {
+    const workers = try a.alignedAlloc(Worker, .@"64", concurrency);
+    for (workers) |*w| w.* = .{
+        .tokens = try a.alignedAlloc(u16, .@"64", options.chunkLen()),
+        .blocks = try a.alignedAlloc(Block, .@"64", options.max_blocks),
+    };
     return .{ .workers = workers, .options = options };
 }
 

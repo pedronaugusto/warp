@@ -82,22 +82,23 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var s = initBuffer(buffer, options);
+    var s = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// Tables and staging in aligned caller storage of `memory(options)` bytes.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
-    std.debug.assert(buffer.len >= memory(options));
+/// Tables and staging in aligned caller storage, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compress {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const enc_options = encoderOptions(options);
     const enc_size = Encoder.memory(enc_options);
     const p = Encoder.resolve(enc_options, options.pledged());
     const block = blockMax(p);
     const window_size = (@as(usize, 1) << p.window_log) + staging(p);
     const s_block = @min(block, if (options.pledged()) |n| @max(1024, n) else block);
-    var s: Compress = .{ .options = options, .encoder = Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
+    var s: Compress = .{ .options = options, .encoder = try Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
     s.startFrame();
     return s;
 }

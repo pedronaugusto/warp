@@ -32,6 +32,7 @@ test {
     _ = @import("testing/speculative_test.zig");
     _ = @import("testing/zstd_parallel_test.zig");
     _ = @import("testing/index_test.zig");
+    _ = @import("testing/buffer_test.zig");
     _ = @import("testing/api_test.zig");
     _ = @import("lz4.zig");
     _ = @import("testing/lz4_test.zig");

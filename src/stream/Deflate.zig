@@ -137,20 +137,21 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Deflate {
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var d = initBuffer(buffer, options);
+    var d = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
     d.owned = buffer;
     d.gpa = gpa;
     return d;
 }
 
-/// A stream in caller memory: `buffer.len >= memory(options)`; `deinit`
-/// then frees nothing.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Deflate {
+/// A stream in caller memory, refused when shorter than `memory(options)`;
+/// `deinit` then frees nothing.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Deflate {
     const layout = Layout.of(options);
-    std.debug.assert(buffer.len >= layout.memory());
+    if (buffer.len < layout.memory()) return error.BufferTooSmall;
     const engine_len = std.mem.alignForward(usize, layout.sizes.memory(), 64);
     var d: Deflate = .{
-        .engine = .init(buffer[0..engine_len], layout.sizes),
+        .engine = try .init(buffer[0..engine_len], layout.sizes),
+
         .options = options,
         .window = buffer[engine_len..][0..layout.window],
         .pending = buffer[engine_len + layout.window ..][0..layout.pending],

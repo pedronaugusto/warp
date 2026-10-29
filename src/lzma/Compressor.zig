@@ -162,21 +162,22 @@ const coder_bytes = std.mem.alignForward(usize, @sizeOf(encode.Coder), 64);
 pub fn init(gpa: Allocator, options: Options, max_input: ?aegis.units.Bytes(usize)) InitError!Compressor {
     if (!options.valid()) return error.InvalidOptions;
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options, max_input));
-    var c = initBuffer(buffer, options, max_input) catch unreachable;
+    var c = initBuffer(buffer, options, max_input) catch unreachable; // unreachable: the options were checked, and buffer is memory(options, max_input) bytes
     c.owned = buffer;
     c.gpa = gpa;
     return c;
 }
 
-/// A compressor in caller memory (`buffer.len >= memory(options,
-/// max_input)`); `deinit` then frees nothing. A longer input than
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options, max_input)`; `deinit` then frees nothing. A longer input than
 /// `max_input` still compresses, its matches reaching back as far as the
 /// tables sized for `max_input` allow.
-pub fn initBuffer(buffer: []align(64) u8, options: Options, max_input: ?aegis.units.Bytes(usize)) error{InvalidOptions}!Compressor {
+pub fn initBuffer(buffer: []align(64) u8, options: Options, max_input: ?aegis.units.Bytes(usize)) error{ InvalidOptions, BufferTooSmall }!Compressor {
     if (!options.valid()) return error.InvalidOptions;
     const kind = options.match_finder;
     const sizes = finders.Sizes.of(kind, options.dictionary, if (max_input) |m| m.raw() else null);
-    std.debug.assert(buffer.len >= coder_bytes + sizes.memory(kind));
+    if (buffer.len < coder_bytes + sizes.memory(kind)) return error.BufferTooSmall;
+
     const coder = std.mem.bytesAsValue(encode.Coder, buffer[0..@sizeOf(encode.Coder)]);
     coder.* = .{};
     const tables: []align(64) u8 = buffer[coder_bytes..];

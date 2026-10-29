@@ -234,47 +234,38 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var c = initBuffer(buffer, options);
+    var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
     c.owned = buffer;
     c.gpa = gpa;
     return c;
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`; `deinit`
-/// then frees nothing.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
-    const p = resolve(options, options.sizeHint());
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`; `deinit` then frees nothing.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Encoder {
     const l = Layout.of(options);
-    std.debug.assert(buffer.len >= l.bytes());
-    var at: usize = 0;
-    const long_matches: []long_match.Match = @alignCast(std.mem.bytesAsSlice(long_match.Match, buffer[at..][0 .. l.long_matches * @sizeOf(long_match.Match)])); // aegis: no-danger: base has 64-byte alignment
-    at += l.long_matches * @sizeOf(long_match.Match);
-    const long_entries: []long_match.Entry = @alignCast(std.mem.bytesAsSlice(long_match.Entry, buffer[at..][0 .. l.long_entries * @sizeOf(long_match.Entry)])); // aegis: no-danger: preceding table size is divisible by eight
-    at += l.long_entries * @sizeOf(long_match.Entry);
-    const long_heads = buffer[at..][0..l.long_heads];
-    at += l.long_heads;
-    // Even the smallest long table has four heads.
-    const dictionary_heads: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_heads * 4])); // aegis: no-danger: base has 64-byte alignment
-    at += l.dict_heads * 4;
-    const dictionary_chain: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_chain * 4])); // aegis: no-danger: preceding table size is divisible by four
-    at += l.dict_chain * 4;
-    const dictionary_sequences: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.dict_sequences * @sizeOf(encode.Sequence)])); // aegis: no-danger: preceding tables and Sequence have four-byte alignment
-    at += l.dict_sequences * @sizeOf(encode.Sequence);
-    const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
-    at += l.hash * 4;
-    const chain_table: []u32 = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
-    if (l.chain_offset == null) at += l.chain * 4;
-    const tag_table = buffer[at..][0..l.tags];
-    at += l.tags;
-    const hash3_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash3 * 4])); // aegis: no-danger: preceding tables have sizes divisible by four
-    at += l.hash3 * 4;
-    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) @ptrCast(@alignCast(buffer[at..][0..l.opt])) else null; // aegis: no-danger: preceding tables and Workspace have four-byte alignment
-    at += l.opt;
-    const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
-    at += l.seqs * @sizeOf(encode.Sequence);
-    const codes_ = buffer[at..][0 .. 3 * l.seqs];
-    at += 3 * l.seqs;
-    const lits = buffer[at..][0..l.lits];
+    if (buffer.len < l.bytes()) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), options, l) catch error.BufferTooSmall;
+}
+
+fn carve(a: Allocator, options: Options, l: Layout) Allocator.Error!Encoder {
+    const p = resolve(options, options.sizeHint());
+    const long_matches = try a.alloc(long_match.Match, l.long_matches);
+    const long_entries = try a.alloc(long_match.Entry, l.long_entries);
+    const long_heads = try a.alloc(u8, l.long_heads);
+    const dictionary_heads = try a.alloc(u32, l.dict_heads);
+    const dictionary_chain = try a.alloc(u32, l.dict_chain);
+    const dictionary_sequences = try a.alloc(encode.Sequence, l.dict_sequences);
+    const hash_table = try a.alloc(u32, l.hash);
+    const chain_table = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else try a.alloc(u32, l.chain);
+    const tag_table = try a.alloc(u8, l.tags);
+    const hash3_table = try a.alloc(u32, l.hash3);
+    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) try a.create(opt_.Workspace) else null;
+    const seqs = try a.alloc(encode.Sequence, l.seqs);
+    const codes_ = try a.alloc(u8, 3 * l.seqs);
+    const lits = try a.alloc(u8, l.lits);
+
     @memset(hash_table, 0);
     @memset(chain_table, 0);
     @memset(tag_table, 0);

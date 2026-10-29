@@ -32,7 +32,7 @@ export fn warpCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usiz
     const options: warp.Compressor.Options = .{ .level = @truncate(level), .max_input = .fromRaw(in_len) };
     const size = warp.Compressor.memory(options);
     if (size > memory.len) return -1;
-    var c: warp.Compressor = .initBuffer(memory[0..size], options);
+    var c = warp.Compressor.initBuffer(memory[0..size], options) catch return -1;
     defer c.deinit();
     const frame: warp.Compressor.Frame = .{
         .container = std.enums.fromInt(warp.Container, container) orelse return -1,
@@ -80,7 +80,7 @@ export fn warpBlockedGzip(in: [*]const u8, in_len: usize, out: [*]u8, out_len: u
     const options: warp.gzip.Bgzf.Options = .{ .level = 1 };
     const n = warp.gzip.Bgzf.memory(options);
     if (n > memory.len) return -1;
-    var b = warp.gzip.Bgzf.initBuffer(memory[0..n], options);
+    var b = warp.gzip.Bgzf.initBuffer(memory[0..n], options) catch return -1;
     defer b.deinit();
     var sink: std.Io.Writer = .fixed(out[0..out_len]);
     b.write(in[0..in_len], &sink) catch return -1;
@@ -93,7 +93,7 @@ export fn warpZstdCompress(in: [*]const u8, in_len: usize, out: [*]u8, out_len: 
     const options: warp.zstd.Compressor.Options = .{ .level = level, .max_input = .fromRaw(in_len), .dictionary = &dictionary };
     const size = warp.zstd.Compressor.memory(options);
     if (size > memory.len) return -1;
-    var c: warp.zstd.Compressor = .initBuffer(memory[0..size], options);
+    var c = warp.zstd.Compressor.initBuffer(memory[0..size], options) catch return -1;
     defer c.deinit();
     if (out_len < warp.zstd.Compressor.bound(in_len)) return -1;
     return @intCast(c.compress(in[0..in_len], out[0..out_len], .{}) catch return -1);
@@ -116,7 +116,7 @@ export fn warpZstdSeekable(in: [*]const u8, in_len: usize, out: [*]u8, out_len: 
     const size = warp.zstd.seekable.Writer.memory(options);
     if (size > memory.len) return -1;
     var sink: std.Io.Writer = .fixed(out[0..out_len]);
-    var writer: warp.zstd.seekable.Writer = .initBuffer(memory[0..size], &sink, options);
+    var writer = warp.zstd.seekable.Writer.initBuffer(memory[0..size], &sink, options) catch return -1;
     defer writer.deinit();
     writer.interface.writeAll(in[0..in_len]) catch return -1;
     writer.finish() catch return -1;
@@ -152,7 +152,7 @@ export fn warpZstdStreamCompress(in: [*]const u8, in_len: usize, out: [*]u8, out
     const options: warp.zstd.Compress.Options = .{ .level = level, .target_block_size = .fromRaw(2048), .pledged_size = .fromRaw(in_len) };
     const size = warp.zstd.Compress.memory(options);
     if (size > memory.len) return -1;
-    var s: warp.zstd.Compress = .initBuffer(memory[0..size], options);
+    var s = warp.zstd.Compress.initBuffer(memory[0..size], options) catch return -1;
     defer s.deinit();
     const step = s.write(in[0..in_len], out[0..out_len]) catch return -1;
     if (step.in_len != in_len) return -1;
@@ -188,7 +188,7 @@ export fn warpZstdParallel(io: *const std.Io, in: [*]const u8, in_len: usize, ou
     const options: warp.zstd.parallel.Options = .{ .job_len = .fromRaw(1024), .concurrency = 1, .tuning = .{ .window_log = 10 }, .rsyncable = rsyncable };
     const size = warp.zstd.parallel.Compressor.memory(options);
     if (size > memory.len) return -1;
-    var p = warp.zstd.parallel.Compressor.initBuffer(memory[0..size], options);
+    var p = warp.zstd.parallel.Compressor.initBuffer(memory[0..size], options) catch return -1;
     defer p.deinit();
     var sink: std.Io.Writer = .fixed(out[0..out_len]);
     p.compress(io.*, in[0..in_len], &sink) catch return -1;
@@ -203,7 +203,7 @@ export fn warpZstdPipeline(io: *const std.Io, in: [*]const u8, in_len: usize, ou
     const options: warp.zstd.parallel.Decompressor.Options = .{ .concurrency = 1 };
     const size = warp.zstd.parallel.Decompressor.memory(options);
     if (size > pipeline_memory.len) return -1;
-    var d = warp.zstd.parallel.Decompressor.initBuffer(pipeline_memory[0..size], options);
+    var d = warp.zstd.parallel.Decompressor.initBuffer(pipeline_memory[0..size], options) catch return -1;
     defer d.deinit();
     const result = d.decompress(io.*, in[0..in_len], out[0..out_len], .{ .partial = partial }) catch return -1;
     return @intCast(result.out_len);
@@ -216,7 +216,7 @@ export fn warpLz4Block(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usiz
     const options: warp.lz4.Compressor.Options = .{ .level = level, .max_level = 12, .dictionary = dict[0..dict_len] };
     const size = warp.lz4.Compressor.memory(options);
     if (size > memory.len) return -1;
-    var c: warp.lz4.Compressor = .initBuffer(memory[0..size], options);
+    var c = warp.lz4.Compressor.initBuffer(memory[0..size], options) catch return -1;
     defer c.deinit();
     c.setLevel(level);
     for ([_]warp.lz4.Compressor.History{ .none, .dictionary, .previous, .{ .bytes = dict[0..dict_len] } }) |h| {
@@ -232,7 +232,7 @@ export fn warpLz4Frame(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usiz
     const options: warp.lz4.Compressor.Options = .{ .level = 9 };
     const size = warp.lz4.Compressor.memory(options);
     if (size > memory.len) return -1;
-    var c: warp.lz4.Compressor = .initBuffer(memory[0..size], options);
+    var c = warp.lz4.Compressor.initBuffer(memory[0..size], options) catch return -1;
     defer c.deinit();
     const frame: warp.lz4.Compressor.Frame = .{ .format = if (legacy) .legacy else .standard, .independent = false, .block_checksum = true };
     var n = warp.lz4.writeSkippable(out[0..out_len], 5, "skip") catch return -1;
@@ -247,7 +247,7 @@ export fn warpLz4Stream(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usi
     const options: warp.lz4.Compress.Options = .{ .compressor = .{ .level = 2 }, .frame = .{ .block_size = .@"64KiB", .independent = false } };
     const size = warp.lz4.Compress.memory(options);
     if (size > memory.len) return -1;
-    var s: warp.lz4.Compress = .initBuffer(memory[0..size], options);
+    var s = warp.lz4.Compress.initBuffer(memory[0..size], options) catch return -1;
     defer s.deinit();
     var sink: std.Io.Writer = .fixed(out[0..out_len]);
     var buffer: [256]u8 = undefined;

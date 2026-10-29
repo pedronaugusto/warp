@@ -131,7 +131,7 @@ test "BGZF and parallel decoder accept exact caller memory and initialization fa
     }.once, .{});
     const memory = try gpa.alignedAlloc(u8, .@"64", Bgzf.memory(.{}));
     defer gpa.free(memory);
-    var b = Bgzf.initBuffer(memory, .{});
+    var b = try Bgzf.initBuffer(memory, .{});
     defer b.deinit();
     var output: [128]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&output);
@@ -141,7 +141,7 @@ test "BGZF and parallel decoder accept exact caller memory and initialization fa
     defer index.deinit();
     const decode_memory = try gpa.alignedAlloc(u8, .@"64", parallel.Decompressor.memory(.{ .concurrency = 2 }));
     defer gpa.free(decode_memory);
-    var p = parallel.Decompressor.initBuffer(decode_memory, .{ .concurrency = 2 });
+    var p = try parallel.Decompressor.initBuffer(decode_memory, .{ .concurrency = 2 });
     defer p.deinit();
     var back: [5]u8 = undefined;
     try testing.expectEqual(@as(usize, 5), try p.decompress(testing.io, sink.buffered(), &back, &index));

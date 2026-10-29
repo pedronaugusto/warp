@@ -373,7 +373,7 @@ test "a compressor in caller memory allocates nothing, and memory says what it n
         const options: lz4.Compressor.Options = .{ .level = level, .dictionary = "a dictionary" };
         const buffer = try testing.allocator.alignedAlloc(u8, .@"64", lz4.Compressor.memory(options));
         defer testing.allocator.free(buffer);
-        var c: lz4.Compressor = .initBuffer(buffer, options);
+        var c: lz4.Compressor = try .initBuffer(buffer, options);
         var out: [128]u8 = undefined;
         const n = try c.compressBlock("a dictionary, and a dictionary again", &out, .{ .history = .dictionary });
         var back: [64]u8 = undefined;
