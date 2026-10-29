@@ -98,12 +98,12 @@ fn readLong(max_symbol: u8, in: []const u8) ReadError!Counts {
         var count: i32 = undefined;
         const low_mask: u32 = @intCast(threshold - 1);
         // `threshold` is at most 2^15: the low bits fit 15, a full read 16.
-        const low: u15 = @truncate(bit_stream & low_mask);
+        const low: u15 = @intCast(bit_stream & low_mask);
         if (@as(i64, low) < max) {
             count = low;
             bit_count += nb_bits - 1;
         } else {
-            const full: u16 = @truncate(bit_stream & @as(u32, @intCast(2 * threshold - 1)));
+            const full: u16 = @intCast(bit_stream & @as(u32, @intCast(2 * threshold - 1)));
             count = full;
             if (count >= threshold) count -= max;
             bit_count += nb_bits;
@@ -157,7 +157,7 @@ fn spread(norm: []const i16, log: u4, symbols: *[max_cells]u8) void {
     aegis.assert.invariant(log <= 9, "log <= 9");
     const size: u32 = @as(u32, 1) << log;
     // `size` is at least 1: the mask never wraps.
-    const mask: CellIndex = @truncate(size -% 1);
+    const mask: CellIndex = @intCast(size -% 1);
     var high: CellIndex = mask;
     for (norm, 0..) |n, s| if (n == -1) {
         symbols[high] = @intCast(s);
@@ -166,7 +166,7 @@ fn spread(norm: []const i16, log: u4, symbols: *[max_cells]u8) void {
     var position: CellIndex = 0;
     // A step below the table's size; the wrap of a 9-bit add is a
     // multiple of every size, so masking after it is the format's modulo.
-    const st: CellIndex = @truncate(step(size));
+    const st: CellIndex = @intCast(step(size));
     for (norm, 0..) |n, s| {
         var i: i32 = 0;
         while (i < n) : (i += 1) {
@@ -193,7 +193,7 @@ fn decodeCells(comptime T: type, comptime Context: type, comptime make: fn (Cont
         const nb: u32 = log - std.math.log2_int(u32, n);
         // `n << nb` lies in [size, 2 * size): less `size` is its low bits,
         // a state of the table.
-        const base_state: CellIndex = @truncate((n << @intCast(nb)) & (size -% 1));
+        const base_state: CellIndex = @intCast((n << @intCast(nb)) & (size -% 1));
         c.* = make(context, s, @intCast(nb), base_state);
     }
 }

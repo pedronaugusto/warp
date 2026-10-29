@@ -250,7 +250,7 @@ pub const Frame = struct {
                 lits.* = f.literalStorage(len, op);
                 const dst = @constCast(lits.bytes[0..len]); // aegis: no-danger: literalStorage returns this decoder's writable scratch or output.
                 if (kind == 2) {
-                    try f.huffmanTable(src, header, !single and huffman.chooseDouble(@truncate(len), @truncate(csize)));
+                    try f.huffmanTable(src, header, !single and huffman.chooseDouble(@intCast(len), @intCast(csize)));
                     const used = f.tables.weights.len;
                     if (used >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
                     try f.huffmanDecode(src[used..], dst, single, header);
@@ -415,7 +415,7 @@ pub const Frame = struct {
         // The literals' table, as the core decodes them with it.
         switch (prepared.cursor) {
             .huffman => |*symbols| {
-                if (symbols.table == &f.tables.huffman and symbols.table.kind == .single and huffman.chooseDouble(@truncate(section.len), @truncate(symbols.source.len))) f.tables.huffman.buildDouble(&f.tables.weights);
+                if (symbols.table == &f.tables.huffman and symbols.table.kind == .single and huffman.chooseDouble(@intCast(section.len), @intCast(symbols.source.len))) f.tables.huffman.buildDouble(&f.tables.weights);
                 prepared.tables.huffman = symbols.table.*;
                 symbols.table = &prepared.tables.huffman;
             },
@@ -586,12 +586,12 @@ pub const Frame = struct {
             const ml_extra = SequenceCells.extra(cell.ml);
             const ll_extra = SequenceCells.extra(cell.ll);
             // Lengths: a base below 2^17 and at most 16 extra bits.
-            const ml_base: u17 = @truncate(SequenceCells.base(cell.ml));
-            const ml_bits: u16 = if (ml_extra > 0) @truncate(r.readFast(ml_extra)) else 0;
+            const ml_base: u17 = @intCast(SequenceCells.base(cell.ml));
+            const ml_bits: u16 = if (ml_extra > 0) @intCast(r.readFast(ml_extra)) else 0;
             const ml: usize = @as(u32, ml_base) + ml_bits;
             if (@as(u32, of_extra) + ml_extra + ll_extra >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
-            const ll_base: u17 = @truncate(SequenceCells.base(cell.ll));
-            const ll_bits: u16 = if (ll_extra > 0) @truncate(r.readFast(ll_extra)) else 0;
+            const ll_base: u17 = @intCast(SequenceCells.base(cell.ll));
+            const ll_bits: u16 = if (ll_extra > 0) @intCast(r.readFast(ll_extra)) else 0;
             const ll: usize = @as(u32, ll_base) + ll_bits;
             if (n > 1) {
                 ll_state = SequenceCells.nextState(LlState, cell.ll, &r);
@@ -767,8 +767,8 @@ const SequenceCells = struct {
         const of_extra = extra(cells.of);
         if (of_extra > 1) {
             // A base below 2^31 and fewer than 31 extra bits: the sum fits.
-            const of_base: u31 = @truncate(base(cells.of));
-            const of_bits: u31 = @truncate(r.readFast(of_extra));
+            const of_base: u31 = @intCast(base(cells.of));
+            const of_bits: u31 = @intCast(r.readFast(of_extra));
             const value = @as(u32, of_base) + of_bits;
             rep[2] = rep[1];
             rep[1] = rep[0];
@@ -785,8 +785,8 @@ const SequenceCells = struct {
         }
         // Repeat 2 or 3, or after no literals repeat 3 or repeat 1 less one.
         // A repeat code's base is 0 or 1: the index is 0 to 3.
-        const rep_base: u1 = @truncate(base(cells.of));
-        const rep_bit: u1 = @truncate(r.readFast(1));
+        const rep_base: u1 = @intCast(base(cells.of));
+        const rep_bit: u1 = @intCast(r.readFast(1));
         const index = @as(u32, rep_base) + @intFromBool(ll0) + rep_bit;
         var value: u32 = switch (index) {
             1 => rep[1],
@@ -804,19 +804,19 @@ const SequenceCells = struct {
     /// The cell's next state after its `stateBits` bits: below the
     /// table's size, so it fits the table's state type.
     inline fn nextState(comptime State: type, cell: u64, r: *bits.Reader) State {
-        const base_state: State = @truncate(cell);
-        const bits_read: State = @truncate(r.read(stateBits(cell)));
+        const base_state: State = @intCast(@as(u16, @truncate(cell)));
+        const bits_read: State = @intCast(r.read(stateBits(cell)));
         return base_state +% bits_read;
     }
 
     inline fn extra(cell: u64) u6 {
-        // safe: the extra bit counts of every code table are at most 31.
-        return @truncate(cell >> 16);
+        // The extra bit counts of every code table are at most 31.
+        return @intCast(@as(u8, @truncate(cell >> 16)));
     }
 
     inline fn stateBits(cell: u64) u6 {
-        // safe: a state's bit count is at most the table's log, 9 or less.
-        return @truncate(cell >> 24);
+        // A state's bit count is at most the table's log, 9 or less.
+        return @intCast(@as(u8, @truncate(cell >> 24)));
     }
 
     inline fn base(cell: u64) u32 {
@@ -876,16 +876,16 @@ pub const Prepared = struct {
             // An offset code's base below 2^31 and fewer than 31 extra bits;
             // a length code's base below 2^17 and at most 16.
             const off = if (ofc.extra_bits > 1) blk: {
-                const of_base: u31 = @truncate(ofc.base);
-                const of_bits: u31 = @truncate(r.readFast(@truncate(ofc.extra_bits)));
+                const of_base: u31 = @intCast(ofc.base);
+                const of_bits: u31 = @intCast(r.readFast(@intCast(ofc.extra_bits)));
                 break :blk @as(u32, of_base) + of_bits + 3;
-            } else if (ofc.extra_bits == 1) 2 + @as(u32, @as(u1, @truncate(r.readFast(1)))) else 1;
-            const ml_base: u17 = @truncate(mlc.base);
-            const ml_bits: u16 = if (mlc.extra_bits > 0) @truncate(r.readFast(@truncate(mlc.extra_bits))) else 0;
+            } else if (ofc.extra_bits == 1) 2 + @as(u32, @as(u1, @intCast(r.readFast(1)))) else 1;
+            const ml_base: u17 = @intCast(mlc.base);
+            const ml_bits: u16 = if (mlc.extra_bits > 0) @intCast(r.readFast(@intCast(mlc.extra_bits))) else 0;
             const ml = @as(u32, ml_base) + ml_bits;
             if (@as(u32, ofc.extra_bits) + mlc.extra_bits + llc.extra_bits >= 64 - 7 - (9 + 9 + 8)) _ = r.reload();
-            const ll_base: u17 = @truncate(llc.base);
-            const ll_bits: u16 = if (llc.extra_bits > 0) @truncate(r.readFast(@truncate(llc.extra_bits))) else 0;
+            const ll_base: u17 = @intCast(llc.base);
+            const ll_bits: u16 = if (llc.extra_bits > 0) @intCast(r.readFast(@intCast(llc.extra_bits))) else 0;
             const ll = @as(u32, ll_base) + ll_bits;
             sequence.* = .{ .ll = ll, .ml = ml, .off = off };
             if (i + 1 < prepared.count) {
@@ -991,7 +991,7 @@ fn repeat(dst: [*]u8, src: [*]const u8, len: usize) void {
 
 /// A first state: `log` bits, the table's log, which its state type holds.
 inline fn readState(comptime State: type, r: *bits.Reader, log: u4) State {
-    const state: State = @truncate(r.read(log));
+    const state: State = @intCast(r.read(log));
     _ = r.reload();
     return state;
 }
