@@ -273,6 +273,8 @@ pub const Decode = struct {
                             try z.finish();
                             return op;
                         },
+                        // The window is the stream's whole dictionary.
+                        .need_window => return z.refuseWindow(),
                     }
                 }
             },

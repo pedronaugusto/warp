@@ -3,6 +3,13 @@
 //! `filter.zig`, LZMA2's engine), so a stream is decoded or refused the
 //! same however it arrives.
 //!
+//! A window is sized from the block header that names its dictionary, not
+//! before: a block whose dictionary does not fit the window stops the
+//! decoder at its header (`need_window`), and the caller gives one large
+//! enough (`setWindow`) or refuses it (`refuseWindow`). Each block starts
+//! its dictionary afresh, so nothing carries from one window to the next.
+//! `Reader` allocates its window so, up to a limit.
+//!
 //! Headers, checks and the footer are gathered; the index is read a field
 //! at a time and its records hashed as the blocks' are. A block's LZMA2
 //! runs through `lzma/Stream.zig`, straight into the caller's output when
@@ -13,6 +20,7 @@ const Decompress = @This();
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 const aegis = @import("aegis");
 const format = @import("format.zig");
 const filter_ = @import("filter.zig");
@@ -32,6 +40,10 @@ pub const Status = enum {
     need_input,
     /// `out` is full.
     output_full,
+    /// A block's header names a dictionary larger than the window: give a
+    /// window of `windowNeeded()` bytes or more with `setWindow`, or refuse
+    /// it with `refuseWindow`, before decoding on.
+    need_window,
     /// The stream ended (`streams = .one`); input after it is not taken.
     done,
 };
@@ -45,7 +57,8 @@ pub const Error = error{
     ChecksumMismatch,
     /// The input ends inside a stream (`finish`).
     Truncated,
-    /// A block's dictionary is larger than the window.
+    /// A block's dictionary is larger than the caller allows
+    /// (`refuseWindow`).
     WindowTooLarge,
 };
 
@@ -91,8 +104,12 @@ offset: u64 = 0,
 /// A part being gathered.
 gather: [1024]u8 = undefined,
 gathered: usize = 0,
-/// The current block.
+/// The current block, and where its header starts.
 header: format.BlockHeader = undefined,
+block_at: u64 = 0,
+/// The window the current block's header asks for and the window does not
+/// give; zero when none is asked.
+window_needed: usize = 0,
 lzma2: Stream = undefined,
 hasher: Hasher = .none,
 block_in: u64 = 0,
@@ -116,10 +133,33 @@ count_read: bool = false,
 padding: u64 = 0,
 failure: ?Error = null,
 
-/// A decoder over `window`, `windowLength(dictionary)` bytes for the
-/// largest dictionary its streams may name.
+/// A decoder over `window`, which may be empty: a block whose dictionary
+/// does not fit it asks for another (`need_window`).
 pub fn init(window: []u8, options: Options) Decompress {
     return .{ .options = options, .window = window };
+}
+
+/// The window the block whose header stopped the decoder needs
+/// (`need_window`): `windowLength` of its dictionary.
+pub fn windowNeeded(z: *const Decompress) usize {
+    return z.window_needed;
+}
+
+/// Gives the decoder `window` in place of its own, after `need_window`. The
+/// window it had is the caller's again: the block asking starts its
+/// dictionary afresh in the new one.
+pub fn setWindow(z: *Decompress, window: []u8) void {
+    aegis.assert.invariant(z.phase == .block_header, "z.phase == .block_header");
+    aegis.assert.invariant(z.window_needed != 0, "z.window_needed != 0");
+    z.window = window;
+}
+
+/// Refuses the window the block whose header stopped the decoder asks for
+/// (`need_window`): `error.WindowTooLarge`, at its header, from now on.
+pub fn refuseWindow(z: *Decompress) Error {
+    aegis.assert.invariant(z.phase == .block_header, "z.phase == .block_header");
+    aegis.assert.invariant(z.window_needed != 0, "z.window_needed != 0");
+    return z.fail(error.WindowTooLarge, z.block_at, .memory_limit);
 }
 
 fn go(z: *Decompress, comptime from: Phase, comptime on: Event) void {
@@ -179,7 +219,14 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
                 z.go(.block_start, .read);
             },
             .block_header => {
-                if (!try z.blockHeader(in, &ip)) return .{ .in_len = ip, .out_len = op, .status = .need_input };
+                if (z.window_needed == 0 and !try z.blockHeader(in, &ip)) return .{ .in_len = ip, .out_len = op, .status = .need_input };
+                const needed = windowLength(z.header.dictionary);
+                if (needed > z.window.len) {
+                    z.window_needed = needed;
+                    return .{ .in_len = ip, .out_len = op, .status = .need_window };
+                }
+                z.window_needed = 0;
+                z.beginBlock(z.offset + ip);
                 z.go(.block_header, .read);
             },
             .block_data => {
@@ -187,6 +234,7 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
                 switch (status) {
                     .need_input, .output_full => return .{ .in_len = ip, .out_len = op, .status = status },
                     .done => z.go(.block_data, .read),
+                    .need_window => unreachable, // unreachable: a block's data asks for no window; its header did
                 }
             },
             .block_padding => {
@@ -253,26 +301,29 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
     }
 }
 
-/// A block's header, gathered and read, and the block begun; false where
-/// the input ends first.
+/// A block's header, gathered and read; false where the input ends first.
 fn blockHeader(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
     const len = (@as(usize, if (z.gathered == 0) in[ip.*] else z.gather[0]) + 1) * 4;
     if (!z.take(in, ip, len)) return false;
     // Where the header starts, for the diagnostic.
-    const start = z.offset +| ip.* -| len;
+    z.block_at = z.offset +| ip.* -| len;
     var fault: format.Fault = undefined;
     z.header = aegis.input.Untrusted([]const u8).init(z.gather[0..len]).parse(format.HeaderContext{ .check = z.check, .fault = &fault }, format.blockHeader) catch
-        return z.fail(error.InvalidStream, start + fault.at, fault.reason);
-    if (windowLength(z.header.dictionary) > z.window.len) return z.fail(error.WindowTooLarge, start, .memory_limit);
+        return z.fail(error.InvalidStream, z.block_at + fault.at, fault.reason);
+    z.gathered = 0;
+    return true;
+}
+
+/// The block whose header was read begun, its data from input offset `at`,
+/// its dictionary in the window.
+fn beginBlock(z: *Decompress, at: u64) void {
     z.lzma2 = Stream.init(z.window, z.header.dictionary, .lzma2);
-    z.lzma2.offset = z.offset + ip.*;
+    z.lzma2.offset = at;
     z.hasher = .init(z.check);
     z.block_in = 0;
     z.block_out = 0;
     z.pad = 0;
     if (z.header.filter_count != 0) z.pipe.reset(z.header.filters[0..z.header.filter_count]);
-    z.gathered = 0;
-    return true;
 }
 
 /// One field of the index, the count or a record's half; false where the
@@ -398,21 +449,44 @@ pub fn finish(z: *Decompress) Error!void {
     }
 }
 
-/// A `std.Io.Reader` over the same resumable decoder: `buffer` is the
-/// reader's own buffering, `window` as `init`'s.
+/// A `std.Io.Reader` over the same resumable decoder, whose window it
+/// allocates as the blocks' headers ask: `buffer` is the reader's own
+/// buffering, and a block asking for more than `max_window` bytes
+/// (`windowLength` of the largest dictionary to accept) is refused with
+/// `error.WindowTooLarge`. A window grows when a later block asks more and
+/// is kept when it asks less; `deinit` frees it.
 pub const Reader = struct {
     interface: Io.Reader,
     input: *Io.Reader,
     state: Decompress,
-    failure: ?Error = null,
+    gpa: Allocator,
+    max_window: usize,
+    failure: ?ReadError = null,
 
-    pub fn init(input: *Io.Reader, buffer: []u8, window: []u8, options: Options) Reader {
-        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer, .seek = 0, .end = 0 }, .input = input, .state = .init(window, options) };
+    pub const ReadError = Error || error{OutOfMemory};
+
+    pub fn init(gpa: Allocator, input: *Io.Reader, buffer: []u8, max_window: usize, options: Options) Reader {
+        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer, .seek = 0, .end = 0 }, .input = input, .state = .init(&.{}, options), .gpa = gpa, .max_window = max_window };
     }
 
-    /// The error behind an `error.ReadFailed`, when it was the stream's.
-    pub fn err(r: *const Reader) ?Error {
+    pub fn deinit(r: *Reader) void {
+        r.gpa.free(r.state.window);
+        r.* = undefined;
+    }
+
+    /// The error behind an `error.ReadFailed`, when it was the stream's or
+    /// its window's.
+    pub fn err(r: *const Reader) ?ReadError {
         return r.failure;
+    }
+
+    /// The window a block's header asks for, or its refusal.
+    fn grow(r: *Reader) ReadError!void {
+        const needed = r.state.windowNeeded();
+        if (needed > r.max_window) return r.state.refuseWindow();
+        const window = try r.gpa.alloc(u8, needed);
+        r.gpa.free(r.state.window);
+        r.state.setWindow(window);
     }
 
     fn readInto(r: *Reader, out: []u8) Io.Reader.Error!usize {
@@ -425,6 +499,14 @@ pub const Reader = struct {
             r.input.toss(step.in_len);
             if (step.out_len != 0) return step.out_len;
             if (step.status == .done) return error.EndOfStream;
+            if (step.status == .need_window) {
+                r.grow() catch |failure| {
+                    r.failure = failure;
+                    return error.ReadFailed;
+                };
+                input = &.{};
+                continue;
+            }
             input = r.input.peekGreedy(1) catch |failure| {
                 if (failure == error.ReadFailed) return failure;
                 r.state.finish() catch |codec_error| {
