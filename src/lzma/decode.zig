@@ -332,7 +332,7 @@ inline fn symbol(c: *Coder, d: *range.Decoder, w: anytype, base: u64, comptime c
         if (c.marker_next) return c.fail(sym_at, .size_without_end);
         const prev: u32 = if (w.full() == 0) 0 else w.back(0);
         const lp_mask = ~(~@as(usize, 0) << c.props.lp);
-        const coder: u4 = @truncate(((at & lp_mask) << c.props.lc) | ((prev << c.props.lc) >> 8));
+        const coder: u4 = @intCast(((at & lp_mask) << c.props.lc) | ((prev << c.props.lc) >> 8));
         const probs = &p.literal[coder];
         var v: u32 = 1;
         if (c.state >= 7) {
