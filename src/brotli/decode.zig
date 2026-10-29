@@ -1030,8 +1030,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         } else {
             f.save(s, r, h);
             s.copy = copy;
-            switch (try resolve(s, h, d, push, dat, buf + h.pos)) {
-                .history => unreachable, // aegis: no-danger: resolve gives .history only for a distance this branch has excluded
+            switch (try resolveBeyond(s, h, d, push, dat, buf + h.pos)) {
                 .prefix => {
                     h.write(h.prefix()[s.prefix_at..][0..copy]);
                     s.from_prefix = false;
@@ -1150,6 +1149,9 @@ const Source = enum {
     word,
 };
 
+/// A source past the history: the prefix dictionary or a static word.
+const Beyond = enum { prefix, word };
+
 /// Commit the command's distance: refuse it, or say what it copies from,
 /// with the meta-block's remaining length taken.
 noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: [*]u8) StepError!Source {
@@ -1161,6 +1163,16 @@ noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst
         s.distance = d;
         return .history;
     }
+    return switch (try resolveBeyond(s, h, d, push, at, word_dst)) {
+        .prefix => .prefix,
+        .word => .word,
+    };
+}
+
+/// `resolve` for a distance past the history.
+noinline fn resolveBeyond(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: [*]u8) StepError!Beyond {
+    const max_distance: u64 = @min(h.total(), s.max_backward);
+    aegis.assert.invariant(d > max_distance, "d > max_distance");
     if (d > codes.max_allowed_distance) return s.fail(.distance, at);
     const prefix = h.prefix();
     const beyond = d - max_distance - 1;
