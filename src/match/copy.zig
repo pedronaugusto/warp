@@ -27,6 +27,8 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
     aegis.assert.invariant(at <= out.len, "at <= out.len");
     aegis.assert.invariant(len <= out.len - at, "len <= out.len - at");
     aegis.assert.invariant(out.len - at - len >= 32, "out.len - at - len >= 32");
+    // The decoders refuse a match with no distance.
+    aegis.assert.invariant(offset != 0, "offset != 0");
     // The match itself; its length bounds the loops.
     const match = out[at..][0..len];
     const op = match.ptr;
@@ -63,7 +65,7 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
                 store16(op + i + step, pattern);
             }
         },
-        else => unreachable, // aegis: no-danger: offsets of 8 and more returned above, and the decoder refuses offset 0
+        else => unreachable, // aegis: no-danger: offsets of 8 and more returned above, and 0 is refused at the top
     }
 }
 
