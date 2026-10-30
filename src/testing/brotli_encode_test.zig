@@ -94,6 +94,12 @@ test "for every stream the reference wrote, the encoder writes the same bytes, s
     const c = try corpus.Corpus.parse(decode_test.streams);
     var it = c.records();
     var count: usize = 0;
+    // One encoder of each kind for every stream, in corpus order: each
+    // stream starts on what another, often larger, left in its buffers.
+    var kept_whole = Compressor.init(gpa, .{});
+    defer kept_whole.deinit();
+    var kept = try Compress.init(gpa, .{});
+    defer kept.deinit();
     while (it.next()) |r| {
         if (!std.mem.eql(u8, r.fields[0], "brotli 1.2.1")) continue;
         const p = try Params.parse(r.fields[1]);
@@ -107,11 +113,19 @@ test "for every stream the reference wrote, the encoder writes the same bytes, s
         options.dictionary = if (prep) |*d| d else null;
         if (p.size_hint) options.size_hint = in.len;
         const want = r.fields[4];
-        // Output a byte at a time for small streams: waiting output.
+        // Output a byte at a time for small streams: waiting output, on a
+        // fresh encoder; in large pieces, on the kept one.
         for ([_]usize{ 1 << 16, if (want.len < 4096) 1 else 777 }) |step| {
-            var s = try Compress.init(gpa, options);
-            defer s.deinit();
-            const got = try stream(gpa, &s, in, p, step);
+            var fresh: ?Compress = null;
+            defer if (fresh) |*f| f.deinit();
+            const s = if (step == 1 << 16) kept: {
+                try kept.reset(options);
+                break :kept &kept;
+            } else made: {
+                fresh = try Compress.init(gpa, options);
+                break :made &fresh.?;
+            };
+            const got = try stream(gpa, s, in, p, step);
             defer gpa.free(got);
             testing.expectEqualSlices(u8, want, got) catch |err| {
                 std.debug.print("{s} | {s} | {s}: step {d}\n", .{ r.fields[1], r.fields[2], r.fields[3], step });
@@ -122,11 +136,10 @@ test "for every stream the reference wrote, the encoder writes the same bytes, s
         // as when the reference reads the whole input before its first
         // block.
         if (p.flush_every == 0 and p.metadata == 0 and in.len > 0) {
-            var whole = Compressor.init(gpa, options);
-            defer whole.deinit();
             const out = try gpa.alloc(u8, Compressor.bound(in.len));
             defer gpa.free(out);
-            const n = try whole.compress(in, out);
+            kept_whole.options = options;
+            const n = try kept_whole.compress(in, out);
             try testing.expectEqualSlices(u8, want, out[0..n]);
         }
         count += 1;
@@ -145,8 +158,15 @@ fn roundTrip(gpa: std.mem.Allocator, z: []const u8, in: []const u8, dict: []cons
     try testing.expectEqualSlices(u8, in, back[0..r.out_len]);
 }
 
+/// One encoder of each kind that every fuzz case uses after a fresh one,
+/// on whatever the case before it left.
+const Kept = struct {
+    whole: Compressor,
+    stream: Compress,
+};
+
 const Case = struct {
-    fn run(_: void, case: *shakedown.Case) !void {
+    fn run(kept: *Kept, case: *shakedown.Case) !void {
         const gpa = case.gpa;
         const src = case.source;
         const in = try shakedown.gen.string(src, gpa, .{ .kind = .bytes, .max_len = 20000, .average = 2000 });
@@ -172,21 +192,56 @@ const Case = struct {
             .dictionary = if (prep) |*d| d else null,
         };
         const p: Params = .{ .options = options, .size_hint = false, .flush_every = if (shakedown.gen.boolean(src)) shakedown.gen.intRange(src, usize, 1, 3000) else 0, .metadata = if (shakedown.gen.intRange(src, u8, 0, 7) == 0) shakedown.gen.intRange(src, usize, 1, 500) else 0 };
+        const step = shakedown.gen.intRange(src, usize, 1, 5000);
         var s = try Compress.init(gpa, options);
         defer s.deinit();
-        const z = try stream(gpa, &s, in, p, shakedown.gen.intRange(src, usize, 1, 5000));
+        const z = try stream(gpa, &s, in, p, step);
         defer gpa.free(z);
         try roundTrip(gpa, z, in, dict, large or options.window_bits > 24);
+        // The same stream on an encoder another case left.
+        try kept.stream.reset(options);
+        const again = try stream(gpa, &kept.stream, in, p, step);
+        defer gpa.free(again);
+        try testing.expectEqualSlices(u8, z, again);
         var whole = Compressor.init(gpa, options);
+        defer whole.deinit();
         const out = try gpa.alloc(u8, Compressor.bound(in.len));
         defer gpa.free(out);
         const n = try whole.compress(in, out);
         try roundTrip(gpa, out[0..n], in, dict, large or options.window_bits > 24);
+        kept.whole.options = options;
+        const out_again = try gpa.alloc(u8, Compressor.bound(in.len));
+        defer gpa.free(out_again);
+        const m = try kept.whole.compress(in, out_again);
+        try testing.expectEqualSlices(u8, out[0..n], out_again[0..m]);
     }
 };
 
 test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input" {
-    try shakedown.check(testing.allocator, {}, Case.run, .{ .cases = 300 });
+    var kept: Kept = .{ .whole = .init(testing.allocator, .{}), .stream = try .init(testing.allocator, .{}) };
+    defer kept.whole.deinit();
+    defer kept.stream.deinit();
+    try shakedown.check(testing.allocator, &kept, Case.run, .{ .cases = 300 });
+}
+
+test "a whole-buffer encoder allocates nothing for a stream the size of one it wrote before" {
+    const gpa = testing.allocator;
+    const in = try input(gpa, "text 7 60000");
+    defer gpa.free(in);
+    const out = try gpa.alloc(u8, Compressor.bound(in.len));
+    defer gpa.free(out);
+    for ([_]u4{ 0, 1, 2, 5, 9, 10, 11 }) |quality| {
+        var counting: std.testing.FailingAllocator = .init(gpa, .{});
+        var c = Compressor.init(counting.allocator(), .{ .quality = quality });
+        defer c.deinit();
+        const first = try c.compress(in, out);
+        const after_first = counting.allocations;
+        try testing.expect(after_first > 0);
+        // The same input again, on the buffers the first left. (A shorter
+        // one is another size hint, and may take another hasher.)
+        try testing.expectEqual(first, try c.compress(in, out));
+        try testing.expectEqual(after_first, counting.allocations);
+    }
 }
 
 test "the whole-buffer encoder refuses an output too small for its stream, and stores what does not compress" {
@@ -267,8 +322,12 @@ test "the encoders release everything on allocation failure" {
                 var prep: Prepared = try .init(gpa, data[0..1000]);
                 defer prep.deinit(gpa);
                 var c = Compressor.init(gpa, .{ .quality = quality, .dictionary = &prep });
+                defer c.deinit();
                 var out: [4096]u8 = undefined;
                 _ = try c.compress(data, &out);
+                // A second stream on what the first left, at another quality.
+                c.options.quality = if (quality == 11) 0 else quality + 1;
+                _ = try c.compress(data[0..2000], &out);
                 var s = try Compress.init(gpa, .{ .quality = quality, .window_bits = 16 });
                 defer s.deinit();
                 _ = try s.write(data, &out);

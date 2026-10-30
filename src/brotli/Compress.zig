@@ -36,6 +36,13 @@ pub fn deinit(s: *Compress) void {
     s.* = undefined;
 }
 
+/// Start a new stream with `options`, whatever this one had reached, on
+/// the buffers this one grew: a server writing many streams allocates for
+/// its largest only. The new stream is the one `init` would start.
+pub fn reset(s: *Compress, options: Options) std.mem.Allocator.Error!void {
+    return s.encoder.reset(options.params(options.size_hint), options.dictionary);
+}
+
 fn run(s: *Compress, op: encode.Operation, in: *[]const u8, out: *[]u8) Error!void {
     s.encoder.compressStream(op, in, out) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

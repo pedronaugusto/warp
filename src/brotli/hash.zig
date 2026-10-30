@@ -117,6 +117,11 @@ pub fn Quickly(comptime bucket_bits: u5, comptime sweep_bits: u2, comptime hash_
             gpa.free(h.buckets);
         }
 
+        /// A new stream: `prepare` clears what a stream reads.
+        fn rewind(h: *Self) void {
+            _ = h;
+        }
+
         inline fn hashBytes(data: []const u8, at: usize) u32 {
             const v = find.load64(data, at) << (64 - 8 * @as(u7, hash_len));
             return @intCast((v *% find.hash_mul64) >> (64 - @as(u7, bucket_bits)));
@@ -342,6 +347,11 @@ pub fn LongestMatch(comptime wide: bool) type {
             gpa.free(h.buckets);
         }
 
+        /// A new stream: `prepare` clears what a stream reads.
+        fn rewind(h: *Self) void {
+            _ = h;
+        }
+
         inline fn hashBytes(h: *const Self, data: []const u8, at: usize) usize {
             if (wide) return @intCast((find.load64(data, at) *% (find.hash_mul64 << 24)) >> (64 - 15));
             return (find.load32(data, at) *% find.hash_mul32) >> h.hash_shift;
@@ -452,6 +462,11 @@ pub fn Tagged(comptime wide: bool) type {
             gpa.free(h.num);
             gpa.free(h.tags);
             gpa.free(h.buckets);
+        }
+
+        /// A new stream: `prepare` clears what a stream reads.
+        fn rewind(h: *Self) void {
+            _ = h;
         }
 
         inline fn hashBytes(h: *const Self, data: []const u8, at: usize) usize {
@@ -587,6 +602,11 @@ pub fn ForgetfulChain(comptime banks: usize, comptime bank_bits: u5, comptime nu
             gpa.free(h.head);
             gpa.free(h.tiny_hash);
             gpa.free(h.slots);
+        }
+
+        /// A new stream: `prepare` clears what a stream reads.
+        fn rewind(h: *Self) void {
+            _ = h;
         }
 
         inline fn hashBytes(data: []const u8, at: usize) usize {
@@ -744,6 +764,14 @@ pub fn Rolling(comptime jump: usize) type {
             gpa.free(h.table);
         }
 
+        /// A new stream: the table as `init` fills it, which `prepare`
+        /// does not touch, and the hash from the start.
+        fn rewind(h: *Self) void {
+            @memset(h.table, invalid_pos);
+            h.state = 0;
+            h.next_ix = 0;
+        }
+
         fn prepare(h: *Self, one_shot: bool, input_size: usize, data: []const u8) void {
             _ = one_shot;
             if (input_size < chunk_len) return;
@@ -831,6 +859,11 @@ pub fn Composite(comptime A: type, comptime B: type) type {
             h.b.deinit(gpa);
         }
 
+        fn rewind(h: *Self) void {
+            h.a.rewind();
+            h.b.rewind();
+        }
+
         fn prepare(h: *Self, one_shot: bool, input_size: usize, data: []const u8) void {
             h.a.prepare(one_shot, input_size, data);
             h.b.prepare(one_shot, input_size, data);
@@ -904,6 +937,15 @@ pub const Hasher = struct {
     common: Common = .{},
     impl: Impl = .none,
     prepared: bool = false,
+    /// What `impl` was made for, so that a later stream can tell whether
+    /// it asks for the same hasher.
+    made_for: Key = undefined,
+    /// A new stream on tables an earlier one used: rewound at `setup`.
+    rewind: bool = false,
+
+    /// A hasher and what sized it: its parameters, the quality (a chain's
+    /// hops) and, for the tree, the window and its node count.
+    const Key = struct { params: settings.HasherParams, quality: u4, lgwin: u5, nodes: usize };
 
     pub fn deinit(h: *Hasher, gpa: Allocator) void {
         switch (h.impl) {
@@ -917,9 +959,36 @@ pub const Hasher = struct {
         h.prepared = false;
     }
 
+    /// A new stream. The tables are kept for `setup`, which reuses them
+    /// when the stream asks for the same hasher, rewound to what `init`
+    /// leaves (its `prepare` clears the rest, as for a fresh hasher), and
+    /// frees them otherwise.
+    pub fn startStream(h: *Hasher) void {
+        h.common = .{};
+        h.prepared = false;
+        h.rewind = h.impl != .none;
+    }
+
     fn setup(h: *Hasher, gpa: Allocator, params: *const settings.Resolved, data: []const u8, position: usize, input_size: usize, is_last: bool) Allocator.Error!void {
         const one_shot = position == 0 and is_last;
+        const key: Key = .{
+            .params = params.hasher,
+            .quality = params.quality,
+            .lgwin = params.lgwin,
+            .nodes = if (params.hasher.type == .h10) H10.nodes(params, one_shot, input_size) else 0,
+        };
+        if (h.rewind) {
+            h.rewind = false;
+            switch (h.impl) {
+                .none => unreachable,
+                inline else => |*x| if (std.meta.eql(h.made_for, key)) x.rewind() else {
+                    x.deinit(gpa);
+                    h.impl = .none;
+                },
+            }
+        }
         if (h.impl == .none) {
+            h.made_for = key;
             const p = params.hasher;
             h.common = .{};
             h.impl = switch (p.type) {

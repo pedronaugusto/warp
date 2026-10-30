@@ -55,7 +55,10 @@ pub const Ring = struct {
     total_size: u32,
     cur_size: u32 = 0,
     pos: u32 = 0,
-    /// Two bytes before `buffer`, `cur_size + 7` after.
+    /// Whether this stream has written to the ring: its buffer may be one
+    /// an earlier stream left (`Encoder.reset`).
+    written: bool = false,
+    /// Two bytes before `buffer`, at least `cur_size + 7` after.
     data: []u8 = &.{},
 
     const slack = 7;
@@ -71,17 +74,22 @@ pub const Ring = struct {
         return rb.data[2..];
     }
 
+    /// The buffer grown to `len`, what it holds kept; one already large
+    /// enough is kept as it is.
     fn initBuffer(rb: *Ring, gpa: Allocator, len: u32) Allocator.Error!void {
-        const new = try gpa.alloc(u8, 2 + len + slack);
-        if (rb.data.len != 0) {
-            @memcpy(new[0 .. 2 + rb.cur_size + slack], rb.data[0 .. 2 + rb.cur_size + slack]);
-            gpa.free(rb.data);
+        if (rb.data.len < 2 + len + slack) {
+            const new = try gpa.alloc(u8, 2 + len + slack);
+            if (rb.data.len != 0) {
+                @memcpy(new[0 .. 2 + rb.cur_size + slack], rb.data[0 .. 2 + rb.cur_size + slack]);
+                gpa.free(rb.data);
+            }
+            rb.data = new;
         }
-        rb.data = new;
+        rb.written = true;
         rb.cur_size = len;
-        new[0] = 0;
-        new[1] = 0;
-        @memset(new[2 + len ..][0..slack], 0);
+        rb.data[0] = 0;
+        rb.data[1] = 0;
+        @memset(rb.data[2 + len ..][0..slack], 0);
     }
 
     fn writeTail(rb: *Ring, bytes: []const u8) void {
@@ -191,6 +199,55 @@ pub const Encoder = struct {
     scratch: metablock.Scratch = .{},
 
     pub fn init(gpa: Allocator, p: Params, dictionary: ?*const Prepared) Allocator.Error!Encoder {
+        var e: Encoder = .fresh(gpa, p, dictionary);
+        try e.makeArena();
+        return e;
+    }
+
+    /// The encoder ready for a new stream, as `init` leaves one, its
+    /// buffers kept where they are large enough for it. Nothing an earlier
+    /// stream left in them is read: what a stream reads it has written, as
+    /// with a fresh allocation, and the hasher keeps its tables only for
+    /// the same hasher, rewound (`Hasher.startStream`). On failure the
+    /// encoder is still one `deinit` frees.
+    pub fn reset(e: *Encoder, p: Params, dictionary: ?*const Prepared) Allocator.Error!void {
+        const gpa = e.gpa;
+        const old = e.*;
+        e.* = .fresh(gpa, p, dictionary);
+        e.storage = old.storage;
+        e.commands = old.commands;
+        e.large_table = old.large_table;
+        e.command_buf = old.command_buf;
+        e.literal_buf = old.literal_buf;
+        e.scratch = old.scratch;
+        e.ring.data = old.ring.data;
+        e.hasher = old.hasher;
+        e.hasher.startStream();
+        // The fragment coders' arena, kept for the quality that takes it.
+        if (old.one_pass) |a| {
+            if (e.params.quality == 0) e.one_pass = a else gpa.destroy(a);
+        }
+        if (old.two_pass) |a| {
+            if (e.params.quality == 1) e.two_pass = a else gpa.destroy(a);
+        }
+        try e.makeArena();
+    }
+
+    /// The fragment coders' arena, set as new: quality 0's or 1's.
+    fn makeArena(e: *Encoder) Allocator.Error!void {
+        if (e.params.quality == 0) {
+            const arena = e.one_pass orelse try e.gpa.create(fragment.Arena);
+            arena.* = .{};
+            e.one_pass = arena;
+        } else if (e.params.quality == 1) {
+            const arena = e.two_pass orelse try e.gpa.create(fragment2.Arena);
+            arena.* = .{};
+            e.two_pass = arena;
+        }
+    }
+
+    /// The state `init` starts from, before its arena.
+    fn fresh(gpa: Allocator, p: Params, dictionary: ?*const Prepared) Encoder {
         var r = resolve(p);
         r.dictionary = dictionary;
         settings.chooseHasher(&r);
@@ -209,15 +266,6 @@ pub const Encoder = struct {
             e.last_bytes_bits = wb.count;
         } else {
             e.params.stream_offset = @min(r.stream_offset, (@as(usize, 1) << lgwin) - window_gap);
-        }
-        if (r.quality == 0) {
-            const arena = try gpa.create(fragment.Arena);
-            arena.* = .{};
-            e.one_pass = arena;
-        } else if (r.quality == 1) {
-            const arena = try gpa.create(fragment2.Arena);
-            arena.* = .{};
-            e.two_pass = arena;
         }
         return e;
     }
@@ -335,7 +383,7 @@ pub const Encoder = struct {
         const fast = quality <= 1;
         e.available_out = 0;
         if (delta == 0) {
-            if (e.ring.data.len == 0) {
+            if (!e.ring.written) {
                 if (is_last) {
                     // The stream header, then ISLAST and ISEMPTY.
                     e.last_bytes |= @as(u16, 3) << @intCast(e.last_bytes_bits);

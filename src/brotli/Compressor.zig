@@ -1,6 +1,7 @@
 //! Whole-buffer Brotli compression: one stream from one input, as the
 //! reference's `BrotliEncoderCompress` writes it, the same bytes for the
-//! same parameters.
+//! same parameters. One `Compressor` keeps its encoder between calls, so a
+//! call that needs no more memory than an earlier one allocates nothing.
 
 const Compressor = @This();
 
@@ -19,12 +20,15 @@ pub const Error = std.mem.Allocator.Error || error{
 
 gpa: std.mem.Allocator,
 options: Options,
+/// The encoder of the last call, its buffers kept for the next.
+encoder: ?encode.Encoder = null,
 
 pub fn init(gpa: std.mem.Allocator, options: Options) Compressor {
     return .{ .gpa = gpa, .options = options };
 }
 
 pub fn deinit(c: *Compressor) void {
+    if (c.encoder) |*e| e.deinit();
     c.* = undefined;
 }
 
@@ -42,8 +46,8 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8) Error!usize {
     }
     const o = c.options;
     const max_out = bound(in.len);
-    var e: encode.Encoder = try .init(c.gpa, o.params(in.len), o.dictionary);
-    defer e.deinit();
+    if (c.encoder) |*kept| try kept.reset(o.params(in.len), o.dictionary) else c.encoder = try .init(c.gpa, o.params(in.len), o.dictionary);
+    const e = &c.encoder.?;
     var rest = in;
     var room = out;
     const finished = blk: {
