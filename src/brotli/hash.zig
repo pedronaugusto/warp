@@ -921,8 +921,10 @@ pub const Hasher = struct {
         const one_shot = position == 0 and is_last;
         if (h.impl == .none) {
             const p = params.hasher;
-            h.common = .{};
-            h.impl = switch (p.type) {
+            // Made whole before it is the stream's: a union written in
+            // place takes its tag before a failed allocation leaves its
+            // payload undefined, which `deinit` would then free.
+            const impl: Impl = switch (p.type) {
                 .h2 => .{ .h2 = try .init(gpa) },
                 .h3 => .{ .h3 = try .init(gpa) },
                 .h4 => .{ .h4 = try .init(gpa) },
@@ -939,6 +941,8 @@ pub const Hasher = struct {
                 .h55 => .{ .h55 = try .init(gpa, try .init(gpa)) },
                 .h65 => .{ .h65 = try .init(gpa, try .init(gpa, p)) },
             };
+            h.common = .{};
+            h.impl = impl;
             h.prepared = false;
         }
         if (!h.prepared) {
