@@ -309,6 +309,21 @@ pub const Encoder = struct {
         return e.storage;
     }
 
+    /// Quality 1's command and literal buffers, at least `size` long, kept
+    /// for the calls and streams after (`size` is at most a whole block).
+    fn twoPassBuffers(e: *Encoder, size: usize) Error!void {
+        if (e.command_buf.len < size) {
+            if (e.command_buf.len != 0) e.gpa.free(e.command_buf);
+            e.command_buf = &.{};
+            e.command_buf = try e.gpa.alloc(u32, size);
+        }
+        if (e.literal_buf.len < size) {
+            if (e.literal_buf.len != 0) e.gpa.free(e.literal_buf);
+            e.literal_buf = &.{};
+            e.literal_buf = try e.gpa.alloc(u8, size);
+        }
+    }
+
     fn hashTable(e: *Encoder, quality: u4, input_size: usize) Error![]i32 {
         const max_size: usize = if (quality == 0) 1 << 15 else 1 << 17;
         var size: usize = 256;
@@ -404,10 +419,7 @@ pub const Encoder = struct {
         const data = e.ring.buffer();
         const mask = e.ring.mask;
 
-        if (quality == 1 and e.command_buf.len == 0) {
-            e.command_buf = try e.gpa.alloc(u32, two_pass_block_size);
-            e.literal_buf = try e.gpa.alloc(u8, two_pass_block_size);
-        }
+        if (quality == 1) try e.twoPassBuffers(two_pass_block_size);
         if (fast) {
             const storage = try e.getStorage(2 * bytes + 503);
             var w: Writer = .{ .buf = storage, .pos = e.last_bytes_bits };
@@ -565,29 +577,7 @@ pub const Encoder = struct {
     fn compressStreamFast(e: *Encoder, op: Operation, in: *[]const u8, out: *[]u8) Error!void {
         const block_size_limit = @as(usize, 1) << e.params.lgwin;
         const buf_size: usize = @min(two_pass_block_size, @min(in.len, block_size_limit));
-        var tmp_command: []u32 = &.{};
-        var tmp_literal: []u8 = &.{};
-        defer if (tmp_command.len != 0) {
-            e.gpa.free(tmp_command);
-            e.gpa.free(tmp_literal);
-        };
-        var command_buf: []u32 = &.{};
-        var literal_buf: []u8 = &.{};
-        if (e.params.quality == 1) {
-            if (e.command_buf.len == 0 and buf_size == two_pass_block_size) {
-                e.command_buf = try e.gpa.alloc(u32, two_pass_block_size);
-                e.literal_buf = try e.gpa.alloc(u8, two_pass_block_size);
-            }
-            if (e.command_buf.len != 0) {
-                command_buf = e.command_buf;
-                literal_buf = e.literal_buf;
-            } else {
-                tmp_command = try e.gpa.alloc(u32, buf_size);
-                tmp_literal = try e.gpa.alloc(u8, buf_size);
-                command_buf = tmp_command;
-                literal_buf = tmp_literal;
-            }
-        }
+        if (e.params.quality == 1) try e.twoPassBuffers(buf_size);
         while (true) {
             if (e.injectFlushOrPushOutput(out)) continue;
             if (e.available_out == 0 and e.stream_state == .processing and (in.len != 0 or op != .process)) {
@@ -608,7 +598,7 @@ pub const Encoder = struct {
                 if (e.params.quality == 0) {
                     fragment.compress(e.one_pass.?, in.*[0..block_size], is_last, table, &w);
                 } else {
-                    fragment2.compress(e.two_pass.?, in.*[0..block_size], is_last, command_buf, literal_buf, table, &w);
+                    fragment2.compress(e.two_pass.?, in.*[0..block_size], is_last, e.command_buf, e.literal_buf, table, &w);
                 }
                 in.* = in.*[block_size..];
                 e.total_in += block_size;

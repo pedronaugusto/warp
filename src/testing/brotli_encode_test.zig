@@ -224,23 +224,29 @@ test "brotli encode fuzz: any input, options, dictionary, flushes and metadata d
     try shakedown.check(testing.allocator, &kept, Case.run, .{ .cases = 300 });
 }
 
-test "a whole-buffer encoder allocates nothing for a stream the size of one it wrote before" {
+test "a whole-buffer encoder keeps what a stream the size of one it wrote before needs" {
     const gpa = testing.allocator;
     const in = try input(gpa, "text 7 60000");
     defer gpa.free(in);
     const out = try gpa.alloc(u8, Compressor.bound(in.len));
     defer gpa.free(out);
-    for ([_]u4{ 0, 1, 2, 5, 9, 10, 11 }) |quality| {
+    for ([_]u4{ 0, 1, 2, 3, 5, 9, 10, 11 }) |quality| {
         var counting: std.testing.FailingAllocator = .init(gpa, .{});
         var c = Compressor.init(counting.allocator(), .{ .quality = quality });
         defer c.deinit();
         const first = try c.compress(in, out);
-        const after_first = counting.allocations;
-        try testing.expect(after_first > 0);
+        const first_bytes = counting.allocated_bytes;
+        try testing.expect(first_bytes > 0);
         // The same input again, on the buffers the first left. (A shorter
-        // one is another size hint, and may take another hasher.)
+        // one is another size hint, and may take another hasher.) From
+        // quality 4 the block splitter still takes its working sets in each
+        // meta-block, as the reference does; nothing kept is taken again.
         try testing.expectEqual(first, try c.compress(in, out));
-        try testing.expectEqual(after_first, counting.allocations);
+        const second_bytes = counting.allocated_bytes - first_bytes;
+        try testing.expect(second_bytes < first_bytes);
+        if (quality <= 3) try testing.expectEqual(0, second_bytes);
+        try testing.expectEqual(first, try c.compress(in, out));
+        try testing.expectEqual(second_bytes, counting.allocated_bytes - first_bytes - second_bytes);
     }
 }
 

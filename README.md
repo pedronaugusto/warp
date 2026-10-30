@@ -7,7 +7,8 @@ streams through `warp.brotli`, and decodes bzip2
 through `warp.bzip2` and xz and LZMA through `warp.xz` and `warp.lzma`. It
 computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
-as the reference does for a stream larger than any its encoder wrote before. Checksum dispatch selects
+as the reference does for a stream other than one its encoder wrote before, and from
+quality 4 the block splitter's working sets in each meta-block. Checksum dispatch selects
 a kernel supported by the CPU.
 
 W5 performance work remains in progress. Correctness and deterministic
@@ -392,7 +393,9 @@ block splitting and clustering are the reference's, and its static-dictionary
 lookup the reference's table. Encoding allocates its window and tables from the
 allocator `init` takes, and keeps them: a `Compressor` keeps its encoder between
 calls, and `Compress.reset` starts a new stream on the one it has, so a stream
-no larger than one before allocates nothing. `deinit` frees them. A stream
+the size of one before allocates nothing at qualities 0-3, and from quality 4
+only the block splitter's working sets, which it takes in each meta-block as
+the reference does. `deinit` frees them. A stream
 written on kept buffers is the same stream a fresh encoder writes.
 
 ### GDeflate
