@@ -1,6 +1,7 @@
 //! LZMA, LZMA2, `.lzma` and `.xz` decoding against liblzma 5.8.4: its
 //! streams decoded to their inputs, and its verdicts on constructed and
-//! mutated streams given for the same reasons.
+//! mutated streams given for the same reasons. 7-Zip 26.05's raw LZMA and
+//! LZMA2, out of its 7z and zip archives, decoded to their inputs.
 
 const std = @import("std");
 const testing = std.testing;
@@ -10,6 +11,7 @@ const lzma = @import("../lzma.zig");
 const xz = @import("../xz.zig");
 
 const streams_corpus = @embedFile("xz-streams.corpus");
+const seven_zip_corpus = @embedFile("xz-7zip.corpus");
 const invalid_corpus = @embedFile("xz-invalid.corpus");
 
 const Error = xz.Decompressor.Error;
@@ -51,9 +53,19 @@ fn decodeAs(d: *Decoders, format: []const u8, in: []const u8, out: []u8, diag: *
 }
 
 test "liblzma's LZMA, LZMA2, .lzma and .xz streams decode to their inputs" {
+    try testing.expectEqual(131, try decodeWhole(streams_corpus));
+}
+
+test "7-Zip's raw LZMA and LZMA2, out of its 7z and zip archives, decode to their inputs" {
+    try testing.expectEqual(99, try decodeWhole(seven_zip_corpus));
+}
+
+/// Every stream of a corpus decoded whole to its input, taking exactly
+/// its `in_len`; how many there were.
+fn decodeWhole(text: []const u8) !usize {
     const gpa = testing.allocator;
     var d: Decoders = .{};
-    const c = try corpus.Corpus.parse(streams_corpus);
+    const c = try corpus.Corpus.parse(text);
     var it = c.records();
     var count: usize = 0;
     while (it.next()) |r| {
@@ -73,7 +85,7 @@ test "liblzma's LZMA, LZMA2, .lzma and .xz streams decode to their inputs" {
         try testing.expectEqualSlices(u8, in, out[0..got.out_len]);
         if (in.len != 0) try testing.expectError(error.OutputTooSmall, (try decodeAs(&d, r.fields[1], r.fields[4], out[0 .. in.len - 1], &diag)).?);
     }
-    try testing.expectEqual(131, count);
+    return count;
 }
 
 /// liblzma's verdict, as warp answers it.
@@ -154,8 +166,19 @@ fn streamed(gpa: std.mem.Allocator, format: lzma.Decompress.Format, in: []const 
 }
 
 test "liblzma's LZMA, LZMA2 and .lzma streams decode in pieces of any size, to their exact end" {
+    try testing.expectEqual(50, try decodeInPieces(streams_corpus));
+}
+
+test "7-Zip's raw LZMA and LZMA2 decode in pieces of any size, to their exact end" {
+    try testing.expectEqual(99, try decodeInPieces(seven_zip_corpus));
+}
+
+/// Every raw and `.lzma` stream of a corpus decoded by the resumable
+/// decoder in pieces, followed by bytes it never takes; how many there
+/// were.
+fn decodeInPieces(text: []const u8) !usize {
     const gpa = testing.allocator;
-    const c = try corpus.Corpus.parse(streams_corpus);
+    const c = try corpus.Corpus.parse(text);
     var it = c.records();
     var count: usize = 0;
     while (it.next()) |r| {
@@ -177,7 +200,7 @@ test "liblzma's LZMA, LZMA2 and .lzma streams decode in pieces of any size, to t
             try testing.expectEqualSlices(u8, in, out[0..got.out_len]);
         }
     }
-    try testing.expectEqual(50, count);
+    return count;
 }
 
 /// What the resumable .xz decoder makes of `in` in pieces, its window
