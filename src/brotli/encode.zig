@@ -9,6 +9,7 @@
 //! sizes for the input it is given.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const bits = @import("bits.zig");
 const command = @import("command.zig");
@@ -415,7 +416,7 @@ pub const Encoder = struct {
         }
         if (e.is_last_block_emitted) return error.InvalidOperation;
         if (is_last) e.is_last_block_emitted = true;
-        std.debug.assert(delta <= e.inputBlockSize());
+        aegis.assert.invariant(delta <= e.inputBlockSize(), "delta <= e.inputBlockSize()");
         const data = e.ring.buffer();
         const mask = e.ring.mask;
 
@@ -487,7 +488,7 @@ pub const Encoder = struct {
             e.last_insert_len = 0;
         }
         if (!is_last and e.input_pos == e.last_flush_pos) return;
-        std.debug.assert(e.input_pos - e.last_flush_pos <= 1 << 24);
+        aegis.assert.invariant(e.input_pos - e.last_flush_pos <= 1 << 24, "e.input_pos - e.last_flush_pos <= 1 << 24");
         const metablock_size: u32 = @intCast(e.input_pos - e.last_flush_pos);
         const storage = try e.getStorage(2 * @as(usize, metablock_size) + 503);
         var w: Writer = .{ .buf = storage, .pos = e.last_bytes_bits };

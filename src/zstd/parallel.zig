@@ -149,7 +149,7 @@ pub const Compressor = struct {
         const size = memory(options);
         if (size == std.math.maxInt(usize)) return error.OutOfMemory;
         const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-        var p = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
+        var p = initBuffer(buffer, options) catch aegis.assert.never("the options were checked, and buffer is memory(options) bytes");
         p.owned = buffer;
         p.gpa = gpa;
         return p;
@@ -185,7 +185,7 @@ pub const Compressor = struct {
         var bytes: [18]u8 = undefined;
         var frame = p.options.frame;
         if (size == null) frame.content_size = false;
-        const n = p.workers[0].encoder.header(&bytes, p.cfg.params, size orelse 0, frame) catch unreachable; // unreachable: bytes holds the maximum header size
+        const n = p.workers[0].encoder.header(&bytes, p.cfg.params, size orelse 0, frame) catch aegis.assert.never("bytes holds the maximum header size");
         try out.writeAll(bytes[0..n]);
     }
 

@@ -295,8 +295,7 @@ fn writeHeader(d: *Deflate) void {
             var header = options.gzip;
             if (header.xfl == null) header.xfl = if (options.level >= 9) 2 else if (options.level == 1) 4 else 0;
             var w: Io.Writer = .fixed(d.pending);
-            // unreachable: the pending buffer has room for the header
-            gzip.writeHeader(&w, header) catch unreachable;
+            gzip.writeHeader(&w, header) catch aegis.assert.never("the pending buffer has room for the header");
             d.pending_end = w.end;
         },
     }

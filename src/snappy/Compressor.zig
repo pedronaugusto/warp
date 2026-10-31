@@ -339,8 +339,8 @@ pub fn finish(out: []u8, len: usize, total: u64, block_size: usize, stream: Stre
 /// gives up, or where google's parse saves less than an eighth (as
 /// golang/snappy and snap decide); its length.
 pub fn chunk(c: *Compressor, in: []const u8, out: []u8, store: bool) usize {
-    std.debug.assert(in.len > 0);
-    std.debug.assert(in.len <= frame.max_block_size);
+    aegis.assert.pre(in.len > 0, "in.len > 0");
+    aegis.assert.pre(in.len <= frame.max_block_size, "in.len <= frame.max_block_size");
     const head = frame.header_len + frame.checksum_len;
     std.mem.writeInt(u32, out[frame.header_len..][0..4], frame.checksum(in), .little);
     const body = if (store) null else body: {

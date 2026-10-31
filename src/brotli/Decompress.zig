@@ -190,7 +190,7 @@ fn feed(z: *Decompress, in: []const u8, ip: *usize) Error!engine.Status {
     z.bit_buf = r.buf;
     z.bit_count = r.count;
     if (status == .need_input) {
-        std.debug.assert(rest.len <= z.carry.len);
+        aegis.assert.invariant(rest.len <= z.carry.len, "rest.len <= z.carry.len");
         @memcpy(z.carry[0..rest.len], rest);
         z.carry_len = rest.len;
         ip.* = in.len;
@@ -204,7 +204,7 @@ fn run(z: *Decompress, r: *bits.Reader) Error!engine.Status {
         const e: Error = switch (err) {
             error.InvalidStream => error.InvalidStream,
             error.WindowTooLarge => error.WindowTooLarge,
-            error.OutputTooSmall => unreachable,
+            error.OutputTooSmall => aegis.assert.never("the ring reports a full output as a status, never OutputTooSmall"),
         };
         if (z.options.diagnostic) |d| d.* = .{ .bit_offset = .fromRaw(if (e == error.InvalidStream) z.state.fail_bit else r.bitOffset()), .reason = if (e == error.InvalidStream) z.state.reason else .window_bits };
         z.failure = e;

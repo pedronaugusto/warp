@@ -290,7 +290,7 @@ pub const max_table_log = 12;
 /// `max`: small inputs get small tables, never too small to hold every
 /// symbol.
 pub fn optimalLog(max: u4, total: usize, max_symbol: u8, minus: u4) u4 {
-    std.debug.assert(total > 1);
+    aegis.assert.pre(total > 1, "total > 1");
     const max_bits_src: i32 = @as(i32, std.math.log2_int(usize, total - 1)) - minus;
     var log: i32 = max;
     const min_bits = minLog(total, max_symbol);
@@ -324,7 +324,7 @@ pub fn normalize(norm: []i16, log: u4, counts: []const u32, total: usize, low_pr
     var largest_p: i16 = 0;
     const low_threshold: u64 = total >> log;
     for (counts, norm[0..counts.len], 0..) |c, *n, s| {
-        std.debug.assert(c != total);
+        aegis.assert.invariant(c != total, "c != total");
         if (c == 0) {
             n.* = 0;
             continue;
@@ -438,7 +438,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
         if (previous0) {
             var start = symbol;
             while (symbol < norm.len and norm[symbol] == 0) symbol += 1;
-            std.debug.assert(symbol != norm.len);
+            aegis.assert.invariant(symbol != norm.len, "symbol != norm.len");
             while (symbol >= start + 24) {
                 start += 24;
                 bit_stream += @as(u32, 0xffff) << @intCast(bit_count);
@@ -472,7 +472,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
         bit_count += nb_bits;
         if (count < max) bit_count -= 1;
         previous0 = count == 1;
-        std.debug.assert(remaining >= 1);
+        aegis.assert.invariant(remaining >= 1, "remaining >= 1");
         while (remaining < threshold) {
             nb_bits -= 1;
             threshold >>= 1;
@@ -485,7 +485,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
             bit_count -= 16;
         }
     }
-    std.debug.assert(remaining == 1);
+    aegis.assert.invariant(remaining == 1, "remaining == 1");
     out[o] = @truncate(bit_stream);
     out[o + 1] = @truncate(bit_stream >> 8);
     o += (@as(usize, bit_count) + 7) / 8;
@@ -516,7 +516,7 @@ pub fn EncodeTable(comptime table_log: u4, comptime max_symbol: u8) type {
 
         pub fn build(t: *Self, norm: []const i16, log: u4) void {
             aegis.assert.invariant(log <= table_log, "log <= table_log");
-            std.debug.assert(norm.len <= @as(usize, max_symbol) + 1);
+            aegis.assert.pre(norm.len <= @as(usize, max_symbol) + 1, "norm.len <= @as(usize, max_symbol) + 1");
             const size: u32 = @as(u32, 1) << log;
             t.log = log;
             t.symbols = @intCast(norm.len - 1);

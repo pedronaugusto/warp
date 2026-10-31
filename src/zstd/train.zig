@@ -1,6 +1,7 @@
 //! Dictionary training and entropy finalization. Temporary training memory
 //! belongs to the allocator; the finished dictionary borrows only `out`.
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const Dictionary = @import("Dictionary.zig");
 const Encoder = @import("Encoder.zig");
@@ -197,7 +198,7 @@ fn writeDistribution(out: []u8, counts: []const u32, log: u4) TrainError!usize {
     for (counts) |count| total += count;
     const used = norm[0..counts.len];
     fse.normalize(used, log, counts, total, true) catch return error.InvalidParameters;
-    std.debug.assert(out.len >= fse.countsBound(@intCast(counts.len - 1), log));
+    aegis.assert.invariant(out.len >= fse.countsBound(@intCast(counts.len - 1), log), "out.len >= fse.countsBound(@intCast(counts.len - 1), log)");
     return fse.writeCounts(out, used, log);
 }
 

@@ -6,6 +6,7 @@
 //! cut where a chunk departs from what came before.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 const chunk = 8 << 10;
 const threshold_rate = 16;
@@ -19,7 +20,7 @@ const Fingerprint = struct {
 
 /// The size of the first block to cut from `block` (128 KiB).
 pub fn split(block: []const u8, level: u3) usize {
-    std.debug.assert(block.len == 128 << 10);
+    aegis.assert.pre(block.len == 128 << 10, "block.len == 128 << 10");
     if (level == 0) return fromBorders(block);
     return byChunks(block, level - 1);
 }

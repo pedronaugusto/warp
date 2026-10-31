@@ -5,6 +5,7 @@
 //! Silesia's), and the level is for speed.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const match = @import("history.zig");
 
 /// The table over a window of `window` bytes.
@@ -30,7 +31,7 @@ pub fn HashTableFor(comptime window: u32) type {
         }
 
         pub fn reset(ht: *HashTable, first: isize, bits: u5) void {
-            std.debug.assert(first >= -@as(isize, window));
+            aegis.assert.pre(first >= -@as(isize, window), "first >= -@as(isize, window)");
             ht.bits = bits;
             @memset(ht.table[0 .. @as(usize, 1) << bits], .{ none, none });
             ht.base = if (first < 0) -@as(isize, window) else 0;

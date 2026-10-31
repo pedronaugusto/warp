@@ -106,7 +106,7 @@ pub const Compressor = struct {
     pub fn compress(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer) Error!void {
         var reader: Io.Reader = .fixed(in);
         p.compressReader(io, &reader, out) catch |err| switch (err) {
-            error.ReadFailed => unreachable, // unreachable: a fixed reader cannot fail
+            error.ReadFailed => aegis.assert.never("a fixed reader cannot fail"),
             else => |e| return e,
         };
     }

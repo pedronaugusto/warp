@@ -229,7 +229,7 @@ pub const Writer = struct {
         const size = memory(options);
         if (size == std.math.maxInt(usize)) return error.OutOfMemory;
         const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-        var w = initBuffer(buffer, output, options) catch unreachable; // unreachable: buffer is memory(options) bytes
+        var w = initBuffer(buffer, output, options) catch aegis.assert.never("buffer is memory(options) bytes");
         w.owned = buffer;
         w.gpa = gpa;
         return w;

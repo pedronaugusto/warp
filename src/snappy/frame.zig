@@ -6,6 +6,7 @@
 //! most 4 MiB.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Crc32c = @import("../checksum/crc32c.zig").Crc32c;
 const block = @import("block.zig");
 
@@ -65,7 +66,7 @@ pub fn mask(crc: u32) u32 {
 }
 
 pub fn writeHeader(out: *[header_len]u8, t: u8, len: usize) void {
-    std.debug.assert(len <= max_chunk_len);
+    aegis.assert.pre(len <= max_chunk_len, "len <= max_chunk_len");
     out[0] = t;
     out[1] = @truncate(len);
     out[2] = @truncate(len >> 8);

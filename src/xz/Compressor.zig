@@ -196,7 +196,7 @@ const Record = struct { unpadded: u64, uncompressed: u64, span: usize };
 /// The block warp wrote at the start of `blocks`: its index record and its length.
 fn record(blocks: []const u8, check: Check) Record {
     var fault: format.Fault = undefined;
-    const h = aegis.input.Untrusted([]const u8).init(blocks).parse(format.HeaderContext{ .check = check, .fault = &fault }, format.blockHeader) catch unreachable; // warp wrote this header
+    const h = aegis.input.Untrusted([]const u8).init(blocks).parse(format.HeaderContext{ .check = check, .fault = &fault }, format.blockHeader) catch aegis.assert.never("warp wrote this header");
     const data: usize = @intCast(h.compressed.?);
     return .{
         .unpadded = h.len + data + check.size(),

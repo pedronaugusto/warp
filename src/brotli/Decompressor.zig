@@ -11,6 +11,7 @@
 
 const Decompressor = @This();
 
+const aegis = @import("aegis");
 const decode = @import("decode.zig");
 const bits = @import("bits.zig");
 const Diagnostic = @import("Diagnostic.zig");
@@ -70,7 +71,7 @@ pub fn decompress(d: *Decompressor, in: []const u8, out: []u8, options: Options)
         const status = decode.run(&s, &d.tables, &r, &h) catch |err| switch (err) {
             error.InvalidStream => return fail(options, error.InvalidStream, s.fail_bit, s.reason),
             error.OutputTooSmall => return error.OutputTooSmall,
-            error.WindowTooLarge => unreachable,
+            error.WindowTooLarge => aegis.assert.never("the output is the window: a linear history takes any"),
         };
         switch (status) {
             .need_input => return fail(options, error.Truncated, r.bitOffset(), .truncated),

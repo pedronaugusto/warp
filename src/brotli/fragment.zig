@@ -6,6 +6,7 @@
 //! grows by 64 KiB blocks while its literal code still fits them.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const bits = @import("bits.zig");
 const entropy = @import("entropy.zig");
 const find = @import("find.zig");
@@ -498,20 +499,20 @@ fn compressImpl(s: *Arena, all: []const u8, is_last: bool, table: []i32, comptim
 pub fn compress(s: *Arena, input: []const u8, is_last: bool, table: []i32, w: *Writer) void {
     const start = w.pos;
     if (input.len == 0) {
-        std.debug.assert(is_last);
+        aegis.assert.pre(is_last, "is_last");
         w.bits(1, 1);
         w.bits(1, 1);
         w.alignByte();
         return;
     }
     const table_bits: u6 = @intCast(std.math.log2_int(usize, table.len));
-    std.debug.assert(table_bits & 1 == 1);
-    std.debug.assert(table_bits >= 9);
-    std.debug.assert(table_bits <= 15);
+    aegis.assert.pre(table_bits & 1 == 1, "table_bits & 1 == 1");
+    aegis.assert.pre(table_bits >= 9, "table_bits >= 9");
+    aegis.assert.pre(table_bits <= 15, "table_bits <= 15");
     // The shift a constant, as the reference instantiates each size.
     switch (table_bits) {
         inline 9, 11, 13, 15 => |size| compressImpl(s, input, is_last, table, size, w),
-        else => unreachable,
+        else => aegis.assert.never("table_bits is odd and in 9..15"),
     }
     // Larger than one uncompressed meta-block: write that instead.
     if (w.pos - start > 31 + (input.len << 3)) storeRaw(w, input, start);

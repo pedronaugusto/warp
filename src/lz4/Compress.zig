@@ -210,11 +210,11 @@ fn block(s: *Compress) Error!void {
         const level = s.compressor.level;
         defer s.compressor.level = level;
         if (level < 3) s.compressor.level = @min(level, 1);
-        const n = s.compressor.compressBlock(src, s.output[at + 4 ..], .{}) catch unreachable; // unreachable: the output holds a block's bound
+        const n = s.compressor.compressBlock(src, s.output[at + 4 ..], .{}) catch aegis.assert.never("the output holds a block's bound");
         std.mem.writeInt(u32, s.output[at..][0..4], @intCast(n), .little);
         s.pending_end = at + 4 + n;
     } else {
-        s.pending_end = at + (s.compressor.frameBlock(src, s.output[at..], f, s.first) catch unreachable); // unreachable: the output holds a block's bound
+        s.pending_end = at + (s.compressor.frameBlock(src, s.output[at..], f, s.first) catch aegis.assert.never("the output holds a block's bound"));
     }
     s.first = false;
     if (!f.independent and f.format == .standard) {

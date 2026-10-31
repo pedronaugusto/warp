@@ -234,7 +234,7 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
+    var c = initBuffer(buffer, options) catch aegis.assert.never("buffer is memory(options) bytes");
     c.owned = buffer;
     c.gpa = gpa;
     return c;
@@ -494,7 +494,7 @@ pub fn normalize(c: *Encoder, base: *u32, p: Params, span: usize, limit: u32) vo
     const ring_log = if (p.strategy == .btlazy2 or @backingInt(p.strategy) >= @backingInt(Strategy.btopt) or (params_.usesRows(p.strategy) and !rows(p))) p.chain_log - @as(u5, @intFromBool(p.strategy == .btlazy2 or @backingInt(p.strategy) >= @backingInt(Strategy.btopt))) else 0;
     const mask = (@as(u32, 1) << ring_log) - 1;
     const amount = (base.* - first_index) & ~mask;
-    std.debug.assert(amount != 0);
+    aegis.assert.invariant(amount != 0, "amount != 0");
     c.reduceIndices(amount);
     base.* -= amount;
 }
@@ -811,7 +811,7 @@ pub fn searchPrefix(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, sta
                 inline .greedy, .lazy, .lazy2 => |s| if (rows(p))
                     switch (c.lazy.row_log) {
                         inline 4, 5, 6 => |rl| lazy_.compress(.row, depthOf(s), mls, rl, &c.lazy, w, &c.store, reps, start, end),
-                        else => unreachable,
+                        else => aegis.assert.never("row_log is clamped to 4..6 at init"),
                     }
                 else
                     lazy_.compress(.chain, depthOf(s), mls, 0, &c.lazy, w, &c.store, reps, start, end),

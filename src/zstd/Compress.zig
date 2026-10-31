@@ -82,7 +82,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var s = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
+    var s = initBuffer(buffer, options) catch aegis.assert.never("buffer is memory(options) bytes");
     s.owned = buffer;
     s.gpa = gpa;
     return s;
@@ -135,7 +135,7 @@ fn startFrame(s: *Compress) void {
     s.encoder.prepare(s.params, s.base);
     var frame = s.options.frame;
     frame.content_size = frame.content_size and s.options.pledged() != null;
-    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged() orelse 0, frame) catch unreachable; // unreachable: output reserves the maximum 18-byte frame header
+    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged() orelse 0, frame) catch aegis.assert.never("output reserves the maximum 18-byte frame header");
 }
 
 /// Accept input and drain ready bytes. A full final block stays staged

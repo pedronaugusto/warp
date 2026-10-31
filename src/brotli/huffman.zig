@@ -198,7 +198,7 @@ pub fn buildSimple(table: []Entry, symbols: []const u16, four_lengths: bool) usi
             for ([_]Entry{ entry(1, s[0]), entry(2, s[1]), entry(1, s[0]), entry(3, lo), entry(1, s[0]), entry(2, s[1]), entry(1, s[0]), entry(3, hi) }, 0..) |e, i| table[i] = e;
             size = 8;
         },
-        else => unreachable,
+        else => aegis.assert.never("a simple code has 1 to 4 symbols"),
     }
     while (size != 1 << root_bits) : (size <<= 1) @memcpy(table[size..][0..size], table[0..size]);
     return 1 << root_bits;

@@ -11,6 +11,7 @@
 //! incomplete and never longer than the limit.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 /// Most symbols of any DEFLATE alphabet (litlen: 288).
 pub const max_symbols = 288;
@@ -19,8 +20,8 @@ pub const max_symbols = 288;
 /// longer than `max_len`; a symbol with no frequency gets 0. With one
 /// symbol used, it gets one bit; with none, all are 0.
 pub fn buildLengths(freqs: []const u32, max_len: u4, lens: []u8) void {
-    std.debug.assert(freqs.len == lens.len);
-    std.debug.assert(freqs.len <= max_symbols);
+    aegis.assert.pre(freqs.len == lens.len, "freqs.len == lens.len");
+    aegis.assert.pre(freqs.len <= max_symbols, "freqs.len <= max_symbols");
     @memset(lens, 0);
     // Leaves sorted by frequency, then symbol: deterministic.
     var keys: [max_symbols]u64 = undefined;

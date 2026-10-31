@@ -271,7 +271,7 @@ fn dest(s: *Compress, out: []u8, op: usize) []u8 {
 /// Input into the block: through the filters' pipe, or straight to LZMA2.
 fn feed(s: *Compress, part: []const u8, out: []u8, op: *usize) Error!Step {
     if (s.options.filters.len == 0) {
-        const step = s.lzma.write(part, s.dest(out, op.*)) catch unreachable;
+        const step = s.lzma.write(part, s.dest(out, op.*)) catch aegis.assert.never("the block's LZMA2 is active until close finishes it");
         s.hasher.update(part[0..step.in_len]);
         s.taken(step.in_len, step.out_len, op);
         return .{ .in_len = step.in_len, .out_len = step.out_len };
@@ -296,7 +296,7 @@ fn taken(s: *Compress, in_len: usize, out_len: usize, op: *usize) void {
 /// The pipe's bytes every filter is done with, given to LZMA2; its output.
 fn pass(s: *Compress, out: []u8, op: *usize) usize {
     const ready = s.converted[s.options.filters.len - 1];
-    const step = s.lzma.write(s.pipe[0..ready], s.dest(out, op.*)) catch unreachable;
+    const step = s.lzma.write(s.pipe[0..ready], s.dest(out, op.*)) catch aegis.assert.never("the block's LZMA2 is active until close finishes it");
     s.block_out += step.out_len;
     if (s.options.block_size == null) op.* += step.out_len;
     const n = step.in_len;
@@ -328,7 +328,7 @@ fn close(s: *Compress, out: []u8, op: *usize) Error!bool {
         if (s.fill == before and out_len == 0) return false;
         return true;
     }
-    const d = s.lzma.finish(s.dest(out, op.*)) catch unreachable;
+    const d = s.lzma.finish(s.dest(out, op.*)) catch aegis.assert.never("the block's LZMA2 pledges no size");
     s.block_out += d.out_len;
     if (s.options.block_size == null) op.* += d.out_len;
     if (!d.done) return false;

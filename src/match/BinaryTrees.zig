@@ -16,6 +16,7 @@
 //! bt4 does, with liblzma's hashes, so the matches are its matches.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const match = @import("history.zig");
 
 pub const Config = struct {
@@ -81,7 +82,7 @@ pub fn BinaryTreesWith(comptime config: Config) type {
         /// Start over for a stream that begins at `first` (negative with a
         /// dictionary), with tables of `hash3_bits` and `hash4_bits`.
         pub fn reset(bt: *BinaryTrees, first: isize, hash3_bits: u5, hash4_bits: u5) void {
-            std.debug.assert(first >= -@as(isize, window));
+            aegis.assert.pre(first >= -@as(isize, window), "first >= -@as(isize, window)");
             bt.hash3_bits = hash3_bits;
             bt.hash4_bits = hash4_bits;
             @memset(bt.hash3[0 .. @as(usize, 1) << hash3_bits], .{ none, none });

@@ -192,7 +192,7 @@ const Decoder = struct {
             error.OutputTooSmall => {
                 if (limit < d.out.len or d.out.len - d.op >= block_max) return d.fail(at, .block_too_large, error.InvalidStream);
                 // A partial decode stops at a full output.
-                if (d.options.partial) unreachable;
+                if (d.options.partial) aegis.assert.never("a partial decode stops at a full output");
                 return error.OutputTooSmall;
             },
             else => |e| return e,
