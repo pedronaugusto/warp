@@ -104,17 +104,24 @@ pub const DecodeError = error{
     DictionaryMismatch,
 };
 
+pub const InitError = error{
+    /// `window_bits` below 8, or Deflate64 in a container (it is raw only).
+    InvalidOptions,
+    /// The window, or a reader's buffer, is shorter than the options need.
+    BufferTooSmall,
+};
+
 /// `window.len >= options.windowLen()`: the caller's memory for the
-/// history.
-pub fn init(window: []u8, options: Options) Inflate {
-    checkOptions(options);
-    std.debug.assert(window.len >= options.windowLen());
+/// history; a shorter one is refused.
+pub fn init(window: []u8, options: Options) InitError!Inflate {
+    try checkOptions(options);
+    if (window.len < options.windowLen()) return error.BufferTooSmall;
     return .{ .tables = tablesFor(options), .options = options, .window = window[0..options.windowLen()] };
 }
 
-fn checkOptions(options: Options) void {
-    std.debug.assert(options.window_bits >= 8);
-    std.debug.assert(options.format == .deflate or options.accept == .raw);
+fn checkOptions(options: Options) error{InvalidOptions}!void {
+    if (options.window_bits < 8) return error.InvalidOptions;
+    if (options.format != .deflate and options.accept != .raw) return error.InvalidOptions;
 }
 
 fn tablesFor(options: Options) Tables {
@@ -443,10 +450,11 @@ pub const Reader = struct {
         Truncated,
     };
 
-    /// `buffer.len >= options.windowLen() + 4096`.
-    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) Reader {
-        checkOptions(options);
-        std.debug.assert(buffer.len >= options.windowLen() + 4096);
+    /// `buffer.len >= options.windowLen() + 4096`; a shorter one is
+    /// refused.
+    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) InitError!Reader {
+        try checkOptions(options);
+        if (buffer.len < options.windowLen() + 4096) return error.BufferTooSmall;
         return .{
             .interface = .{ .vtable = &vtable, .buffer = buffer, .seek = 0, .end = 0 },
             .input = input,

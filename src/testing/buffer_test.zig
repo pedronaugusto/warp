@@ -7,6 +7,7 @@ const aegis = @import("aegis");
 const Bgzf = @import("../Bgzf.zig");
 const Compressor = @import("../Compressor.zig");
 const Deflate = @import("../stream/Deflate.zig");
+const Inflate = @import("../stream/Inflate.zig");
 const parallel = @import("../parallel.zig");
 const Speculative = @import("../parallel/Speculative.zig");
 const gdeflate = @import("../gdeflate.zig");
@@ -38,6 +39,38 @@ test "deflate: Compressor, Deflate, Bgzf and gdeflate in exactly their memory" {
     for ([_]Deflate.Options{ .{}, .{ .window_bits = 9 }, .{ .level = 12, .max_level = 12 }, .{ .window_bits = 10, .max_level = 12 } }) |o| {
         try exact(Deflate, Deflate.memory(o), .{o});
     }
+}
+
+test "stream Inflate and Deflate: a window or buffer one byte short is refused, as are options outside their ranges" {
+    for ([_]Inflate.Options{ .{}, .{ .window_bits = 8 }, .{ .format = .deflate64, .accept = .raw } }) |o| {
+        const n = o.windowLen();
+        const buffer = try testing.allocator.alloc(u8, n + 4096);
+        defer testing.allocator.free(buffer);
+        try testing.expectError(error.BufferTooSmall, Inflate.init(buffer[0 .. n - 1], o));
+        _ = try Inflate.init(buffer[0..n], o);
+        var source: std.Io.Reader = .fixed("");
+        try testing.expectError(error.BufferTooSmall, Inflate.Reader.init(&source, buffer[0 .. n + 4095], o));
+        _ = try Inflate.Reader.init(&source, buffer, o);
+    }
+    var window: [1 << 15]u8 = undefined;
+    var source: std.Io.Reader = .fixed("");
+    for ([_]Inflate.Options{ .{ .window_bits = 7 }, .{ .format = .deflate64, .accept = .gzip } }) |o| {
+        try testing.expectError(error.InvalidOptions, Inflate.init(&window, o));
+        try testing.expectError(error.InvalidOptions, Inflate.Reader.init(&source, &window, o));
+    }
+
+    for ([_]Deflate.Options{ .{ .window_bits = 7 }, .{ .hash_bits = 7 }, .{ .hash_bits = 17 } }) |o| {
+        try testing.expectEqual(std.math.maxInt(usize), Deflate.memory(o));
+        try testing.expectError(error.InvalidOptions, Deflate.init(testing.allocator, o));
+        var none: [0]u8 align(64) = .{};
+        try testing.expectError(error.InvalidOptions, Deflate.initBuffer(&none, o));
+    }
+    var d = try Deflate.init(testing.allocator, .{ .hash_bits = 16 });
+    defer d.deinit();
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var staging: [4096]u8 = undefined;
+    try testing.expectError(error.BufferTooSmall, Deflate.Writer.init(&d, &sink.writer, staging[0..4095]));
+    _ = try Deflate.Writer.init(&d, &sink.writer, &staging);
 }
 
 test "parallel deflate: compressor, decompressor and speculative markers in exactly their memory" {

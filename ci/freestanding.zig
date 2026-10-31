@@ -67,7 +67,7 @@ export fn warpExtended(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usiz
     var d: warp.deflate64.Decompressor = .init;
     const r = d.inflate(in[0..in_len], out[0..out_len], .{ .partial = true }) catch return -1;
     var window: [32768]u8 = undefined;
-    var z: warp.Inflate = .init(&window, .{ .accept = .raw });
+    var z: warp.Inflate = warp.Inflate.init(&window, .{ .accept = .raw }) catch return -1;
     var checkpoint: warp.Inflate.Checkpoint = .{ .in_offset = 0, .out_offset = 0, .window_bits = 15, .bits = 0, .pending = 0, .wrapper = .raw, .check = 0, .size = 0, .members = 0, .history_len = 0 };
     z.@"resume"(&checkpoint) catch return -1;
     _ = z.decode(in[0..in_len], out[0..out_len]) catch return -1;

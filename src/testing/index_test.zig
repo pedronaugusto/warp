@@ -37,7 +37,7 @@ test "gzip index round-trips and every checkpoint resumes the checksum and histo
     try testing.expectEqualSlices(u8, in, back[0..pn]);
     var window: [32768]u8 = undefined;
     for (loaded.points) |*point| {
-        var z: Inflate = .init(&window, .{ .accept = .gzip });
+        var z: Inflate = try .init(&window, .{ .accept = .gzip });
         try z.@"resume"(point);
         var ip: usize = @intCast(point.in_offset);
         var op: usize = @intCast(point.out_offset);
@@ -54,7 +54,7 @@ test "gzip index round-trips and every checkpoint resumes the checksum and histo
         try testing.expectEqual(point.in_offset, found.in_offset);
         var source: std.Io.Reader = .fixed(stream[@intCast(point.in_offset)..]);
         var buffer: [32768 + 4096]u8 = undefined;
-        var reader: Inflate.Reader = .init(&source, &buffer, .{ .accept = .gzip });
+        var reader: Inflate.Reader = try .init(&source, &buffer, .{ .accept = .gzip });
         try reader.seek(point);
         const n = try reader.interface.readSliceShort(back);
         try testing.expectEqualSlices(u8, in[@intCast(point.out_offset)..], back[0..n]);
@@ -110,7 +110,7 @@ test "BGZF members respect both size bounds and end with the EOF member" {
 
 test "checkpoint restoration refuses another window size or container" {
     var window: [32768]u8 = undefined;
-    var z: Inflate = .init(&window, .{ .accept = .gzip });
+    var z: Inflate = try .init(&window, .{ .accept = .gzip });
     var point: Inflate.Checkpoint = .{ .in_offset = 10, .out_offset = 100, .window_bits = 14, .bits = 0, .pending = 0, .wrapper = .gzip, .check = 0, .size = 100, .members = 0, .history_len = 0 };
     try testing.expectError(error.InvalidCheckpoint, z.@"resume"(&point));
     point.window_bits = 15;

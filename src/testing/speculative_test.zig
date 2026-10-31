@@ -223,7 +223,7 @@ test "speculative markers preserve the small-window captured stream at every bou
         const tokens = try a.alloc(u16, input.len);
         defer a.free(tokens);
         var window: [32768]u8 = undefined;
-        var native: Inflate = .init(&window, .{ .accept = .zlib });
+        var native: Inflate = try .init(&window, .{ .accept = .zlib });
         var at: usize = 0;
         var written: usize = 0;
         while (true) {

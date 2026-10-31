@@ -107,7 +107,7 @@ const Streamed = struct { out: []u8, in_len: usize };
 fn streamedTo(gpa: std.mem.Allocator, in: []const u8, dictionary: []const u8, in_step: usize, out_step: usize) !Streamed {
     const window = try gpa.alloc(u8, Inflate.deflate64_window_len);
     defer gpa.free(window);
-    var z: Inflate = .init(window, .{ .accept = .raw, .format = .deflate64, .dictionary = dictionary });
+    var z: Inflate = try .init(window, .{ .accept = .raw, .format = .deflate64, .dictionary = dictionary });
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var chunk: [4096]u8 = undefined;
@@ -162,7 +162,7 @@ test "7-Zip's Deflate64 streams decode whole, streamed at any cut and through a 
         var input: std.testing.Reader = .init(&input_buffer, &.{.{ .buffer = stream }});
         const buffer = try gpa.alloc(u8, Inflate.deflate64_window_len + 4096);
         defer gpa.free(buffer);
-        var reader: Inflate.Reader = .init(&input.interface, buffer, .{ .accept = .raw, .format = .deflate64 });
+        var reader: Inflate.Reader = try .init(&input.interface, buffer, .{ .accept = .raw, .format = .deflate64 });
         const read = try reader.interface.allocRemaining(gpa, .unlimited);
         defer gpa.free(read);
         try testing.expectEqualSlices(u8, plain, read);
@@ -199,7 +199,7 @@ test "a streamed Deflate64 stream reaches 64 KiB back, past DEFLATE's window, an
     // The same stream as DEFLATE: distance code 31 does not exist.
     const window = try gpa.alloc(u8, 32768);
     defer gpa.free(window);
-    var z: Inflate = .init(window, .{ .accept = .raw, .dictionary = dictionary });
+    var z: Inflate = try .init(window, .{ .accept = .raw, .dictionary = dictionary });
     var out: [64]u8 = undefined;
     try testing.expectError(error.InvalidStream, z.decode(stream[0..w.at], &out));
 }

@@ -25,7 +25,7 @@ pub fn build(gpa: std.mem.Allocator, in: []const u8, accept: container.Accept, s
     defer gpa.free(window);
     const output = try gpa.alloc(u8, 65536);
     defer gpa.free(output);
-    var z: Inflate = .init(window, .{ .accept = accept });
+    var z: Inflate = Inflate.init(window, .{ .accept = accept }) catch aegis.assert.never("a 32 KiB window holds the default 15-bit DEFLATE window");
     // The input left, cut as it is taken.
     var rest = in;
     var last: u64 = 0;

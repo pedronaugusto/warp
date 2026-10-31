@@ -106,10 +106,8 @@ const Layout = struct {
     stored_max: usize,
 
     fn of(options: Options) Layout {
-        std.debug.assert(options.window_bits >= 8);
+        aegis.assert.invariant(validOptions(options), "validOptions(options)");
         const hash_bits = options.hash_bits orelse std.math.clamp(@as(u5, options.window_bits) + 1, 10, 15);
-        std.debug.assert(hash_bits >= 8);
-        std.debug.assert(hash_bits <= 16);
         const sizes = deflate.Engine.Sizes.stream(options.window_bits, hash_bits, @max(options.level, options.max_level) >= 10);
         // The longest block: its literals, and matches of three bytes at most
         // for the near-optimal parser's, whose sequences are made from them.
@@ -130,14 +128,31 @@ const Layout = struct {
     }
 };
 
-/// The bytes `initBuffer` needs for `options`.
+/// `window_bits` 8-15 and `hash_bits` 8-16, as `Options` says.
+fn validOptions(options: Options) bool {
+    if (options.window_bits < 8) return false;
+    const hash_bits = options.hash_bits orelse return true;
+    return hash_bits >= 8 and hash_bits <= 16;
+}
+
+pub const InitError = error{
+    /// `window_bits` below 8, or `hash_bits` outside 8-16.
+    InvalidOptions,
+    /// The buffer is shorter than `memory(options)`.
+    BufferTooSmall,
+};
+
+/// The bytes `initBuffer` needs for `options`; maxInt(usize) for options
+/// it refuses.
 pub fn memory(options: Options) usize {
+    if (!validOptions(options)) return std.math.maxInt(usize);
     return Layout.of(options).memory();
 }
 
-pub fn init(gpa: Allocator, options: Options) Allocator.Error!Deflate {
+pub fn init(gpa: Allocator, options: Options) (Allocator.Error || error{InvalidOptions})!Deflate {
+    if (!validOptions(options)) return error.InvalidOptions;
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var d = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
+    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     d.owned = buffer;
     d.gpa = gpa;
     return d;
@@ -145,7 +160,8 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Deflate {
 
 /// A stream in caller memory, refused when shorter than `memory(options)`;
 /// `deinit` then frees nothing.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Deflate {
+pub fn initBuffer(buffer: []align(64) u8, options: Options) InitError!Deflate {
+    if (!validOptions(options)) return error.InvalidOptions;
     const layout = Layout.of(options);
     if (buffer.len < layout.memory()) return error.BufferTooSmall;
     const engine_len = std.mem.alignForward(usize, layout.sizes.memory(), 64);
@@ -470,9 +486,10 @@ pub const Writer = struct {
     state: *Deflate,
     output: *Io.Writer,
 
-    /// `buffer.len >= 4096`: the input staged before it is compressed.
-    pub fn init(state: *Deflate, output: *Io.Writer, buffer: []u8) Writer {
-        std.debug.assert(buffer.len >= 4096);
+    /// `buffer.len >= 4096`: the input staged before it is compressed; a
+    /// shorter one is refused.
+    pub fn init(state: *Deflate, output: *Io.Writer, buffer: []u8) error{BufferTooSmall}!Writer {
+        if (buffer.len < 4096) return error.BufferTooSmall;
         return .{
             .interface = .{ .vtable = &vtable, .buffer = buffer },
             .state = state,

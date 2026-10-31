@@ -311,7 +311,7 @@ pub fn inflateInit2(stream: ?*Stream, window_bits: c_int, version: [*c]const u8,
     s.direction = .decode;
     s.accept = accept;
     s.header_ready = accept == .raw or accept == .gzip;
-    s.decoder = .init(&s.window, .{ .accept = accept, .window_bits = @intCast(n), .members = .one, .diagnostic = &s.diagnostic });
+    s.decoder = Inflate.init(&s.window, .{ .accept = accept, .window_bits = @intCast(n), .members = .one, .diagnostic = &s.diagnostic }) catch return stream_error;
     z.adler = if (accept == .gzip) 0 else 1;
     return ok;
 }

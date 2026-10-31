@@ -341,7 +341,7 @@ fn decodeRegion(worker: *DecodeWorker) void {
 }
 
 fn decodeRegionInner(worker: *DecodeWorker) Decompressor.DecodeError!void {
-    var z: Inflate = .init(&worker.window, .{ .accept = worker.accept });
+    var z: Inflate = Inflate.init(&worker.window, .{ .accept = worker.accept }) catch aegis.assert.never("a 32 KiB window holds the default 15-bit DEFLATE window");
     var at: usize = 0;
     if (worker.start) |point| {
         if (point.in_offset > worker.input.len) return error.InvalidIndex;

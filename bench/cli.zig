@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     var writer = output.writer(init.io, &out_buffer);
     if (decode) {
         var buffer: [32768 + 4096]u8 = undefined;
-        var decoded: warp.Inflate.Reader = .init(&reader.interface, &buffer, .{
+        var decoded: warp.Inflate.Reader = try .init(&reader.interface, &buffer, .{
             .accept = switch (kind) {
                 .raw => .raw,
                 .zlib => .zlib,
