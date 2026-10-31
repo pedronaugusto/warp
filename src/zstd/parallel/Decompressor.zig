@@ -100,6 +100,8 @@ pub fn decompress(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: 
     var op: usize = 0;
     var frames: usize = 0;
     while (at < in.len) {
+        // A skippable frame awaits nothing: each frame is a point.
+        try io.checkCancel();
         const prefix: usize = if (options.format == .standard) 5 else 1;
         if (in.len - at < prefix) return fail(options, error.Truncated, at, if (frames == 0) .truncated else .trailing_data);
         var fault: frame.Fault = undefined;

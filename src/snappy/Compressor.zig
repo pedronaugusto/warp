@@ -268,13 +268,18 @@ pub fn validStream(options: Options, stream: Stream) bool {
     return options.dictionary == null and b >= frame.min_block_size and b <= frame.maxBlock(options.format) and padding <= frame.max_block_size;
 }
 
-/// The longest stream of `len` bytes, with its index apart.
+/// The longest stream of `len` bytes, with its index apart; maxInt(usize)
+/// for a stream `validStream` refuses (`compress` refuses it as
+/// `InvalidOptions`) or one past the address space.
 pub fn streamBound(options: Options, len: usize, stream: Stream) usize {
+    if (!validStream(options, stream)) return std.math.maxInt(usize);
     const b = blockSize(options, stream);
-    const blocks = std.math.divCeil(usize, len, b) catch unreachable;
+    const blocks = std.math.divCeil(usize, len, b) catch unreachable; // unreachable: a valid stream's block is at least 4 KiB
     const index = if (stream.index == .none) 0 else Index.bound(blocks + 1);
     const padding = stream.padding.raw();
-    return frame.identifier_len + blocks * chunkBound(b) + padding + frame.header_len + index;
+    const chunks = std.math.mul(usize, blocks, chunkBound(b)) catch return std.math.maxInt(usize);
+    const ends = frame.identifier_len + padding + frame.header_len + index;
+    return std.math.add(usize, chunks, ends) catch std.math.maxInt(usize);
 }
 
 /// The longest chunk of a block of `len` bytes.

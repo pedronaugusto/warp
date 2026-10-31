@@ -7,6 +7,9 @@ All notable changes to warp are documented here. The format follows
 
 ### Breaking
 
+- `lz4.Decompress.init` and `snappy.Decompress.init`, and their `Reader.init`, refuse a buffer shorter than `memory(...)` (a reader's also than its 4 KiB) with `error.BufferTooSmall` (`InitError`), where it stopped a safe build at an assertion and was undefined behaviour in ReleaseFast, as every `initBuffer` does; snappy's refuses a `max_block_size` past 4 MiB with `InvalidOptions`, and `snappy.decompress` (`DecompressError`) and `snappy.parallel.Decompressor.decompress` do too. `lz4.Decompress.memory` sizes a maximum past a legacy block as one, and `snappy.Decompress.memory` one past 4 MiB as 4 MiB, where a larger value wrapped.
+- `gdeflate.Compressor.compressPage` refuses a page longer than `tile_size`, and `compress` a stream of more than `max_tiles` tiles, with `error.InputTooLarge`, where a safe build stopped at an assertion and ReleaseFast was undefined behaviour.
+- `snappy.streamBound` is `maxInt(usize)` for a stream `validStream` refuses (a zero block size reached `unreachable`) or one past the address space.
 - Every `initBuffer` that lays a type out in caller memory refuses a buffer shorter than its `memory(...)` with `error.BufferTooSmall`, where a short buffer stopped a safe build at an assertion and was undefined behaviour in ReleaseFast: `Compressor`, `Deflate`, `gzip.Bgzf`, `parallel.Compressor` and `parallel.Decompressor`, `gdeflate.Compressor`, `lz4.Compressor` and `lz4.Compress`, `snappy.Compressor` and `snappy.Compress`, `zstd.Compressor`, `zstd.Compress`, `zstd.seekable.Writer`, `zstd.parallel.Compressor` and `zstd.parallel.Decompressor`, `lzma.Compressor` and `lzma.Compress`, `bzip2.Decompressor` and `bzip2.parallel.Decompressor`. Each now returns an error union (with `InvalidOptions` beside it where the options are checked, now also for `zstd.parallel` and `bzip2.parallel`, whose options were a precondition); a caller adds `try`. The regions are carved with `std.heap.FixedBufferAllocator`, so a layout that disagreed with `memory` would be refused too; a test gives each type exactly its `memory` and one byte less.
 
 ### Added
@@ -32,6 +35,11 @@ All notable changes to warp are documented here. The format follows
 - Adler-32's portable and AArch64 DotProd kernels take the last bytes as one zero-padded block (k·s1 and the block's weighted sums, as a full block's), not byte by byte, and reduce each vector sum before weighting it, so every term of the per-run reduction is bounded; the per-block loops are unchanged. The marked decoder's copy states its contract: the match fits the tokens, and past the window's markers its distance is within what is written.
 - An xz block header is read by one parser through `aegis.input.Untrusted`: it takes the bytes the header starts with, reads its length from the first, and returns the header with each number in a type that holds its range (the length in 11 bits, the sizes in 63, as a variable-length integer's nine bytes carry them); a refusal names its reason and byte as before. The decoders and the encoder's index, which reads back the headers it wrote, go through it.
 - Re-pinned onto preflight 0.18.0, aegis 0.1.18, shakedown 0.4.18 and ensign 0.3.0, with aegis's safety rules at gate but A009 and A010 (reported). The decoders' states are `aegis.state.Machine`s (DEFLATE's blocks and wrappers, the gzip header, LZ4 and zstd frames, Brotli), each phase changed in one place along an edge checked at compile time; LZ4's and zstd's streaming decoders keep a refusal in `failure` alone. CPU detection keeps its cell in `aegis.Atomic`, contracts on input are `aegis.assert.invariant`, and the benchmarks and the size gate read files through `aegis.own.readFile` with a limit.
+
+### Fixed
+
+- `zstd.parallel.Decompressor` and `xz.parallel.Decompressor` are canceled between frames and streams: a run of skippable frames, or of streams with no blocks, reached no cancellation point.
+- The asset build tool reads its source through `aegis.own.readFile` with a 1 GiB limit, where std's whole-file read lost a cancel that landed on the file's length.
 
 ## [0.4.5] - 2026-10-27
 

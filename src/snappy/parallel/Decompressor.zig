@@ -27,7 +27,7 @@ pub const Statistics = struct {
 };
 
 pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
-pub const Error = streams.Error || Io.Cancelable;
+pub const Error = streams.DecompressError || Io.Cancelable;
 
 const Worker = struct {
     group: Io.Group = .init,
@@ -64,6 +64,7 @@ pub fn decompress(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: 
         s.* = stats;
     };
     defer for (d.workers) |*w| w.group.cancel(io);
+    if (options.max_block_size.compare(.fromRaw(frame.max_block_size)) == .gt) return error.InvalidOptions;
     const planned = d.plan(io, in, out, options, &stats) catch |err| switch (err) {
         error.Canceled => return error.Canceled,
         error.Refused => null,

@@ -121,6 +121,8 @@ fn plan(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: Native.Opt
     var next: usize = 0;
     for (d.workers) |*w| w.refused = false;
     while (true) {
+        // A stream of no blocks awaits nothing: each stream is a point.
+        try io.checkCancel();
         if (rest.len < format.header_len) return error.Refused;
         const check = switch (format.streamHeader(rest[0..format.header_len])) {
             .check => |c| c,

@@ -178,7 +178,7 @@ pub const Stream = struct {
             .stream => return snappy.decompress(c.out[0..c.n], c.back, .{}),
             .parallel => return c.pd.decompress(c.session.io, c.out[0..c.n], c.back, .{}),
             .resumable => {
-                var d: snappy.Decompress = .init(c.window, .{});
+                var d: snappy.Decompress = try .init(c.window, .{});
                 var op: usize = 0;
                 var ip: usize = 0;
                 while (true) {
@@ -238,7 +238,7 @@ pub const Seek = struct {
 
     fn read(c: *Seek) Error!usize {
         const e = c.index.find(@intCast(c.at)) catch return error.WrongOutput;
-        var d: snappy.Decompress = .init(c.window, .{ .from_chunk = true });
+        var d: snappy.Decompress = try .init(c.window, .{ .from_chunk = true });
         d.skip(c.at - e.uncompressed);
         const want = @min(c.back.len, c.input.len - @as(usize, @intCast(c.at)));
         var ip: usize = @intCast(e.compressed);

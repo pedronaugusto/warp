@@ -203,12 +203,15 @@ pub const Compressor = struct {
         /// `out` is shorter than the page or stream; with `out.len >=
         /// pageBound(...)` or `bound(...)` this never happens.
         OutputTooSmall,
+        /// A page longer than `tile_size`, or a stream of more than
+        /// `max_tiles` tiles.
+        InputTooLarge,
     };
 
     /// One page of `in` (at most `tile_size` bytes) into `out`, as nvCOMP
     /// takes pages; its length.
     pub fn compressPage(c: *Compressor, in: []const u8, out: []u8) CompressError!usize {
-        std.debug.assert(in.len <= tile_size);
+        if (in.len > tile_size) return error.InputTooLarge;
         var w: lanes.Writer = .init(out);
         c.engine.compressPasses(in, &.{}, &w, c.level, .default, null);
         if (w.overflow) return error.OutputTooSmall;
@@ -220,7 +223,7 @@ pub const Compressor = struct {
     pub fn compress(c: *Compressor, in: []const u8, out: []u8) CompressError!usize {
         // unreachable: tile_size is not zero
         const tiles = std.math.divCeil(usize, in.len, tile_size) catch unreachable;
-        std.debug.assert(tiles <= max_tiles);
+        if (tiles > max_tiles) return error.InputTooLarge;
         const data = header_len + 4 * tiles;
         if (out.len < data) return error.OutputTooSmall;
         out[0] = codec_id;

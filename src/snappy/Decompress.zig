@@ -25,11 +25,19 @@ pub const Status = enum {
 pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 
 /// The bytes of window `init` needs for blocks of at most
-/// `max_block_size`: one decoded block, and one chunk staged.
+/// `max_block_size`: one decoded block, and one chunk staged. A maximum
+/// past the formats' 4 MiB, which `init` refuses, is sized as 4 MiB.
 pub fn memory(max_block_size: aegis.units.Bytes(usize)) usize {
-    const b = max_block_size.raw();
+    const b = @min(max_block_size.raw(), frame.max_block_size);
     return b + @as(usize, @intCast(frame.maxChunk(b)));
 }
+
+pub const InitError = error{
+    /// `max_block_size` is past the formats' 4 MiB.
+    InvalidOptions,
+    /// The buffer is shorter than `memory(options.max_block_size)`.
+    BufferTooSmall,
+};
 
 const Phase = enum { header, body, skip, drain };
 
@@ -69,11 +77,12 @@ pending: usize = 0,
 pending_end: usize = 0,
 failure: ?Error = null,
 
-/// `buffer.len >= memory(options.max_block_size)`.
-pub fn init(buffer: []u8, options: Options) Decompress {
+/// A decoder in `buffer`, refused when shorter than
+/// `memory(options.max_block_size)`.
+pub fn init(buffer: []u8, options: Options) InitError!Decompress {
     const b = options.max_block_size.raw();
-    std.debug.assert(b <= frame.max_block_size);
-    std.debug.assert(buffer.len >= memory(options.max_block_size));
+    if (b > frame.max_block_size) return error.InvalidOptions;
+    if (buffer.len < memory(options.max_block_size)) return error.BufferTooSmall;
     return .{ .options = options, .window = buffer[0..b], .stage = buffer[b..memory(options.max_block_size)], .first = !options.from_chunk };
 }
 
@@ -223,9 +232,11 @@ pub const Reader = struct {
     state: Decompress,
     failure: ?Error = null,
 
-    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) Reader {
-        const n = @min(buffer.len, 4096);
-        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..n], .seek = 0, .end = 0 }, .input = input, .state = Decompress.init(buffer[n..], options) };
+    /// A reader in `buffer`, refused when shorter than 4 KiB and
+    /// `memory(options.max_block_size)`.
+    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) InitError!Reader {
+        if (buffer.len < 4096) return error.BufferTooSmall;
+        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..4096], .seek = 0, .end = 0 }, .input = input, .state = try Decompress.init(buffer[4096..], options) };
     }
 
     /// The error behind an `error.ReadFailed`, when it was the stream's.

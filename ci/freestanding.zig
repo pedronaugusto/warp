@@ -255,11 +255,11 @@ export fn warpLz4Stream(in: [*]const u8, in_len: usize, out: [*]u8, out_len: usi
     w.interface.writeAll(in[0..in_len]) catch return -1;
     w.interface.flush() catch return -1;
     w.finish() catch return -1;
-    var d: warp.lz4.Decompress = .init(lz4_window[0..warp.lz4.Decompress.memory(.literal("64KiB"))], .{ .max_block_size = .literal("64KiB") });
+    var d: warp.lz4.Decompress = warp.lz4.Decompress.init(lz4_window[0..warp.lz4.Decompress.memory(.literal("64KiB"))], .{ .max_block_size = .literal("64KiB") }) catch return -1;
     const step = d.decode(sink.buffered(), decoded[0..decoded_len]) catch return -1;
     d.finish() catch return -1;
     var source: std.Io.Reader = .fixed(sink.buffered());
-    var reader: warp.lz4.Decompress.Reader = .init(&source, &lz4_window, .{ .max_block_size = .literal("64KiB") });
+    var reader: warp.lz4.Decompress.Reader = warp.lz4.Decompress.Reader.init(&source, &lz4_window, .{ .max_block_size = .literal("64KiB") }) catch return -1;
     const read = reader.interface.readSliceShort(decoded[0..decoded_len]) catch return -1;
     if (read != step.out_len) return -1;
     return @intCast(step.out_len);

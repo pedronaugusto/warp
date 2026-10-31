@@ -332,7 +332,10 @@ fn compressedAsset(b: *std.Build, root: *std.Build, options: AssetOptions) std.B
             .root_source_file = root.path("build/asset.zig"),
             .target = b.graph.host,
             .optimize = .fast,
-            .imports = &.{.{ .name = "warp", .module = warpModule(root, b.graph.host, .fast) }},
+            .imports = &.{
+                .{ .name = "warp", .module = warpModule(root, b.graph.host, .fast) },
+                .{ .name = "aegis", .module = root.dependency("aegis", .{ .target = b.graph.host, .optimize = .fast }).module("aegis") },
+            },
         }),
     });
     const run = b.addRunArtifact(tool);

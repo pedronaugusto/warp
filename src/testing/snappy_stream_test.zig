@@ -267,7 +267,7 @@ test "the resumable compressor writes S2's streams, in pieces, flushed where S2'
 fn decodeInPieces(gpa: std.mem.Allocator, stream: []const u8, options: snappy.StreamOptions, step: usize, room: usize, out: *std.ArrayList(u8)) !void {
     const window = try gpa.alloc(u8, snappy.Decompress.memory(options.max_block_size));
     defer gpa.free(window);
-    var d: snappy.Decompress = .init(window, options);
+    var d: snappy.Decompress = try .init(window, options);
     const buffer = try gpa.alloc(u8, room);
     defer gpa.free(buffer);
     var at: usize = 0;
@@ -333,7 +333,7 @@ test "a seek by the index: the reader starts at the entry found and skips to the
         const at: u64 = @intCast(if (offset < 0) @as(i64, @intCast(in.len)) + offset else offset);
         const window = try gpa.alloc(u8, snappy.Decompress.memory(.literal("4MiB")));
         defer gpa.free(window);
-        var d: snappy.Decompress = .init(window, .{ .from_chunk = true });
+        var d: snappy.Decompress = try .init(window, .{ .from_chunk = true });
         d.skip(at - e.uncompressed);
         var buffer: [100]u8 = undefined;
         var got: usize = 0;
@@ -488,7 +488,7 @@ fn streamRoundTrips(_: void, case: *shakedown.Case) !void {
             const at = shakedown.gen.intRange(s, usize, 0, plain.len - 1);
             const e = try loaded.find(@intCast(at));
             const window = try case.gpa.alloc(u8, snappy.Decompress.memory(.literal("4MiB")));
-            var d: snappy.Decompress = .init(window, .{ .from_chunk = true });
+            var d: snappy.Decompress = try .init(window, .{ .from_chunk = true });
             d.skip(at - e.uncompressed);
             var one: [1]u8 = undefined;
             const r = try d.decode(stream[@intCast(e.compressed)..], &one);
@@ -567,4 +567,26 @@ fn indexesLoad(_: void, case: *shakedown.Case) !void {
 
 test "fuzz: any bytes into the index loader, and any offset into a loaded index" {
     try shakedown.check(testing.allocator, {}, indexesLoad, .{ .cases = 2000, .seed = 0x5a51 });
+}
+
+test "resumable decoder and whole-stream decoder refuse a maximum past 4 MiB and a short buffer" {
+    const gpa = testing.allocator;
+    const window = try gpa.alloc(u8, snappy.Decompress.memory(.literal("64KiB")));
+    defer gpa.free(window);
+    try testing.expectError(error.BufferTooSmall, snappy.Decompress.init(window[0 .. window.len - 1], .{ .max_block_size = .literal("64KiB") }));
+    _ = try snappy.Decompress.init(window, .{ .max_block_size = .literal("64KiB") });
+    const past: snappy.StreamOptions = .{ .max_block_size = .fromRaw((4 << 20) + 1) };
+    try testing.expectError(error.InvalidOptions, snappy.Decompress.init(window, past));
+    try testing.expectEqual(snappy.Decompress.memory(.literal("4MiB")), snappy.Decompress.memory(.fromRaw(std.math.maxInt(usize))));
+    var out: [16]u8 = undefined;
+    try testing.expectError(error.InvalidOptions, snappy.decompress("", &out, past));
+}
+
+test "a stream bound is maxInt for a stream the compressor refuses" {
+    const options: snappy.Compressor.Options = .{};
+    try testing.expectEqual(std.math.maxInt(usize), snappy.streamBound(options, 100, .{ .block_size = .fromRaw(0) }));
+    try testing.expectEqual(std.math.maxInt(usize), snappy.streamBound(options, 100, .{ .padding = .fromRaw(std.math.maxInt(usize)) }));
+    // A valid stream bounds a whole block: the identifier, one chunk, the padding's header.
+    const b = snappy.Compressor.blockSize(options, .{});
+    try testing.expectEqual(10 + snappy.Compressor.chunkBound(b) + 4, snappy.streamBound(options, 100, .{}));
 }

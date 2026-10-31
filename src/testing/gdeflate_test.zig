@@ -492,6 +492,21 @@ test "pages stay within their bound, and the stream within its own" {
     _ = try c.compress(in, out);
 }
 
+test "a page longer than a tile is refused" {
+    const gpa = testing.allocator;
+    var c: gdeflate.Compressor = try .init(gpa, .{});
+    defer c.deinit();
+    const in = try gen.alloc(gpa, .text, 11, gdeflate.tile_size + 1);
+    defer gpa.free(in);
+    const out = try gpa.alloc(u8, gdeflate.pageBound(in.len));
+    defer gpa.free(out);
+    try testing.expectError(error.InputTooLarge, c.compressPage(in, out));
+    // The stream takes the same bytes as two tiles.
+    const stream = try gpa.alloc(u8, gdeflate.bound(in.len));
+    defer gpa.free(stream);
+    _ = try c.compress(in, stream);
+}
+
 test "tile stream headers: the codec ID, the tile size, offsets within the input" {
     var d: gdeflate.Decompressor = .init;
     var out: [16]u8 = undefined;

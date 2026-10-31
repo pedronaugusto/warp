@@ -66,7 +66,7 @@ test "lz4's blocks are warp's, at every level and destSize budget, and decode to
 fn streamed(gpa: std.mem.Allocator, stream: []const u8, options: lz4.Decompress.Options, in_step: usize, out_step: usize) ![]u8 {
     const window = try gpa.alloc(u8, lz4.Decompress.memory(options.max_block_size));
     defer gpa.free(window);
-    var d: lz4.Decompress = .init(window, options);
+    var d: lz4.Decompress = try .init(window, options);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     const chunk = try gpa.alloc(u8, out_step);
@@ -118,7 +118,7 @@ test "lz4's frames decode whole, streamed at any cut and through a reader, with 
         var input: std.testing.Reader = .init(&input_buffer, &.{.{ .buffer = frame }});
         const buffer = try gpa.alloc(u8, 4096 + lz4.Decompress.memory(max));
         defer gpa.free(buffer);
-        var reader: lz4.Decompress.Reader = .init(&input.interface, buffer, .{ .dictionary = dictionary, .max_block_size = max });
+        var reader: lz4.Decompress.Reader = try .init(&input.interface, buffer, .{ .dictionary = dictionary, .max_block_size = max });
         const read = try reader.interface.allocRemaining(gpa, .unlimited);
         defer gpa.free(read);
         try testing.expectEqualSlices(u8, in, read);
@@ -576,4 +576,16 @@ fn roundTrip(_: void, case: *shakedown.Case) !void {
 
 test "fuzz: any input at any level, history, frame and budget comes back whole" {
     try shakedown.check(testing.allocator, {}, roundTrip, .{ .cases = 200, .seed = 0x140a7d });
+}
+
+test "lz4 resumable decoder: a short buffer is refused, a maximum past a legacy block sized as one" {
+    const gpa = testing.allocator;
+    const window = try gpa.alloc(u8, lz4.Decompress.memory(.literal("64KiB")));
+    defer gpa.free(window);
+    try testing.expectError(error.BufferTooSmall, lz4.Decompress.init(window[0 .. window.len - 1], .{ .max_block_size = .literal("64KiB") }));
+    _ = try lz4.Decompress.init(window, .{ .max_block_size = .literal("64KiB") });
+    var source: std.Io.Reader = .fixed("");
+    try testing.expectError(error.BufferTooSmall, lz4.Decompress.Reader.init(&source, window[0..4095], .{}));
+    // No block is longer than a legacy one: a larger maximum needs no more.
+    try testing.expectEqual(lz4.Decompress.memory(.literal("8MiB")), lz4.Decompress.memory(.fromRaw(std.math.maxInt(usize))));
 }

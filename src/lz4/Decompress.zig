@@ -47,9 +47,20 @@ const history_len = 65536;
 /// the history, one decoded block, one stored block and its checksum (or
 /// a legacy block, the larger, from 8 MiB).
 pub fn memory(max_block_size: aegis.units.Bytes(usize)) usize {
-    const b = max_block_size.raw();
+    const b = windowBlock(max_block_size);
     return history_len + b + stageLen(b);
 }
+
+/// The longest block the window holds: no block is longer than a legacy
+/// one, so a larger maximum needs no more.
+fn windowBlock(max_block_size: aegis.units.Bytes(usize)) usize {
+    return @min(max_block_size.raw(), frame.legacy_block_len);
+}
+
+pub const InitError = error{
+    /// The buffer is shorter than `memory(options.max_block_size)`.
+    BufferTooSmall,
+};
 
 fn stageLen(b: usize) usize {
     return if (b >= frame.legacy_block_len) @max(b + 4, frame.legacy_block_max) else b + 4;
@@ -112,11 +123,12 @@ hash: std.hash.XxHash32 = .init(0),
 header_is_legacy: bool = false,
 failure: ?Error = null,
 
-/// `buffer.len >= memory(options.max_block_size)`. The value may move
-/// before the first call; keep it in place while decoding.
-pub fn init(buffer: []u8, options: Options) Decompress {
-    std.debug.assert(buffer.len >= memory(options.max_block_size));
-    const b = options.max_block_size.raw();
+/// A decoder in `buffer`, refused when shorter than
+/// `memory(options.max_block_size)`. The value may move before the first
+/// call; keep it in place while decoding.
+pub fn init(buffer: []u8, options: Options) InitError!Decompress {
+    if (buffer.len < memory(options.max_block_size)) return error.BufferTooSmall;
+    const b = windowBlock(options.max_block_size);
     return .{ .options = options, .window = buffer[0 .. history_len + b], .stage = buffer[history_len + b ..][0..stageLen(b)] };
 }
 
@@ -435,9 +447,11 @@ pub const Reader = struct {
     state: Decompress,
     failure: ?Error = null,
 
-    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) Reader {
-        const n = @min(buffer.len, 4096);
-        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..n], .seek = 0, .end = 0 }, .input = input, .state = Decompress.init(buffer[n..], options) };
+    /// A reader in `buffer`, refused when shorter than 4 KiB and
+    /// `memory(options.max_block_size)`.
+    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) InitError!Reader {
+        if (buffer.len < 4096) return error.BufferTooSmall;
+        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..4096], .seek = 0, .end = 0 }, .input = input, .state = try Decompress.init(buffer[4096..], options) };
     }
 
     /// The error behind an `error.ReadFailed`, when it was the stream's.
