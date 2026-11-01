@@ -7,7 +7,8 @@ streams through `warp.brotli`, and decodes bzip2
 through `warp.bzip2` and xz and LZMA through `warp.xz` and `warp.lzma`. It
 computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
-as the reference does. Checksum dispatch selects
+as the reference does for a stream other than one its encoder wrote before, and from
+quality 4 the block splitter's working sets in each meta-block. Checksum dispatch selects
 a kernel supported by the CPU.
 
 W5 performance work remains in progress. Correctness and deterministic
@@ -164,7 +165,7 @@ the second length.
 | `Options.accept` | Raw DEFLATE, RFC 1950 or gzip; optional detection of wrapped versus raw input, or either wrapper |
 | `Options.partial` | Stops when `out` is full instead of failing; `Result.finished` says which |
 | `Options.dictionary` | History before the output: what a raw stream refers into, or the bytes an RFC 1950 stream identifies by Adler-32 |
-| `Compressor.init(gpa, options)`, `initBuffer(buffer, options)` | A compressor for a level (0 stored, 1-9, 10-12 near-optimal) and strategy, in allocated or given memory |
+| `Compressor.init(gpa, options)`, `initBuffer(buffer, options)` | A compressor for a level (0 stored, 1-9, 10-12 near-optimal) and strategy, in allocated or given memory (`error.BufferTooSmall` when shorter than `memory`) |
 | `Compressor.memory(options)` | The bytes `initBuffer` needs |
 | `compressor.compress(in, out, frame)` | One complete stream of `in`; `frame` picks the container, dictionary and gzip header |
 | `Compressor.bound(len, frame)` | The longest stream `compress` writes for `len` bytes: an `out` this long never fails |
@@ -197,7 +198,9 @@ lower level to a near-optimal one. `Compressor.Options.passes` and
 standard stream. `parallel.Options` chooses the container, level, 128 KiB chunk
 size, worker count, and whether chunks refer to the preceding 32 KiB. The bytes
 are identical for every worker count. `memory` and `initBuffer` support caller
-storage for the parallel codecs and BGZF writer.
+storage for the parallel codecs and BGZF writer. Every `initBuffer` in warp
+refuses a buffer shorter than its `memory` with `error.BufferTooSmall`.
+
 
 `gzip.Index.build(gpa, input, accept, spacing)` validates a compressed stream
 and saves block boundaries, checksums, and history. `write` and `read` persist
@@ -387,8 +390,13 @@ reserves the output. `Compress` is the same encoder resumable, with `write`,
 input and parameters warp writes the reference's (google/brotli 1.2.1) stream
 byte for byte, at every quality, whole and streamed: its parsers, match finders,
 block splitting and clustering are the reference's, and its static-dictionary
-lookup the reference's table. Encoding allocates its window and tables per
-stream, from the allocator `init` takes.
+lookup the reference's table. Encoding allocates its window and tables from the
+allocator `init` takes, and keeps them: a `Compressor` keeps its encoder between
+calls, and `Compress.reset` starts a new stream on the one it has, so a stream
+the size of one before allocates nothing at qualities 0-3, and from quality 4
+only the block splitter's working sets, which it takes in each meta-block as
+the reference does. `deinit` frees them. A stream
+written on kept buffers is the same stream a fresh encoder writes.
 
 ### GDeflate
 
@@ -464,10 +472,15 @@ decoder holds one coder's probabilities (about 30 KiB) and allocates nothing;
 `Diagnostic` records the refusal's offset and reason.
 
 `xz.Decompress` and `lzma.Decompress` are resumable at every input and output
-byte; the window is the caller's, `windowLength(dictionary)` bytes (a stream
-naming a larger dictionary is `WindowTooLarge`). They read input in place and
-stage only a symbol or header cut short, so a stream's end is exact. Each has
-a `Reader`. `xz.parallel.Decompressor` decodes the blocks whose headers carry
+byte; the window is the caller's, `windowLength(dictionary)` bytes. An `.lzma`
+or raw stream naming a larger dictionary is `WindowTooLarge`. An `.xz` stream
+names its dictionary in each block's header, so `xz.Decompress` stops there
+when the window is too small (`need_window`) and takes a larger one
+(`setWindow`) or refuses it (`refuseWindow`); a block whose header declares
+its size needs no window larger than it. Its `Reader` allocates the
+window so, up to a limit, for a stream whose dictionary is known only from
+its blocks (xz in zip). They read input in place and stage only a symbol or
+header cut short, so a stream's end is exact. Each has a `Reader`. `xz.parallel.Decompressor` decodes the blocks whose headers carry
 their sizes (as `xz -T` writes them) in workers, each straight into its range
 of the output, and answers anything else as the whole-buffer decoder does.
 

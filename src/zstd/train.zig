@@ -1,6 +1,7 @@
 //! Dictionary training and entropy finalization. Temporary training memory
 //! belongs to the allocator; the finished dictionary borrows only `out`.
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const Dictionary = @import("Dictionary.zig");
 const Encoder = @import("Encoder.zig");
@@ -57,7 +58,7 @@ pub fn train(gpa: Allocator, samples: []const []const u8, out: []u8, options: Op
         for (0..steps) |step| {
             const low: usize = @min(50, content.len);
             const high: usize = @min(2000, content.len);
-            const k = @max(d, options.k orelse low + (high - low) * step / @max(steps - 1, 1));
+            const k = @max(d, options.k orelse (low + (high - low) * step / @max(steps - 1, 1)));
             const selected = model.select(content, k);
             if (selected == 0) continue;
             const n = try finalize(gpa, content[0..selected], training, candidate, options);
@@ -197,7 +198,7 @@ fn writeDistribution(out: []u8, counts: []const u32, log: u4) TrainError!usize {
     for (counts) |count| total += count;
     const used = norm[0..counts.len];
     fse.normalize(used, log, counts, total, true) catch return error.InvalidParameters;
-    std.debug.assert(out.len >= fse.countsBound(@intCast(counts.len - 1), log));
+    aegis.assert.invariant(out.len >= fse.countsBound(@intCast(counts.len - 1), log), "out.len >= fse.countsBound(@intCast(counts.len - 1), log)");
     return fse.writeCounts(out, used, log);
 }
 

@@ -8,6 +8,7 @@
 const Index = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const frame = @import("frame.zig");
 const block = @import("block.zig");
 
@@ -162,8 +163,8 @@ pub const Gather = struct {
                 g.last = e;
                 return .moved;
             }
-            std.debug.assert(l.uncompressed < e.uncompressed);
-            std.debug.assert(l.compressed <= e.compressed);
+            aegis.assert.pre(l.uncompressed < e.uncompressed, "l.uncompressed < e.uncompressed");
+            aegis.assert.pre(l.compressed <= e.compressed, "l.compressed <= e.compressed");
             if (l.uncompressed + min_distance > e.uncompressed) return .dropped;
         }
         g.last = e;

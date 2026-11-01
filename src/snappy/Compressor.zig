@@ -143,11 +143,12 @@ fn dictTables(c: *Compressor, comptime T: type) []T {
     return std.mem.bytesAsSlice(T, c.memory_)[workMemory(c.options) / @sizeOf(T) ..];
 }
 
-/// A compressor over the caller's `buffer` (at least `memory(options)`
-/// bytes, aligned to 16).
-pub fn initBuffer(buffer: []align(16) u8, options: Options) error{InvalidOptions}!Compressor {
+/// A compressor over the caller's `buffer` (aligned to 16), refused when
+/// shorter than `memory(options)`.
+pub fn initBuffer(buffer: []align(16) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    std.debug.assert(buffer.len >= memory(options));
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+
     var c: Compressor = .{ .options = options, .memory_ = buffer[0..memory(options)], .gpa = null };
     c.indexDictionary();
     return c;
@@ -267,13 +268,18 @@ pub fn validStream(options: Options, stream: Stream) bool {
     return options.dictionary == null and b >= frame.min_block_size and b <= frame.maxBlock(options.format) and padding <= frame.max_block_size;
 }
 
-/// The longest stream of `len` bytes, with its index apart.
+/// The longest stream of `len` bytes, with its index apart; maxInt(usize)
+/// for a stream `validStream` refuses (`compress` refuses it as
+/// `InvalidOptions`) or one past the address space.
 pub fn streamBound(options: Options, len: usize, stream: Stream) usize {
+    if (!validStream(options, stream)) return std.math.maxInt(usize);
     const b = blockSize(options, stream);
-    const blocks = std.math.divCeil(usize, len, b) catch unreachable;
+    const blocks = std.math.divCeil(usize, len, b) catch unreachable; // unreachable: a valid stream's block is at least 4 KiB
     const index = if (stream.index == .none) 0 else Index.bound(blocks + 1);
     const padding = stream.padding.raw();
-    return frame.identifier_len + blocks * chunkBound(b) + padding + frame.header_len + index;
+    const chunks = std.math.mul(usize, blocks, chunkBound(b)) catch return std.math.maxInt(usize);
+    const ends = frame.identifier_len + padding + frame.header_len + index;
+    return std.math.add(usize, chunks, ends) catch std.math.maxInt(usize);
 }
 
 /// The longest chunk of a block of `len` bytes.
@@ -333,8 +339,8 @@ pub fn finish(out: []u8, len: usize, total: u64, block_size: usize, stream: Stre
 /// gives up, or where google's parse saves less than an eighth (as
 /// golang/snappy and snap decide); its length.
 pub fn chunk(c: *Compressor, in: []const u8, out: []u8, store: bool) usize {
-    std.debug.assert(in.len > 0);
-    std.debug.assert(in.len <= frame.max_block_size);
+    aegis.assert.pre(in.len > 0, "in.len > 0");
+    aegis.assert.pre(in.len <= frame.max_block_size, "in.len <= frame.max_block_size");
     const head = frame.header_len + frame.checksum_len;
     std.mem.writeInt(u32, out[frame.header_len..][0..4], frame.checksum(in), .little);
     const body = if (store) null else body: {

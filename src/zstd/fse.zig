@@ -30,19 +30,23 @@ pub const Counts = struct {
 
 /// Read a table description from the start of `in`: at most
 /// `max_symbol + 1` symbols, a log of at most `absolute_max_log` (the
-/// caller applies its own limit).
-pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!void {
-    if (in.len < 8) {
-        // The reader below needs eight bytes: the description is read from
-        // a zero-padded copy, and may not reach into the padding.
-        var buffer: [8]u8 = @splat(0);
-        @memcpy(buffer[0..in.len], in);
-        try readCounts(&buffer, max_symbol, counts);
-        if (counts.len > in.len) return error.InvalidStream;
-        return;
-    }
+/// caller applies its own limit). A parser for `aegis.input.Untrusted`.
+pub fn readCounts(max_symbol: u8, in: []const u8) ReadError!Counts {
+    if (in.len >= 8) return readLong(max_symbol, in);
+    // The reader needs eight bytes: the description is read from a
+    // zero-padded copy, and may not reach into the padding.
+    var buffer: [8]u8 = @splat(0);
+    @memcpy(buffer[0..in.len], in);
+    const counts = try readLong(max_symbol, &buffer);
+    if (counts.len > in.len) return error.InvalidStream;
+    return counts;
+}
+
+/// `readCounts` from at least eight bytes.
+fn readLong(max_symbol: u8, in: []const u8) ReadError!Counts {
     const symbols: u32 = @as(u32, max_symbol) + 1;
-    @memset(counts.norm[0..symbols], 0);
+    var norm: [256]i16 = undefined;
+    @memset(norm[0..symbols], 0);
     var ip: usize = 0;
     const iend = in.len;
     var bit_stream: u32 = std.mem.readInt(u32, in[0..4], .little);
@@ -50,7 +54,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
     if (nb_bits > absolute_max_log) return error.InvalidStream;
     bit_stream >>= 4;
     var bit_count: u32 = 4;
-    counts.log = @intCast(nb_bits);
+    const log: u4 = @intCast(nb_bits);
     var remaining: i32 = (@as(i32, 1) << nb_bits) + 1;
     var threshold: i32 = @as(i32, 1) << nb_bits;
     nb_bits += 1;
@@ -71,7 +75,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
                     bit_count &= 31;
                     ip = iend - 4;
                 }
-                bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @intCast(bit_count);
+                bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @as(u5, @truncate(bit_count));
                 repeats = @ctz(~bit_stream | 0x8000_0000) >> 1;
             }
             charnum += 3 * repeats;
@@ -88,16 +92,19 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
                 bit_count &= 31;
                 ip = iend - 4;
             }
-            bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @intCast(bit_count);
+            bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @as(u5, @truncate(bit_count));
         }
         const max: i32 = (2 * threshold - 1) - remaining;
         var count: i32 = undefined;
         const low_mask: u32 = @intCast(threshold - 1);
-        if (@as(i64, bit_stream & low_mask) < max) {
-            count = @intCast(bit_stream & low_mask);
+        // `threshold` is at most 2^15: the low bits fit 15, a full read 16.
+        const low: u15 = @intCast(bit_stream & low_mask);
+        if (@as(i64, low) < max) {
+            count = low;
             bit_count += nb_bits - 1;
         } else {
-            count = @intCast(bit_stream & @as(u32, @intCast(2 * threshold - 1)));
+            const full: u16 = @intCast(bit_stream & @as(u32, @intCast(2 * threshold - 1)));
+            count = full;
             if (count >= threshold) count -= max;
             bit_count += nb_bits;
         }
@@ -106,7 +113,7 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
         // Only a log-15 table's one full count, 2^15, does not fit: zstd
         // stores it as (short)-32768 and every caller then refuses the log,
         // as warp's do; refused here, the answer is the same.
-        counts.norm[charnum] = std.math.cast(i16, count) orelse return error.InvalidStream;
+        norm[charnum] = std.math.cast(i16, count) orelse return error.InvalidStream;
         charnum += 1;
         previous0 = count == 0;
         if (remaining < threshold) {
@@ -123,13 +130,14 @@ pub fn readCounts(in: []const u8, max_symbol: u8, counts: *Counts) ReadError!voi
             bit_count &= 31;
             ip = iend - 4;
         }
-        bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @intCast(bit_count);
+        bit_stream = std.mem.readInt(u32, in[ip..][0..4], .little) >> @as(u5, @truncate(bit_count));
     }
     if (remaining != 1) return error.InvalidStream;
     if (charnum > symbols) return error.InvalidStream;
     if (bit_count > 32) return error.InvalidStream;
-    counts.max_symbol = @intCast(charnum - 1);
-    counts.len = ip + ((bit_count + 7) >> 3);
+    const len = ip + ((bit_count + 7) >> 3);
+    if (len > in.len) return error.InvalidStream;
+    return .{ .norm = norm, .max_symbol = @intCast(charnum - 1), .log = log, .len = len };
 }
 
 /// The table's step between the positions of one symbol.
@@ -137,25 +145,34 @@ pub inline fn step(size: u32) u32 {
     return (size >> 1) + (size >> 3) + 3;
 }
 
-/// Lay the symbols of `norm` over a table of `2^log` cells as the format
-/// spreads them; `symbols[cell]` receives each cell's symbol. Symbols of
-/// count -1 take the last cells, highest first.
-fn spread(norm: []const i16, log: u4, symbols: []u8) void {
+/// The cells of the largest table zstd spreads: a log of 9.
+const max_cells = 1 << 9;
+/// A cell of such a table; positions step through it modulo its size.
+const CellIndex = u9;
+
+/// Lay the symbols of `norm` over a table of `2^log` cells (`log` at most
+/// 9) as the format spreads them; `symbols[cell]` receives each cell's
+/// symbol. Symbols of count -1 take the last cells, highest first.
+fn spread(norm: []const i16, log: u4, symbols: *[max_cells]u8) void {
+    aegis.assert.invariant(log <= 9, "log <= 9");
     const size: u32 = @as(u32, 1) << log;
-    const mask = size - 1;
-    var high: u32 = size - 1;
+    // `size` is at least 1: the mask never wraps.
+    const mask: CellIndex = @intCast(size -% 1);
+    var high: CellIndex = mask;
     for (norm, 0..) |n, s| if (n == -1) {
         symbols[high] = @intCast(s);
         high -%= 1;
     };
-    var position: u32 = 0;
-    const st = step(size);
+    var position: CellIndex = 0;
+    // A step below the table's size; the wrap of a 9-bit add is a
+    // multiple of every size, so masking after it is the format's modulo.
+    const st: CellIndex = @intCast(step(size));
     for (norm, 0..) |n, s| {
         var i: i32 = 0;
         while (i < n) : (i += 1) {
             symbols[position] = @intCast(s);
-            position = (position + st) & mask;
-            while (position > high) position = (position + st) & mask;
+            position = (position +% st) & mask;
+            while (position > high) position = (position +% st) & mask;
         }
     }
 }
@@ -166,15 +183,18 @@ fn spread(norm: []const i16, log: u4, symbols: []u8) void {
 /// loop is the only other pass.
 fn decodeCells(comptime T: type, comptime Context: type, comptime make: fn (Context, symbol: u8, nb_bits: u8, next_state: u16) T, norm: []const i16, log: u4, cells: []T, context: Context) void {
     const size: u32 = @as(u32, 1) << log;
-    var symbols: [512]u8 = undefined;
-    spread(norm, log, symbols[0..size]);
+    var symbols: [max_cells]u8 = undefined;
+    spread(norm, log, &symbols);
     var next: [256]u32 = undefined;
     for (norm, 0..) |n, s| next[s] = if (n == -1) 1 else @intCast(n);
     for (cells[0..size], symbols[0..size]) |*c, s| {
         const n = next[s];
         next[s] = n + 1;
         const nb: u32 = log - std.math.log2_int(u32, n);
-        c.* = make(context, s, @intCast(nb), @intCast((n << @intCast(nb)) - size));
+        // `n << nb` lies in [size, 2 * size): less `size` is its low bits,
+        // a state of the table.
+        const base_state: CellIndex = @intCast((n << @intCast(nb)) & (size -% 1));
+        c.* = make(context, s, @intCast(nb), base_state);
     }
 }
 
@@ -270,7 +290,7 @@ pub const max_table_log = 12;
 /// `max`: small inputs get small tables, never too small to hold every
 /// symbol.
 pub fn optimalLog(max: u4, total: usize, max_symbol: u8, minus: u4) u4 {
-    std.debug.assert(total > 1);
+    aegis.assert.pre(total > 1, "total > 1");
     const max_bits_src: i32 = @as(i32, std.math.log2_int(usize, total - 1)) - minus;
     var log: i32 = max;
     const min_bits = minLog(total, max_symbol);
@@ -304,7 +324,7 @@ pub fn normalize(norm: []i16, log: u4, counts: []const u32, total: usize, low_pr
     var largest_p: i16 = 0;
     const low_threshold: u64 = total >> log;
     for (counts, norm[0..counts.len], 0..) |c, *n, s| {
-        std.debug.assert(c != total);
+        aegis.assert.invariant(c != total, "c != total");
         if (c == 0) {
             n.* = 0;
             continue;
@@ -418,7 +438,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
         if (previous0) {
             var start = symbol;
             while (symbol < norm.len and norm[symbol] == 0) symbol += 1;
-            std.debug.assert(symbol != norm.len);
+            aegis.assert.invariant(symbol != norm.len, "symbol != norm.len");
             while (symbol >= start + 24) {
                 start += 24;
                 bit_stream += @as(u32, 0xffff) << @intCast(bit_count);
@@ -452,7 +472,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
         bit_count += nb_bits;
         if (count < max) bit_count -= 1;
         previous0 = count == 1;
-        std.debug.assert(remaining >= 1);
+        aegis.assert.invariant(remaining >= 1, "remaining >= 1");
         while (remaining < threshold) {
             nb_bits -= 1;
             threshold >>= 1;
@@ -465,7 +485,7 @@ pub fn writeCounts(out: []u8, norm: []const i16, log: u4) usize {
             bit_count -= 16;
         }
     }
-    std.debug.assert(remaining == 1);
+    aegis.assert.invariant(remaining == 1, "remaining == 1");
     out[o] = @truncate(bit_stream);
     out[o + 1] = @truncate(bit_stream >> 8);
     o += (@as(usize, bit_count) + 7) / 8;
@@ -496,15 +516,15 @@ pub fn EncodeTable(comptime table_log: u4, comptime max_symbol: u8) type {
 
         pub fn build(t: *Self, norm: []const i16, log: u4) void {
             aegis.assert.invariant(log <= table_log, "log <= table_log");
-            std.debug.assert(norm.len <= @as(usize, max_symbol) + 1);
+            aegis.assert.pre(norm.len <= @as(usize, max_symbol) + 1, "norm.len <= @as(usize, max_symbol) + 1");
             const size: u32 = @as(u32, 1) << log;
             t.log = log;
             t.symbols = @intCast(norm.len - 1);
             var cumul: [@as(usize, max_symbol) + 2]u32 = undefined;
             cumul[0] = 0;
             for (norm, 1..) |n, u| cumul[u] = cumul[u - 1] + (if (n == -1) 1 else @as(u32, @intCast(n)));
-            var symbol_of: [1 << table_log]u8 = undefined;
-            spread(norm, log, symbol_of[0..size]);
+            var symbol_of: [max_cells]u8 = undefined;
+            spread(norm, log, &symbol_of);
             for (symbol_of[0..size], 0..) |sym, u| {
                 t.states[cumul[sym]] = @intCast(size + u);
                 cumul[sym] += 1;
@@ -597,18 +617,16 @@ test "a table cannot price a symbol it has no state for, nor any symbol of an RL
 }
 
 test "descriptions that break the rules are refused" {
-    var counts: Counts = undefined;
     // A log above 15.
-    try std.testing.expectError(error.InvalidStream, readCounts(&.{ 0x0f, 0, 0, 0 }, 255, &counts));
+    try std.testing.expectError(error.InvalidStream, readCounts(255, &.{ 0x0f, 0, 0, 0 }));
     // Counts that do not add up before the input ends.
-    try std.testing.expectError(error.InvalidStream, readCounts(&.{0x00}, 255, &counts));
+    try std.testing.expectError(error.InvalidStream, readCounts(255, &.{0x00}));
 }
 
 test "a log-15 table's one full count is refused, not narrowed" {
     // Log 15, one count of 2^15: zstd 1.5.7 reads it as -32768 at log 15,
     // which its callers refuse; warp refuses it here.
-    var counts: Counts = undefined;
-    try std.testing.expectError(error.InvalidStream, readCounts(&.{ 0xfa, 0xff, 0x0f }, 255, &counts));
+    try std.testing.expectError(error.InvalidStream, readCounts(255, &.{ 0xfa, 0xff, 0x0f }));
 }
 
 test "zero-count repeats running into a description's last seven bytes are read on, not overflowed" {
@@ -616,8 +634,7 @@ test "zero-count repeats running into a description's last seven bytes are read 
     // starts within seven bytes of the end, where the reference's distance
     // to `iend - 7` is negative. zstd 1.5.7's FSE_readNCount reads it as
     // symbols 0-82 at 0 and 83 at 32, in five bytes.
-    var counts: Counts = undefined;
-    try readCounts(&.{ 0x10, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, 255, &counts);
+    const counts = try readCounts(255, &.{ 0x10, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff });
     try std.testing.expectEqual(@as(usize, 5), counts.len);
     try std.testing.expectEqual(@as(u8, 83), counts.max_symbol);
     try std.testing.expectEqual(@as(u4, 5), counts.log);

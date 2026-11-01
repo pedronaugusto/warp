@@ -33,7 +33,7 @@ const Outcome = struct {
 fn decodeInPieces(gpa: std.mem.Allocator, stream: []const u8, max_out: usize, options: Inflate.Options, random: ?std.Random) !Outcome {
     const window = try gpa.alloc(u8, @as(usize, 1) << options.window_bits);
     defer gpa.free(window);
-    var z: Inflate = .init(window, options);
+    var z: Inflate = try .init(window, options);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var piece: [4096]u8 = undefined;
@@ -133,7 +133,7 @@ test "every invalid stream gets the same verdict streamed, whole and a byte at a
 fn decodeBytewise(gpa: std.mem.Allocator, stream: []const u8, options: Inflate.Options, bytewise: bool) !Outcome {
     const window = try gpa.alloc(u8, @as(usize, 1) << options.window_bits);
     defer gpa.free(window);
-    var z: Inflate = .init(window, options);
+    var z: Inflate = try .init(window, options);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var piece: [1 << 16]u8 = undefined;
@@ -256,7 +256,7 @@ test "the reader reads every stream, from a reader that hands out a few bytes at
         var input_buffer: [64]u8 = undefined;
         var input: std.testing.Reader = .init(&input_buffer, &.{.{ .buffer = data }});
         input.artificial_limit = .limited(1 + r.index % 50);
-        var reader: Inflate.Reader = .init(&input.interface, buffer, .{ .accept = accept(r.fields[4]), .dictionary = dictionary, .members = .one });
+        var reader: Inflate.Reader = try .init(&input.interface, buffer, .{ .accept = accept(r.fields[4]), .dictionary = dictionary, .members = .one });
         const out = try reader.interface.allocRemaining(gpa, .unlimited);
         defer gpa.free(out);
         try testing.expectEqualSlices(u8, in, out);
@@ -277,12 +277,12 @@ test "the reader says why it failed: the stream refused, or cut short" {
     const buffer = try gpa.alloc(u8, (1 << 15) + 4096);
     defer gpa.free(buffer);
     var cut: std.Io.Reader = .fixed(stream[0 .. n - 1]);
-    var reader: Inflate.Reader = .init(&cut, buffer, .{});
+    var reader: Inflate.Reader = try .init(&cut, buffer, .{});
     try testing.expectError(error.ReadFailed, reader.interface.allocRemaining(gpa, .unlimited));
     try testing.expectEqual(error.Truncated, reader.err().?);
     stream[n - 1] ^= 1;
     var bad: std.Io.Reader = .fixed(stream[0..n]);
-    reader = .init(&bad, buffer, .{});
+    reader = try .init(&bad, buffer, .{});
     try testing.expectError(error.ReadFailed, reader.interface.allocRemaining(gpa, .unlimited));
     try testing.expectEqual(error.ChecksumMismatch, reader.err().?);
 }
@@ -323,7 +323,7 @@ test "gzip: members one by one, member_end between them, and the first header's 
     var extra: [8]u8 = undefined;
     var fields: gzip.Fields = .{ .name_buffer = &name, .comment_buffer = &comment, .extra_buffer = &extra };
     var window: [1 << 15]u8 = undefined;
-    var z: Inflate = .init(&window, .{ .accept = .gzip, .gzip_fields = &fields });
+    var z: Inflate = try .init(&window, .{ .accept = .gzip, .gzip_fields = &fields });
     var out: [64]u8 = undefined;
     const first = try z.decode(both, &out);
     try testing.expectEqual(Inflate.Status.member_end, first.status);
@@ -342,7 +342,7 @@ test "gzip: members one by one, member_end between them, and the first header's 
     try testing.expectEqual(Inflate.Status.member_end, second.status);
     // Anything else after a member is refused where it starts.
     var diag: Diagnostic = .{};
-    z = .init(&window, .{ .accept = .gzip, .diagnostic = &diag });
+    z = try .init(&window, .{ .accept = .gzip, .diagnostic = &diag });
     _ = try z.decode(a[0..a_len], &out);
     try testing.expectError(error.InvalidStream, z.decode("j", &out));
     try testing.expectEqual(Diagnostic.Reason.trailing_data, diag.reason);
@@ -375,7 +375,7 @@ test "a dictionary: raw streams reach into it, zlib streams name it, and reset k
     var s2: [8192]u8 = undefined;
     const n2 = try c.compress(second, &s2, .{ .container = .raw, .dictionary = message });
     var window: [1 << 15]u8 = undefined;
-    var z: Inflate = .init(&window, .{ .accept = .raw });
+    var z: Inflate = try .init(&window, .{ .accept = .raw });
     var out: [4096]u8 = undefined;
     const r1 = try z.decode(s1[0..n1], &out);
     try testing.expectEqual(Inflate.Status.done, r1.status);

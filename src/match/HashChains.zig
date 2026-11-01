@@ -8,6 +8,7 @@
 //! a few kilobytes, not the window.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const match = @import("history.zig");
 
 pub const Config = struct {
@@ -77,7 +78,7 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// Start over for a stream that begins at `first` (negative with a
         /// dictionary), with tables of `hash4_bits` and `hash3_bits`.
         pub fn reset(hc: *HashChains, first: isize, hash4_bits: u5, hash3_bits: u5) void {
-            std.debug.assert(first >= -@as(isize, window));
+            aegis.assert.pre(first >= -@as(isize, window), "first >= -@as(isize, window)");
             hc.hash4_bits = hash4_bits;
             hc.hash3_bits = hash3_bits;
             @memset(hc.hash4[0 .. @as(usize, 1) << hash4_bits], none);

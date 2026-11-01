@@ -28,7 +28,7 @@ pub fn maxEntries(alphabet: usize) usize {
 inline fn entry(len: u32, value: u32) Entry {
     std.debug.assert(len <= max_length);
     aegis.assert.invariant(value < 1 << 12, "value < 1 << 12");
-    return @intCast(len | value << 4);
+    return (@as(Entry, @as(u12, @intCast(value))) << 4) | @as(u4, @intCast(len));
 }
 
 /// Decode one symbol from the table at `table[0..]`. Fast mode reads with
@@ -38,12 +38,14 @@ pub inline fn decode(r: *Reader, comptime careful: bool, table: [*]const Entry) 
     if (careful) r.fillAvailable(max_length) else try r.fill(false, max_length);
     const b = r.buf;
     var e = table[@as(u8, @truncate(b))];
-    var len: u32 = e & 15;
+    // A code's length is 4 bits of its entry, 15 at most.
+    var len: u4 = @truncate(e & 15);
     if (len > root_bits) {
         if (careful and r.count <= root_bits) return error.NeedInput;
-        const sub: u32 = @intCast((b >> root_bits) & ((@as(u64, 1) << @intCast(len - root_bits)) - 1));
-        e = table[(e >> 4) + sub];
-        len = root_bits + (e & 15);
+        // The second level is at most 7 bits wide.
+        const sub: u7 = @truncate(b >> root_bits);
+        e = table[(e >> 4) + (sub & ~(~@as(u8, 0) << @intCast(len - root_bits)))];
+        len = root_bits + @as(u4, @truncate(e & 15));
     }
     if (careful and len > r.count) return error.NeedInput;
     r.drop(len);
@@ -54,12 +56,12 @@ pub inline fn decode(r: *Reader, comptime careful: bool, table: [*]const Entry) 
 /// as wide as the codes still to place that share its prefix need.
 fn nextTableBits(count: *const [max_length + 1]u16, first_len: u32) u32 {
     var len = first_len;
-    var left: i32 = @as(i32, 1) << @intCast(len - root_bits);
+    // The slots left at this length, which the codes of it fill.
+    var left: u32 = @as(u32, 1) << @intCast(len - root_bits);
     while (len < max_length) {
-        left -= count[len];
-        if (left <= 0) break;
+        if (count[len] >= left) break;
+        left = (left - count[len]) << 1;
         len += 1;
-        left <<= 1;
     }
     return len - root_bits;
 }
@@ -102,6 +104,8 @@ pub fn build(table: []Entry, links: *const Links, count: *[max_length + 1]u16) u
     while (len <= table_bits) : (len += 1) {
         var at: usize = len;
         for (0..count[len]) |_| {
+            // `links` holds a symbol of the alphabet at each of its places.
+            aegis.assert.invariant(at < links.len, "at < links.len");
             const symbol = links[at];
             at = max_length + 1 + @as(usize, symbol);
             replicate(table[reverse(key)..], step, table_size, entry(len, symbol));
@@ -135,6 +139,7 @@ pub fn build(table: []Entry, links: *const Links, count: *[max_length + 1]u16) u
                 table[root] = entry(table_bits + root_bits, @intCast(used));
                 sub_key = 0;
             }
+            aegis.assert.invariant(at < links.len, "at < links.len");
             const symbol = links[at];
             at = max_length + 1 + @as(usize, symbol);
             replicate(table[used + reverse(sub_key) ..], step, table_size, entry(len - root_bits, symbol));
@@ -193,7 +198,7 @@ pub fn buildSimple(table: []Entry, symbols: []const u16, four_lengths: bool) usi
             for ([_]Entry{ entry(1, s[0]), entry(2, s[1]), entry(1, s[0]), entry(3, lo), entry(1, s[0]), entry(2, s[1]), entry(1, s[0]), entry(3, hi) }, 0..) |e, i| table[i] = e;
             size = 8;
         },
-        else => unreachable,
+        else => aegis.assert.never("a simple code has 1 to 4 symbols"),
     }
     while (size != 1 << root_bits) : (size <<= 1) @memcpy(table[size..][0..size], table[0..size]);
     return 1 << root_bits;

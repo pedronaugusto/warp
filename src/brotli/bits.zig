@@ -29,9 +29,10 @@ pub const Reader = struct {
     /// Loaded bits, the next one lowest. Bits above `count` are zero or
     /// the stream's own next bits (a fast load leaves part of a byte there).
     buf: u64 = 0,
-    count: u32 = 0,
+    /// At most 63: loads stop at 56 bits and add at most 7 more.
+    count: u6 = 0,
 
-    pub const Mark = struct { pos: usize, buf: u64, count: u32 };
+    pub const Mark = struct { pos: usize, buf: u64, count: u6 };
 
     pub inline fn mark(r: *const Reader) Mark {
         return .{ .pos = r.pos, .buf = r.buf, .count = r.count };
@@ -45,21 +46,29 @@ pub const Reader = struct {
 
     /// The bit the reader is at, counted from the stream's first.
     pub inline fn bitOffset(r: *const Reader) u64 {
-        return r.base + @as(u64, r.pos) * 8 - r.count;
+        // For diagnostics only: saturating, never past the stream's bits.
+        return r.base +| @as(u64, r.pos) *| 8 -| r.count;
     }
 
     /// Whether a fast unit may run: `margin` bytes past `pos`.
     pub inline fn roomy(r: *const Reader) bool {
+        // Loads stop at the input's end.
+        aegis.assert.invariant(r.pos <= r.in.len, "r.pos <= r.in.len");
         return r.in.len - r.pos >= margin;
     }
 
     /// At least `n` (≤ 56) bits loaded. Careful mode loads what the input
     /// has and fails if that is short.
-    pub inline fn fill(r: *Reader, comptime careful: bool, n: u32) NeedInput!void {
+    pub inline fn fill(r: *Reader, comptime careful: bool, n: u6) NeedInput!void {
         if (r.count >= n) return;
         if (!careful) {
-            r.buf |= std.mem.readInt(u64, r.in[r.pos..][0..8], .little) << @intCast(r.count);
-            r.pos += (63 - r.count) >> 3;
+            // A fast unit runs with `margin` bytes past it, more than its
+            // loads take.
+            aegis.assert.invariant(8 <= r.in.len, "8 <= r.in.len");
+            aegis.assert.invariant(r.pos <= r.in.len - 8, "r.pos <= r.in.len - 8");
+            r.buf |= std.mem.readInt(u64, r.in[r.pos..][0..8], .little) << r.count;
+            // `~count` is 63 less the count: the whole bytes that fit.
+            r.pos += ~r.count >> 3;
             r.count |= 56;
             return;
         }
@@ -68,28 +77,40 @@ pub const Reader = struct {
     }
 
     /// Load bytes until `n` bits are loaded or the input ends.
-    pub inline fn fillAvailable(r: *Reader, n: u32) void {
+    pub inline fn fillAvailable(r: *Reader, n: u6) void {
+        aegis.assert.invariant(n <= 56, "n <= 56");
         while (r.count < n and r.pos < r.in.len) {
-            r.buf |= @as(u64, r.in[r.pos]) << @intCast(r.count);
+            r.buf |= @as(u64, r.in[r.pos]) << r.count;
             r.pos += 1;
             r.count += 8;
         }
     }
 
     /// The next `n` (< 64) loaded bits, not taken.
-    pub inline fn peek(r: *const Reader, n: u32) u64 {
-        return r.buf & ((@as(u64, 1) << @intCast(n)) - 1);
+    pub inline fn peek(r: *const Reader, n: u6) u64 {
+        return r.buf & ~(~@as(u64, 0) << n);
     }
 
-    pub inline fn drop(r: *Reader, n: u32) void {
-        r.buf >>= @intCast(n);
+    pub inline fn drop(r: *Reader, n: u6) void {
+        // Taken bits were loaded first.
+        aegis.assert.invariant(n <= r.count, "n <= r.count");
+        r.buf >>= n;
         r.count -= n;
     }
 
-    /// Take `n` (≤ 56) bits.
-    pub inline fn bits(r: *Reader, comptime careful: bool, n: u32) NeedInput!u32 {
+    /// Take `n` (≤ 31) bits.
+    pub inline fn bits(r: *Reader, comptime careful: bool, n: u5) NeedInput!u32 {
         try r.fill(careful, n);
-        const v: u32 = @intCast(r.peek(n));
+        const v: u31 = @intCast(r.peek(n));
+        r.drop(n);
+        return v;
+    }
+
+    /// Take `n` (≤ 31) bits, in an integer of their width.
+    pub inline fn take(r: *Reader, comptime careful: bool, comptime n: u5) NeedInput!@Int(.unsigned, n) {
+        try r.fill(careful, n);
+        // The next `n` bits are the low ones loaded.
+        const v: @Int(.unsigned, n) = @truncate(r.buf);
         r.drop(n);
         return v;
     }
@@ -106,6 +127,8 @@ pub const Reader = struct {
     /// so `in[pos..]` is the next input byte.
     pub fn unload(r: *Reader) void {
         aegis.assert.invariant(r.count & 7 == 0, "r.count & 7 == 0");
+        // The loaded bytes came from before `pos`.
+        aegis.assert.invariant(r.count >> 3 <= r.pos, "r.count >> 3 <= r.pos");
         r.pos -= r.count >> 3;
         r.buf = 0;
         r.count = 0;
@@ -120,10 +143,11 @@ pub const Writer = struct {
 
     /// Put the low `n` bits of `v` (no bits above them), `n <= 56`.
     pub inline fn bits(w: *Writer, n: u32, v: u64) void {
-        std.debug.assert(n <= 56 and v >> @intCast(n) == 0); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
+        std.debug.assert(n <= 56); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
+        std.debug.assert(v >> @intCast(n) == 0); // aegis: no-danger: the encoder's own codewords and their lengths, written per symbol
         const at = w.pos >> 3;
         const old: u64 = w.buf[at];
-        std.mem.writeInt(u64, w.buf[at..][0..8], old | v << @intCast(w.pos & 7), .little);
+        std.mem.writeInt(u64, w.buf[at..][0..8], old | (v << @intCast(w.pos & 7)), .little);
         w.pos += n;
     }
 
@@ -165,7 +189,7 @@ test "fast and careful reads agree, and careful reads stop at the end" {
     const in = [_]u8{ 0b1010_1100, 0xff, 0x01, 0x80 } ++ @as([32]u8, @splat(0));
     var fast: Reader = .{ .in = &in };
     var careful: Reader = .{ .in = in[0..4] };
-    for ([_]u32{ 3, 5, 9, 1, 13 }) |n| {
+    for ([_]u5{ 3, 5, 9, 1, 13 }) |n| {
         try std.testing.expectEqual(try fast.bits(false, n), try careful.bits(true, n));
     }
     try std.testing.expectEqual(31, careful.bitOffset());

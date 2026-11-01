@@ -165,12 +165,12 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_hea
         if (l == 0) {
             while (run >= 11) {
                 const r = @min(run, 138);
-                header.items[n] = 18 | @as(u16, @intCast(r - 11)) << 8;
+                header.items[n] = 18 | (@as(u16, @intCast(r - 11)) << 8);
                 n += 1;
                 run -= r;
             }
             if (run >= 3) {
-                header.items[n] = 17 | @as(u16, @intCast(run - 3)) << 8;
+                header.items[n] = 17 | (@as(u16, @intCast(run - 3)) << 8);
                 n += 1;
                 run = 0;
             }
@@ -180,7 +180,7 @@ fn dynamicCode(counts: *const Counts, code: *Code, header: *Header, optimize_hea
             run -= 1;
             while (run >= 3) {
                 const r = @min(run, 6);
-                header.items[n] = 16 | @as(u16, @intCast(r - 3)) << 8;
+                header.items[n] = 16 | (@as(u16, @intCast(r - 3)) << 8);
                 n += 1;
                 run -= r;
             }
@@ -273,7 +273,7 @@ fn cheapestItems(header: *const Header, lens: []const u8, item: *[320]u16, take:
                 const price = price16 + cost[i + n];
                 if (price < cost[i]) {
                     cost[i] = price;
-                    item[i] = 16 | @as(u16, @intCast(n - 3)) << 8;
+                    item[i] = 16 | (@as(u16, @intCast(n - 3)) << 8);
                     take[i] = @intCast(n);
                 }
             }
@@ -283,7 +283,7 @@ fn cheapestItems(header: *const Header, lens: []const u8, item: *[320]u16, take:
             const price = price17 + cost[i + n];
             if (price < cost[i]) {
                 cost[i] = price;
-                item[i] = 17 | @as(u16, @intCast(n - 3)) << 8;
+                item[i] = 17 | (@as(u16, @intCast(n - 3)) << 8);
                 take[i] = @intCast(n);
             }
         };
@@ -303,7 +303,7 @@ fn cheapestItems(header: *const Header, lens: []const u8, item: *[320]u16, take:
             const price = price18 + best.cost;
             if (price < cost[i]) {
                 cost[i] = price;
-                item[i] = 18 | @as(u16, @intCast(best.at - i - 11)) << 8;
+                item[i] = 18 | (@as(u16, @intCast(best.at - i - 11)) << 8);
                 take[i] = @intCast(best.at - i);
             }
         }
@@ -506,17 +506,17 @@ fn writeData(comptime interleaved: bool, out: *bits.Writer, data: []const u8, se
     // codeword with its extra bits after it, each distance symbol's
     // codeword and length: one load and one add per field.
     var literal: [256]u32 = undefined;
-    for (&literal, code.litlen_codes[0..256], code.litlen_lens[0..256]) |*e, c, l| e.* = @as(u32, l) << 16 | c;
+    for (&literal, code.litlen_codes[0..256], code.litlen_lens[0..256]) |*e, c, l| e.* = (@as(u32, l) << 16) | c;
     var length: [259]u32 = undefined;
     for (3..259) |len| {
         const sym = lengthSymbol(@intCast(len));
         const i = sym - 257;
         const clen: u32 = code.litlen_lens[sym];
         const extra: u32 = @intCast(len - decode.length_base[i]);
-        length[len] = (clen + decode.length_extra[i]) << 24 | extra << @intCast(clen) | code.litlen_codes[sym];
+        length[len] = ((clen + decode.length_extra[i]) << 24) | (extra << @intCast(clen)) | code.litlen_codes[sym];
     }
     var dist: [30]u32 = undefined;
-    for (&dist, code.dist_codes[0..30], code.dist_lens[0..30]) |*e, c, l| e.* = @as(u32, l) << 16 | c;
+    for (&dist, code.dist_codes[0..30], code.dist_lens[0..30]) |*e, c, l| e.* = (@as(u32, l) << 16) | c;
 
     // A local writer: its fields stay in registers, where stores to the
     // output could not move them.
@@ -548,7 +548,7 @@ fn writeData(comptime interleaved: bool, out: *bits.Writer, data: []const u8, se
         const ds = distSymbol(s.distance);
         const d = dist[ds];
         const dlen: u6 = @intCast(d >> 16);
-        w.add(@as(u64, s.distance - decode.dist_base[ds]) << dlen | (d & 0xffff), dlen + @as(u6, @intCast(decode.dist_extra[ds])));
+        w.add((@as(u64, s.distance - decode.dist_base[ds]) << dlen) | (d & 0xffff), dlen + @as(u6, @intCast(decode.dist_extra[ds])));
         w.flush();
         if (interleaved) at += s.length;
     }
@@ -699,7 +699,7 @@ fn cheapestItemsByTrial(header: *const Header, lens: []const u8, item: *[320]u16
                 const price = preCost(header, r.symbol) + r.extra + cost[i + n];
                 if (price < cost[i]) {
                     cost[i] = price;
-                    item[i] = r.symbol | @as(u16, @intCast(n - r.min)) << 8;
+                    item[i] = r.symbol | (@as(u16, @intCast(n - r.min)) << 8);
                     take[i] = @intCast(n);
                 }
             }

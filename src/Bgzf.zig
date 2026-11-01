@@ -24,20 +24,22 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bgzf {
     const owned = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var b = initBuffer(owned, options);
+    var b = initBuffer(owned, options) catch unreachable; // unreachable: owned is memory(options) bytes
     b.owned = owned;
     b.gpa = gpa;
     return b;
 }
 
-/// Caller memory, aligned to 64 bytes; deinit frees nothing.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Bgzf {
-    std.debug.assert(buffer.len >= memory(options));
+/// Caller memory, aligned to 64 bytes, refused when shorter than
+/// `memory(options)`; deinit frees nothing.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Bgzf {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const owned = buffer[0..memory(options)];
     const compressor_options: Compressor.Options = .{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes };
     const n = std.mem.alignForward(usize, Compressor.memory(compressor_options), 64);
     return .{
-        .compressor = .initBuffer(owned[0..n], compressor_options),
+        .compressor = try .initBuffer(owned[0..n], compressor_options),
+
         .input = owned[n..][0..65536],
         .output = owned[n + 65536 ..],
         .owned = &.{},
@@ -83,19 +85,20 @@ pub fn finish(b: *Bgzf, out: *Io.Writer) WriteError!void {
 pub fn virtualOffset(b: *const Bgzf) u64 {
     aegis.assert.invariant(b.compressed_offset < 1 << 48, "b.compressed_offset < 1 << 48");
     std.debug.assert(b.filled < 65536);
-    return b.compressed_offset << 16 | @as(u64, @intCast(b.filled));
+    return (b.compressed_offset << 16) | @as(u64, @intCast(b.filled));
 }
 
 fn emit(b: *Bgzf, out: *Io.Writer) WriteError!void {
     var extra = [_]u8{ 'B', 'C', 2, 0, 0, 0 };
     const frame: Compressor.Frame = .{ .container = .gzip, .gzip = .{ .extra = &extra } };
     var take = b.filled;
-    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output has the whole-buffer bound
+    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65536
     if (n > 65536) {
         // 65,280 bytes fit even as stored blocks. Keep the rest for the
         // next member; this is determined by bytes, never write chunking.
         take = @min(take, 65280);
-        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output has the whole-buffer bound
+        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65280
+
     }
     aegis.assert.invariant(n <= 65536, "n <= 65536");
     std.mem.writeInt(u16, b.output[16..18], @intCast(n - 1), .little);

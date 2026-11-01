@@ -152,6 +152,7 @@ pub const Encode = struct {
 
     pub fn setup(e: *Encode) Error!void {
         e.c = .init(e.session.gpa, e.options);
+        errdefer e.c.deinit();
         e.out = try e.session.gpa.alloc(u8, brotli.Compressor.bound(e.in.len));
         errdefer e.session.gpa.free(e.out);
         const n = try e.c.compress(e.in, e.out);

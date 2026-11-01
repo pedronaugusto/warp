@@ -32,9 +32,15 @@ pub const H10 = struct {
     /// Node `pos`'s left and right children at `2 * pos` and `2 * pos + 1`.
     forest: []u32,
 
+    /// The nodes a stream needs: the window's, or a one-shot input's when
+    /// it is shorter.
+    pub fn nodes(params: *const settings.Resolved, one_shot: bool, input_size: usize) usize {
+        const window = @as(usize, 1) << params.lgwin;
+        return if (one_shot and input_size < window) input_size else window;
+    }
+
     pub fn init(gpa: Allocator, params: *const settings.Resolved, one_shot: bool, input_size: usize) Allocator.Error!H10 {
-        var num_nodes = @as(usize, 1) << params.lgwin;
-        if (one_shot and input_size < num_nodes) num_nodes = input_size;
+        const num_nodes = nodes(params, one_shot, input_size);
         const buckets = try gpa.alloc(u32, bucket_size);
         errdefer gpa.free(buckets);
         const window_mask = (@as(usize, 1) << params.lgwin) - 1;
@@ -49,6 +55,12 @@ pub const H10 = struct {
     pub fn deinit(h: *H10, gpa: Allocator) void {
         gpa.free(h.buckets);
         gpa.free(h.forest);
+    }
+
+    /// A new stream: `prepare` empties every tree, and a node is read only
+    /// through one.
+    pub fn rewind(h: *H10) void {
+        _ = h;
     }
 
     inline fn hashBytes(data: []const u8, at: usize) usize {

@@ -113,10 +113,14 @@ pub fn readData(data: @FieldType(Chunk, "data"), body_at: u64, out: []u8, option
         return fail(options, body_at, .checksum, error.ChecksumMismatch);
 }
 
+/// `decompress`'s errors: the stream's, and `InvalidOptions` for a
+/// `max_block_size` past the formats' 4 MiB.
+pub const DecompressError = Error || error{InvalidOptions};
+
 /// Decode the whole stream `in` into `out`; the output's length.
-pub fn decompress(in: []const u8, out: []u8, options: Options) Error!usize {
+pub fn decompress(in: []const u8, out: []u8, options: Options) DecompressError!usize {
     const max = options.max_block_size.raw();
-    std.debug.assert(max <= frame.max_block_size);
+    if (max > frame.max_block_size) return error.InvalidOptions;
     var at: usize = 0;
     var op: usize = 0;
     var first = !options.from_chunk;

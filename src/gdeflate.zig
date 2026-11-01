@@ -182,18 +182,16 @@ pub const Compressor = struct {
 
     pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
         const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-        var c = initBuffer(buffer, options);
+        var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
         c.owned = buffer;
         c.gpa = gpa;
         return c;
     }
 
-    /// A compressor in caller memory: `buffer.len >= memory(options)`;
-    /// `deinit` then frees nothing.
-    pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-        const s = sizes(options);
-        std.debug.assert(buffer.len >= s.memory());
-        return .{ .engine = .init(buffer, s), .level = options.level, .owned = &.{}, .gpa = undefined };
+    /// A compressor in caller memory, refused when shorter than
+    /// `memory(options)`; `deinit` then frees nothing.
+    pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
+        return .{ .engine = try .init(buffer, sizes(options)), .level = options.level, .owned = &.{}, .gpa = undefined };
     }
 
     pub fn deinit(c: *Compressor) void {
@@ -205,12 +203,15 @@ pub const Compressor = struct {
         /// `out` is shorter than the page or stream; with `out.len >=
         /// pageBound(...)` or `bound(...)` this never happens.
         OutputTooSmall,
+        /// A page longer than `tile_size`, or a stream of more than
+        /// `max_tiles` tiles.
+        InputTooLarge,
     };
 
     /// One page of `in` (at most `tile_size` bytes) into `out`, as nvCOMP
     /// takes pages; its length.
     pub fn compressPage(c: *Compressor, in: []const u8, out: []u8) CompressError!usize {
-        std.debug.assert(in.len <= tile_size);
+        if (in.len > tile_size) return error.InputTooLarge;
         var w: lanes.Writer = .init(out);
         c.engine.compressPasses(in, &.{}, &w, c.level, .default, null);
         if (w.overflow) return error.OutputTooSmall;
@@ -222,14 +223,14 @@ pub const Compressor = struct {
     pub fn compress(c: *Compressor, in: []const u8, out: []u8) CompressError!usize {
         // unreachable: tile_size is not zero
         const tiles = std.math.divCeil(usize, in.len, tile_size) catch unreachable;
-        std.debug.assert(tiles <= max_tiles);
+        if (tiles > max_tiles) return error.InputTooLarge;
         const data = header_len + 4 * tiles;
         if (out.len < data) return error.OutputTooSmall;
         out[0] = codec_id;
         out[1] = codec_id ^ 0xff;
         std.mem.writeInt(u16, out[2..4], @intCast(tiles), .little);
         const last: u32 = @intCast(in.len % tile_size);
-        std.mem.writeInt(u32, out[4..8], 1 | last << 2, .little);
+        std.mem.writeInt(u32, out[4..8], 1 | (last << 2), .little);
         var at: usize = data;
         for (0..tiles) |i| {
             const page = in[i * tile_size .. @min(in.len, (i + 1) * tile_size)];

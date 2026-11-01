@@ -116,7 +116,7 @@ pub const Whole = struct {
             .block => return (try lz4.decompressBlock(c.out[0..c.n], c.back, .{})).out_len,
             .frame => return (try lz4.decompress(c.out[0..c.n], c.back, .{})).out_len,
             .stream => {
-                var d: lz4.Decompress = .init(c.window, .{});
+                var d: lz4.Decompress = try .init(c.window, .{});
                 var op: usize = 0;
                 var ip: usize = 0;
                 while (true) {

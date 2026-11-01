@@ -236,6 +236,8 @@ pub const Parser = struct {
                     }
                 },
                 .extra => {
+                    // The field's bytes are taken no further than its length.
+                    aegis.assert.invariant(p.at <= p.extra_len, "p.at <= p.extra_len");
                     const n = @min(in.len - i, p.extra_len - p.at);
                     sink.bytes(.extra, in[i..][0..n], i);
                     p.sum(in[i..][0..n]);
@@ -266,7 +268,7 @@ pub const Parser = struct {
                         continue;
                     }
                     i += 1;
-                    if (p.verify and (@as(u16, in[i - 1]) << 8 | p.hcrc_low != @as(u16, @truncate(p.crc.final())))) return .{ .used = i, .status = .invalid, .reason = .header_crc };
+                    if (p.verify and ((@as(u16, in[i - 1]) << 8) | p.hcrc_low != @as(u16, @truncate(p.crc.final())))) return .{ .used = i, .status = .invalid, .reason = .header_crc };
                     p.next(.hcrc, .read);
                 },
                 .done => break,

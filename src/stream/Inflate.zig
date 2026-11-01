@@ -104,17 +104,24 @@ pub const DecodeError = error{
     DictionaryMismatch,
 };
 
+pub const InitError = error{
+    /// `window_bits` below 8, or Deflate64 in a container (it is raw only).
+    InvalidOptions,
+    /// The window, or a reader's buffer, is shorter than the options need.
+    BufferTooSmall,
+};
+
 /// `window.len >= options.windowLen()`: the caller's memory for the
-/// history.
-pub fn init(window: []u8, options: Options) Inflate {
-    checkOptions(options);
-    std.debug.assert(window.len >= options.windowLen());
+/// history; a shorter one is refused.
+pub fn init(window: []u8, options: Options) InitError!Inflate {
+    try checkOptions(options);
+    if (window.len < options.windowLen()) return error.BufferTooSmall;
     return .{ .tables = tablesFor(options), .options = options, .window = window[0..options.windowLen()] };
 }
 
-fn checkOptions(options: Options) void {
-    std.debug.assert(options.window_bits >= 8);
-    std.debug.assert(options.format == .deflate or options.accept == .raw);
+fn checkOptions(options: Options) error{InvalidOptions}!void {
+    if (options.window_bits < 8) return error.InvalidOptions;
+    if (options.format != .deflate and options.accept != .raw) return error.InvalidOptions;
 }
 
 fn tablesFor(options: Options) Tables {
@@ -147,6 +154,9 @@ pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 /// of `out` past `out_len` may have been written.
 pub fn decode(z: *Inflate, in: []const u8, out: []u8) DecodeError!Step {
     const stepped = try z.step(in, out, 0, 0, z.ringHistory());
+    // What the step wrote lies within `out`, after where it started.
+    aegis.assert.invariant(stepped.start <= stepped.op, "stepped.start <= stepped.op");
+    aegis.assert.invariant(stepped.op <= out.len, "stepped.op <= out.len");
     z.out_total += stepped.op;
     z.at_boundary = stepped.status == .block_end and z.state.engine.phase == .header;
     if (stepped.replaced) {
@@ -212,7 +222,8 @@ pub fn checkpoint(z: *const Inflate) CheckpointError!Checkpoint {
         .in_offset = z.in_total,
         .out_offset = z.out_total,
         .window_bits = z.options.window_bits,
-        .bits = @intCast(z.bitsleft),
+        // At a boundary only a partial byte is in hand.
+        .bits = std.math.cast(u3, z.bitsleft) orelse return error.NotAtBoundary,
         .pending = @truncate(z.bitbuf),
         .wrapper = z.state.wrapper,
         .check = z.state.check,
@@ -281,11 +292,13 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
 
     var diagnostic: Diagnostic = .{};
     var source: Resume = .{};
+    // `absorb` keeps fewer bits than a unit needs, so fewer than 64.
+    aegis.assert.invariant(z.bitsleft < 64, "z.bitsleft < 64");
     var s: inflate_.Stream = .{
         .in = in,
         .ip = 0,
         .bitbuf = z.bitbuf,
-        .bitsleft = z.bitsleft,
+        .bitsleft = @intCast(z.bitsleft),
         .in_base = z.in_total,
         .out = out,
         .op = op,
@@ -324,15 +337,17 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
             if (z.options.diagnostic) |d| d.* = diagnostic;
             z.state.sum(&s);
             z.error_in_len = @min(in.len, s.ip -| (s.bitsleft / 8));
+            aegis.assert.invariant(op <= s.op, "op <= s.op");
             z.error_out_len = s.op - op;
             z.failed = e;
             return e;
         },
     };
     // Whole bytes read ahead go back to the caller.
-    const in_len = s.ip - s.bitsleft / 8;
-    z.bitsleft = s.bitsleft & 7;
-    z.bitbuf = s.bitbuf & ((@as(u64, 1) << @intCast(z.bitsleft)) - 1);
+    const in_len = s.consumed();
+    const partial: u3 = @truncate(s.bitsleft);
+    z.bitsleft = partial;
+    z.bitbuf = s.bitbuf & ~(~@as(u64, 0) << partial);
     z.in_total += in_len;
     return .{
         .in_len = in_len,
@@ -353,13 +368,17 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
 /// in hand: fewer bits than the unit needs, so fewer than 64.
 fn absorb(z: *Inflate, s: *inflate_.Stream) void {
     // Zero bytes loaded past the end are not the input's.
-    s.bitsleft -= 8 * s.virtual;
+    // `ip` and `bitsleft` count them: at most seven.
+    aegis.assert.invariant(s.virtual <= s.ip, "s.virtual <= s.ip");
+    aegis.assert.invariant(8 * s.virtual <= s.bitsleft, "8 * s.virtual <= s.bitsleft");
+    s.bitsleft -= @intCast(8 * s.virtual);
     s.ip -= s.virtual;
-    var bits = s.bitbuf & ((@as(u64, 1) << @intCast(s.bitsleft)) - 1);
-    var n = s.bitsleft;
+    aegis.assert.invariant(s.ip <= s.in.len, "s.ip <= s.in.len");
+    var bits = s.bitbuf & ~(~@as(u64, 0) << s.bitsleft);
+    var n: u7 = s.bitsleft;
     for (s.in[s.ip..]) |byte| {
         aegis.assert.invariant(n + 8 <= 64, "n + 8 <= 64");
-        bits |= @as(u64, byte) << @intCast(n);
+        bits |= @as(u64, byte) << @as(u6, @intCast(n));
         n += 8;
     }
     z.bitbuf = bits;
@@ -389,7 +408,7 @@ fn ringAppend(z: *Inflate, bytes_in: []const u8) void {
 const Resume = struct {
     ip: usize = 0,
     bitbuf: u64 = 0,
-    bitsleft: u32 = 0,
+    bitsleft: u6 = 0,
     virtual: u32 = 0,
     op: usize = 0,
 
@@ -431,10 +450,11 @@ pub const Reader = struct {
         Truncated,
     };
 
-    /// `buffer.len >= options.windowLen() + 4096`.
-    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) Reader {
-        checkOptions(options);
-        std.debug.assert(buffer.len >= options.windowLen() + 4096);
+    /// `buffer.len >= options.windowLen() + 4096`; a shorter one is
+    /// refused.
+    pub fn init(input: *Io.Reader, buffer: []u8, options: Options) InitError!Reader {
+        try checkOptions(options);
+        if (buffer.len < options.windowLen() + 4096) return error.BufferTooSmall;
         return .{
             .interface = .{ .vtable = &vtable, .buffer = buffer, .seek = 0, .end = 0 },
             .input = input,
@@ -510,6 +530,7 @@ pub const Reader = struct {
     /// Decode until some bytes are in the buffer, or the stream ends.
     fn fill(r: *Reader) Io.Reader.Error!void {
         const io_r = &r.interface;
+        aegis.assert.invariant(io_r.end <= io_r.buffer.len, "io_r.end <= io_r.buffer.len");
         if (io_r.buffer.len - io_r.end < 4096) r.slide();
         const before = io_r.end;
         while (io_r.end == before) {

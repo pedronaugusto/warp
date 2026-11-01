@@ -81,17 +81,19 @@ pub fn memory(concurrency: u16, options: Options) usize {
             std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64)) * concurrency;
 }
 
-pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) Speculative {
-    std.debug.assert(buffer.len >= memory(concurrency, options));
-    const workers = @as([*]Worker, @ptrCast(buffer.ptr))[0..concurrency]; // aegis: no-danger: aligned memory reserves all worker records
-    var at = std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64);
-    for (workers) |*w| {
-        const tokens = @as([*]u16, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.chunkLen()]; // aegis: no-danger: padded, aligned token regions are reserved by memory
-        at += std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64);
-        const blocks = @as([*]Block, @ptrCast(@alignCast(buffer[at..].ptr)))[0..options.max_blocks]; // aegis: no-danger: padded, aligned descriptor regions are reserved by memory
-        at += std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64);
-        w.* = .{ .tokens = tokens, .blocks = blocks };
-    }
+/// Refused when `buffer` is shorter than `memory(concurrency, options)`.
+pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) error{BufferTooSmall}!Speculative {
+    if (buffer.len < memory(concurrency, options)) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), concurrency, options) catch error.BufferTooSmall;
+}
+
+fn carve(a: std.mem.Allocator, concurrency: u16, options: Options) std.mem.Allocator.Error!Speculative {
+    const workers = try a.alignedAlloc(Worker, .@"64", concurrency);
+    for (workers) |*w| w.* = .{
+        .tokens = try a.alignedAlloc(u16, .@"64", options.chunkLen()),
+        .blocks = try a.alignedAlloc(Block, .@"64", options.max_blocks),
+    };
     return .{ .workers = workers, .options = options };
 }
 
@@ -128,7 +130,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
     var active = @min(p.workers.len, (input.len - 1) / p.options.searchLen());
     while (true) {
         try io.checkCancel();
-        const bit: usize = @intCast(stream.bitOffset()); // aegis: no-danger: consumed bits are within this addressable input
+        const bit: usize = @intCast(stream.bitOffset());
         if (active > 0 and state.phase == .body and state.engine.phase == .header) {
             const w = &p.workers[slot];
             if (bit >= w.from) {
@@ -142,13 +144,19 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
                         // this candidate after its false prefix is discarded.
                         const before = stream.op;
                         const ended = try advance(&tables, &state, &stream, machine);
-                        if (p.options.statistics) |stats| stats.serial_bytes += stream.op - before;
+                        if (p.options.statistics) |stats| stats.serial_bytes +|= stream.op -| before;
                         if (ended) return finish(&stream);
                         continue;
                     }
                     if (first < candidate.count) {
                         if (first > 0) w.stats.salvaged_blocks += candidate.count - first;
                         for (w.blocks[first..candidate.count]) |block| {
+                            // The stream writes forward inside its output; a
+                            // worker's blocks lie inside its tokens.
+                            aegis.assert.invariant(stream.start <= stream.op, "stream.start <= stream.op");
+                            aegis.assert.invariant(stream.op <= output.len, "stream.op <= output.len");
+                            aegis.assert.invariant(block.token <= w.tokens.len, "block.token <= w.tokens.len");
+                            aegis.assert.invariant(block.len <= w.tokens.len - block.token, "block.len <= w.tokens.len - block.token");
                             if (block.required > stream.op - stream.start + stream.history.len() or
                                 block.max_distance > stream.window or block.len > output.len - stream.op) break;
                             resolve(w.tokens[block.token..][0..block.len], &stream, block.required);
@@ -170,7 +178,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
         }
         const before = stream.op;
         const ended = try advance(&tables, &state, &stream, machine);
-        if (p.options.statistics) |stats| stats.serial_bytes += stream.op - before;
+        if (p.options.statistics) |stats| stats.serial_bytes +|= stream.op -| before;
         if (ended) return finish(&stream);
     }
 }
@@ -188,7 +196,7 @@ fn advance(t: *engine.Tables, state: *unwrap.State, s: *engine.Stream, options: 
 }
 
 fn finish(s: *const engine.Stream) Native.Result {
-    return .{ .in_len = s.ip - s.bitsleft / 8, .out_len = s.op, .finished = true };
+    return .{ .in_len = s.consumed(), .out_len = s.op, .finished = true };
 }
 
 fn setBit(s: *engine.Stream, bit: usize) void {
@@ -197,7 +205,8 @@ fn setBit(s: *engine.Stream, bit: usize) void {
     s.bitsleft = 0;
     s.virtual = 0;
     if (bit % 8 != 0) {
-        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger: pending bits belong to this byte
+        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger: bit is a decoded block's end inside in, so ip = bit / 8 is the byte holding its 1-7 pending bits
+
         s.bitsleft = @intCast(8 - bit % 8); // safe: 1-7 pending bits
         s.ip += 1;
     }
@@ -208,6 +217,10 @@ fn resolve(tokens: []const u16, s: *engine.Stream, required: usize) void {
     // Mixed vectors therefore need no unpredictable branch per element.
     var values: [256 + engine.max_distance]u8 = undefined;
     const history = values[256..];
+    // The caller found room for the tokens after `op`, which is past `start`.
+    aegis.assert.invariant(s.start <= s.op, "s.start <= s.op");
+    aegis.assert.invariant(s.op <= s.out.len, "s.op <= s.out.len");
+    aegis.assert.invariant(tokens.len <= s.out.len - s.op, "tokens.len <= s.out.len - s.op");
     const n = @min(engine.max_distance, s.op - s.start);
     const dict = @min(engine.max_distance - n, s.history.len());
     if (required > 0) {
@@ -277,14 +290,14 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
             var count: usize = 0;
             var written: usize = 0;
             while (count < w.blocks.len) {
-                const begin: usize = @intCast(decoder.stream.bitOffset()); // aegis: no-danger: block starts are real bits within input
+                const begin: usize = @intCast(decoder.stream.bitOffset());
                 const status = decoder.block(io) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.OutputTooSmall) w.stats.limited += 1;
                     written += decoder.written;
                     break;
                 };
-                const end: usize = @intCast(decoder.stream.bitOffset()); // aegis: no-danger: successful decode consumed real bits from input
+                const end: usize = @intCast(decoder.stream.bitOffset());
                 w.blocks[count] = .{ .start = begin, .end = end, .token = written, .len = decoder.written, .final = status == .done, .required = decoder.required, .max_distance = decoder.max_distance };
                 written += decoder.written;
                 decoder.written = 0;
@@ -297,6 +310,7 @@ fn searchInner(w: *Worker, io: Io, options: Options) Io.Cancelable!void {
                 }
                 // Each block has its own symbolic predecessor window. That
                 // lets a validated suffix survive a falsely decoded prefix.
+                aegis.assert.invariant(written <= w.tokens.len, "written <= w.tokens.len");
                 decoder.tokens = w.tokens[written..];
                 decoder.written = 0;
                 decoder.required = 0;

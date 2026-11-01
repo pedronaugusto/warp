@@ -138,6 +138,23 @@ fn xzRoundTrip(gpa: std.mem.Allocator, options: xz.Compressor.Options, in: []con
     const r = try d.decompress(out[0..n], back, .{});
     try testing.expectEqual(n, r.in_len);
     try testing.expectEqualSlices(u8, in, back[0..r.out_len]);
+    // The resumable decoder, given the stream and room for its output in
+    // pieces, pairs each converter with its own filter as the whole-buffer
+    // one does (a chain with a start offset once decoded wrong).
+    const window = try gpa.alloc(u8, xz.Decompress.windowLength(options.lzma.dictionary));
+    defer gpa.free(window);
+    var z: xz.Decompress = .init(window, .{ .streams = .one });
+    var ip: usize = 0;
+    var op: usize = 0;
+    while (true) {
+        const step = try z.decode(out[ip..n][0..@min(n - ip, 777)], back[op..][0..@min(back.len - op, 1001)]);
+        ip += step.in_len;
+        op += step.out_len;
+        if (step.status == .done) break;
+        try testing.expect(step.in_len != 0 or step.out_len != 0);
+    }
+    try testing.expectEqual(n, ip);
+    try testing.expectEqualSlices(u8, in, back[0..op]);
     // Every block header names its sizes: the parallel decoder splits them.
     var stats: xz.parallel.Decompressor.Statistics = .{};
     var p: xz.parallel.Decompressor = try .init(gpa, .{ .concurrency = 2, .statistics = &stats });
@@ -454,4 +471,31 @@ fn number(format: []const u8, comptime key: []const u8) !u64 {
     const at = (std.mem.find(u8, format, " " ++ key ++ "=") orelse return error.BadCorpus) + key.len + 2;
     const end = std.mem.findScalarPos(u8, format, at, ' ') orelse format.len;
     return std.fmt.parseInt(u64, format[at..end], 10);
+}
+
+fn canceledStreams(io: std.Io, p: *xz.parallel.Decompressor, in: []const u8, out: []u8) !void {
+    try testing.expectError(error.Canceled, p.decompress(io, in, out, .{}));
+}
+
+test "xz parallel decode: streams of no blocks are canceled between streams" {
+    const gpa = testing.allocator;
+    var c: xz.Compressor = try .init(gpa, .{});
+    defer c.deinit();
+    var empty: [64]u8 = undefined;
+    const n = try c.compress("", &empty);
+    // No block starts a job: only the stream loop's own point sees the cancel.
+    const in = try gpa.alloc(u8, 64 * n);
+    defer gpa.free(in);
+    for (0..64) |i| @memcpy(in[i * n ..][0..n], empty[0..n]);
+    var out: [16]u8 = undefined;
+    var p: xz.parallel.Decompressor = try .init(gpa, .{ .concurrency = 2 });
+    defer p.deinit();
+    const sim = try shakedown.Sim.init(gpa, .{ .faults = &.{.{ .at = .{ .nth = .{ .call = .checkCancel, .n = 1 } }, .fault = .cancel }} });
+    defer sim.deinit();
+    switch (sim.run(canceledStreams, .{ sim.io(), &p, in, &out })) {
+        .finished => {},
+        .failed => |err| return err,
+        else => return error.UnfinishedCancellation,
+    }
+    try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.checkCancel));
 }

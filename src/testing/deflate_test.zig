@@ -94,7 +94,7 @@ fn expectDecodes(gpa: std.mem.Allocator, stream: []const u8, in: []const u8, kin
 fn decodeStreaming(gpa: std.mem.Allocator, stream: []const u8, out: []u8, kind: container.Container, window_bits: u4, dictionary: []const u8) ![]u8 {
     const window = try gpa.alloc(u8, @as(usize, 1) << window_bits);
     defer gpa.free(window);
-    var z: Inflate = .init(window, .{ .accept = acceptOf(kind), .window_bits = window_bits, .dictionary = dictionary });
+    var z: Inflate = try .init(window, .{ .accept = acceptOf(kind), .window_bits = window_bits, .dictionary = dictionary });
     var at: usize = 0;
     var written: usize = 0;
     while (true) {
@@ -233,7 +233,7 @@ test "a sync flush makes everything before it decodable, a full flush a restart 
         if (mode != .partial) try testing.expectEqualSlices(u8, &.{ 0, 0, 0xff, 0xff }, out.items[flush_end - 4 ..]);
         // Everything before the flush decodes from what came out so far.
         var window: [1 << 15]u8 = undefined;
-        var z: Inflate = .init(&window, .{ .accept = .raw });
+        var z: Inflate = try .init(&window, .{ .accept = .raw });
         const back = try gpa.alloc(u8, in.len);
         defer gpa.free(back);
         var at: usize = 0;
@@ -300,7 +300,7 @@ test "context takeover: a reset that keeps the history, on both sides" {
     var d = try Deflate.init(gpa, .{ .level = 12, .container = .raw, .window_bits = 12 });
     defer d.deinit();
     var window: [1 << 12]u8 = undefined;
-    var z: Inflate = .init(&window, .{ .accept = .raw, .window_bits = 12 });
+    var z: Inflate = try .init(&window, .{ .accept = .raw, .window_bits = 12 });
     var sizes: [2]usize = undefined;
     for (0..2) |round| {
         // The same kind of message twice: the second refers to the first.
@@ -379,7 +379,7 @@ test "the writer compresses into a std.Io.Writer, and its flush is a sync flush"
     var sink: std.Io.Writer.Allocating = .init(gpa);
     defer sink.deinit();
     var staging: [4096]u8 = undefined;
-    var w: Deflate.Writer = .init(&d, &sink.writer, &staging);
+    var w: Deflate.Writer = try .init(&d, &sink.writer, &staging);
     try w.interface.writeAll(in[0..10]);
     try w.interface.flush();
     try testing.expectEqualSlices(u8, &.{ 0, 0, 0xff, 0xff }, sink.written()[sink.written().len - 4 ..]);

@@ -82,22 +82,23 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var s = initBuffer(buffer, options);
+    var s = initBuffer(buffer, options) catch aegis.assert.never("buffer is memory(options) bytes");
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// Tables and staging in aligned caller storage of `memory(options)` bytes.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
-    std.debug.assert(buffer.len >= memory(options));
+/// Tables and staging in aligned caller storage, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compress {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const enc_options = encoderOptions(options);
     const enc_size = Encoder.memory(enc_options);
     const p = Encoder.resolve(enc_options, options.pledged());
     const block = blockMax(p);
     const window_size = (@as(usize, 1) << p.window_log) + staging(p);
     const s_block = @min(block, if (options.pledged()) |n| @max(1024, n) else block);
-    var s: Compress = .{ .options = options, .encoder = Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
+    var s: Compress = .{ .options = options, .encoder = try Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
     s.startFrame();
     return s;
 }
@@ -134,7 +135,7 @@ fn startFrame(s: *Compress) void {
     s.encoder.prepare(s.params, s.base);
     var frame = s.options.frame;
     frame.content_size = frame.content_size and s.options.pledged() != null;
-    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged() orelse 0, frame) catch unreachable; // unreachable: output reserves the maximum 18-byte frame header
+    s.pending_end = s.encoder.header(s.output, s.params, s.options.pledged() orelse 0, frame) catch aegis.assert.never("output reserves the maximum 18-byte frame header");
 }
 
 /// Accept input and drain ready bytes. A full final block stays staged
@@ -229,7 +230,8 @@ fn emit(s: *Compress, finishing: bool) void {
     } else s.encoder.store.storeLast(s.window[s.history..end]);
     s.encoder.mergeDictionary(s.window[0 .. s.history + s.have], s.history, end, s.total - s.have, s.params, s.reps, &next_reps);
     const raw = s.params.strategy == .fast and s.params.target_length > 0;
-    const n = (if (s.options.targetBlock()) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch unreachable; // aegis: no-danger: output holds raw input plus headers for all 197 possible partitions
+    const n = (if (s.options.targetBlock()) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch unreachable; // aegis: no-danger: output is blockMax(params) + 3 * 197 + 22 bytes (initBuffer): raw input plus headers for all 197 possible partitions
+
     s.savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));
     s.pending = 0;
     s.pending_end = n;
@@ -294,7 +296,7 @@ pub const Writer = struct {
     }
 
     fn writeData(interface: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         var n: usize = 0;
@@ -320,7 +322,7 @@ pub const Writer = struct {
     }
 
     fn flushInput(interface: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         try w.drainFrame(false);

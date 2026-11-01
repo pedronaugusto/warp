@@ -18,6 +18,9 @@ pub const Check = Compressor.Check;
 pub const Filter = Compressor.Filter;
 /// A branch converter's architecture.
 pub const Bcj = Compressor.Bcj;
+/// One filter decoded as a `std.Io.Reader` over another reader (7z's
+/// coders of the same filters).
+pub const FilterReader = @import("xz/FilterReader.zig");
 /// Whole-buffer decoding with blocks decoded in parallel.
 pub const parallel = @import("xz/parallel.zig");
 /// How many streams a decoder reads.
@@ -26,4 +29,5 @@ pub const Streams = Decompressor.Streams;
 test {
     _ = @import("xz/format.zig");
     _ = @import("xz/filter.zig");
+    _ = FilterReader;
 }

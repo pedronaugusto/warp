@@ -194,7 +194,7 @@ test "speculative storage is exact, allocation failures and bounded fallback per
     }.once, .{});
     const memory = try a.alignedAlloc(u8, .@"64", parallel.Decompressor.memory(options));
     defer a.free(memory);
-    var decoder = parallel.Decompressor.initBuffer(memory, options);
+    var decoder = try parallel.Decompressor.initBuffer(memory, options);
     defer decoder.deinit();
     const input = try gen.alloc(a, .noise, 1, 10000);
     defer a.free(input);
@@ -223,7 +223,7 @@ test "speculative markers preserve the small-window captured stream at every bou
         const tokens = try a.alloc(u16, input.len);
         defer a.free(tokens);
         var window: [32768]u8 = undefined;
-        var native: Inflate = .init(&window, .{ .accept = .zlib });
+        var native: Inflate = try .init(&window, .{ .accept = .zlib });
         var at: usize = 0;
         var written: usize = 0;
         while (true) {

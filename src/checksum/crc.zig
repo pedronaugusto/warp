@@ -112,7 +112,7 @@ test "combining joins two pieces, and is associative" {
     // The CRC-32 polynomial; crc32.zig and crc32c.zig test their own values.
     const C = Crc(0xedb88320);
     var buf: [1024]u8 = undefined;
-    for (&buf, 0..) |*b, i| b.* = @truncate(i *% 7919 >> 3);
+    for (&buf, 0..) |*b, i| b.* = @truncate((i *% 7919) >> 3);
     for ([_]usize{ 0, 1, 100, 1023, 1024 }) |cut| {
         const a = ~C.slicing8(~@as(u32, 0), buf[0..cut]);
         const b = ~C.slicing8(~@as(u32, 0), buf[cut..]);

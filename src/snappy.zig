@@ -67,6 +67,7 @@ pub const parallel = @import("snappy/parallel.zig");
 
 pub const StreamOptions = streams.Options;
 pub const StreamError = streams.Error;
+pub const DecompressError = streams.DecompressError;
 /// Decode a whole stream (either identifier) into the caller's output.
 pub const decompress = streams.decompress;
 /// A whole stream's output, from its blocks' lengths.

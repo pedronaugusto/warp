@@ -214,14 +214,15 @@ pub const State = struct {
     // The meta-block header as it is read.
     category: u2 = 0,
     num_types: [3]u32 = .{ 1, 1, 1 },
-    npostfix: u32 = 0,
-    ndirect: u32 = 0,
+    /// NPOSTFIX, 2 bits; NDIRECT, 4 bits shifted by NPOSTFIX: at most 120.
+    npostfix: u2 = 0,
+    ndirect: u7 = 0,
     distance_max: u32 = 0,
     distance_limit: u32 = 0,
     mode_index: u32 = 0,
     num_literal_trees: u32 = 1,
     num_distance_trees: u32 = 1,
-    map: struct { distance: bool = false, size: u32 = 0, trees: u32 = 0, rlemax: u32 = 0, index: u32 = 0 } = .{},
+    map: struct { distance: bool = false, size: u32 = 0, trees: u9 = 0, rlemax: u5 = 0, index: u32 = 0 } = .{},
     group: u2 = 0,
     tree: u32 = 0,
     group_used: u32 = 0,
@@ -373,13 +374,13 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 s.go(.block_types, .read);
                 return null;
             }
-            const n = try varLenUint8(careful, r) + 1;
+            const n = @as(u9, try varLenUint8(careful, r)) + 1;
             s.num_types[s.category] = n;
             if (n < 2) {
                 s.category +%= 1;
                 return null;
             }
-            startCode(s, .block_types, .block_type, n + 2, n + 2);
+            startCode(s, .block_types, .block_type, @as(u32, n) + 2, @as(u32, n) + 2);
         },
         .block_count_code => startCode(s, .block_count_code, .block_count, 26, 26),
         .block_count => {
@@ -389,8 +390,8 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         },
         .distance_params => {
             const v = try r.bits(careful, 6);
-            s.npostfix = v & 3;
-            s.ndirect = (v >> 2) << @intCast(s.npostfix);
+            s.npostfix = @truncate(v);
+            s.ndirect = @as(u7, @as(u4, @truncate(v >> 2))) << s.npostfix;
             const a = codes.distanceAlphabet(s.npostfix, s.ndirect, s.large);
             s.distance_max = a.max;
             s.distance_limit = a.limit;
@@ -403,11 +404,11 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 s.go(.modes, .read);
                 return null;
             }
-            t.modes[s.mode_index] = @fromBackingInt(@intCast(try r.bits(careful, 2)));
+            t.modes[s.mode_index] = @fromBackingInt(try r.take(careful, 2));
             s.mode_index += 1;
         },
         .context_map_trees => {
-            const n = try varLenUint8(careful, r) + 1;
+            const n = @as(u9, try varLenUint8(careful, r)) + 1;
             s.map.trees = n;
             s.map.index = 0;
             if (s.map.distance) s.num_distance_trees = n else s.num_literal_trees = n;
@@ -419,8 +420,8 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
             s.go(.context_map_trees, .read);
         },
         .context_map_rle => {
-            s.map.rlemax = if (try r.bits(careful, 1) == 1) try r.bits(careful, 4) + 1 else 0;
-            const alphabet = s.map.trees + s.map.rlemax;
+            s.map.rlemax = if (try r.bits(careful, 1) == 1) @as(u5, try r.take(careful, 4)) + 1 else 0;
+            const alphabet = @as(u32, s.map.trees) + s.map.rlemax;
             startCode(s, .context_map_rle, .map_code, alphabet, alphabet);
         },
         .context_map_entries => {
@@ -435,7 +436,9 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                     map[s.map.index] = @intCast(code - s.map.rlemax);
                     s.map.index += 1;
                 } else {
-                    const reps = (@as(u32, 1) << @intCast(code)) + try r.bits(careful, code);
+                    // `code` is at most `rlemax`, 16 or less.
+                    const bits: u5 = @intCast(code);
+                    const reps = @as(u32, @as(u17, 1) << bits) + @as(u16, @intCast(try r.bits(careful, bits)));
                     if (s.map.index + reps > map.len) return s.fail(.context_map_repeat, r.bitOffset());
                     @memset(map[s.map.index..][0..reps], 0);
                     s.map.index += reps;
@@ -537,11 +540,11 @@ noinline fn streamHeader(comptime careful: bool, s: *State, r: *Reader, at: u64)
     if (try r.bits(careful, 1) == 0) {
         s.window_bits = 16;
     } else {
-        const n = try r.bits(careful, 3);
+        const n: u3 = try r.take(careful, 3);
         if (n != 0) {
-            s.window_bits = @intCast(17 + n);
+            s.window_bits = 17 + @as(u5, n);
         } else {
-            const m = try r.bits(careful, 3);
+            const m: u3 = try r.take(careful, 3);
             if (m == 1) {
                 if (!s.large_window) return s.fail(.window_bits, at);
                 if (try r.bits(careful, 1) == 1) return s.fail(.window_bits, at);
@@ -550,7 +553,7 @@ noinline fn streamHeader(comptime careful: bool, s: *State, r: *Reader, at: u64)
                 s.window_bits = @intCast(w);
                 s.large = true;
             } else if (m != 0) {
-                s.window_bits = @intCast(8 + m);
+                s.window_bits = 8 + @as(u5, m);
             } else s.window_bits = 17;
         }
     }
@@ -566,28 +569,28 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
         s.go(.metablock_header, .last);
         return;
     }
-    const nibbles = try r.bits(careful, 2);
+    const nibbles: u2 = try r.take(careful, 2);
     if (nibbles == 3) {
         if (try r.bits(careful, 1) != 0) return s.fail(.reserved, at);
-        const nbytes = try r.bits(careful, 2);
-        var len: u32 = 0;
-        for (0..nbytes) |i| {
-            const b = try r.bits(careful, 8);
-            if (i + 1 == nbytes and nbytes > 1 and b == 0) return s.fail(.exuberant_metadata, at);
-            len |= b << @intCast(8 * i);
+        const nbytes: u2 = try r.take(careful, 2);
+        var bytes: [3]u8 = @splat(0);
+        for (bytes[0..nbytes], 0..) |*b, i| {
+            b.* = try r.take(careful, 8);
+            if (i + 1 == nbytes and nbytes > 1 and b.* == 0) return s.fail(.exuberant_metadata, at);
         }
+        const len = std.mem.readInt(u24, &bytes, .little);
         if (!r.alignByte()) return s.fail(.padding, at);
         s.last = last;
         s.remaining = if (nbytes == 0) 0 else @as(i64, len) + 1;
         s.go(.metablock_header, .metadata);
         return;
     }
-    const n = nibbles + 4;
-    var len: u32 = 0;
+    const n = @as(u3, nibbles) + 4;
+    var len: u24 = 0;
     for (0..n) |i| {
-        const nib = try r.bits(careful, 4);
+        const nib: u4 = try r.take(careful, 4);
         if (i + 1 == n and n > 4 and nib == 0) return s.fail(.exuberant_nibble, at);
-        len |= nib << @intCast(4 * i);
+        len |= @as(u24, nib) << @intCast(4 * i);
     }
     const uncompressed = !last and try r.bits(careful, 1) == 1;
     if (uncompressed and !r.alignByte()) return s.fail(.padding, at);
@@ -607,11 +610,12 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
 }
 
 /// A number 0-255 in 1 to 11 bits.
-fn varLenUint8(comptime careful: bool, r: *Reader) bits_.NeedInput!u32 {
+fn varLenUint8(comptime careful: bool, r: *Reader) bits_.NeedInput!u8 {
     if (try r.bits(careful, 1) == 0) return 0;
-    const n = try r.bits(careful, 3);
+    const n: u3 = try r.take(careful, 3);
     if (n == 0) return 1;
-    return (@as(u32, 1) << @intCast(n)) + try r.bits(careful, n);
+    // `n` bits below the bit `n` sets.
+    return (@as(u8, 1) << n) | @as(u7, @intCast(try r.bits(careful, n)));
 }
 
 fn blockCount(comptime careful: bool, r: *Reader, table: []const Entry) bits_.NeedInput!u32 {
@@ -665,7 +669,7 @@ fn selectLiteral(s: *State, t: *Tables) void {
             .signed => 8,
         };
         for (0..256) |p1| for (0..parts) |c| {
-            t.literal_bytes[p1 << 3 | c] = t.literal_contexts[lookup[p1] | @as(u8, @intCast(c))];
+            t.literal_bytes[(p1 << 3) | c] = t.literal_contexts[lookup[p1] | @as(u8, @intCast(c))];
         };
     }
 }
@@ -752,7 +756,7 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         // The header: HSKIP, then a simple code or the code length code.
         const hskip = try r.bits(careful, 2);
         if (hskip == 1) {
-            const nsym = try r.bits(careful, 2) + 1;
+            const nsym = @as(u3, try r.take(careful, 2)) + 1;
             const width = std.math.log2_int(u32, c.max - 1) + 1;
             var symbols: [4]u16 = undefined;
             for (symbols[0..nsym]) |*sym| {
@@ -769,7 +773,7 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         }
         const order = [18]u8{ 1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
         // The code length code lengths' own fixed code, by the next 4 bits.
-        const prefix_len = [16]u8{ 2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4 };
+        const prefix_len = [16]u3{ 2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4 };
         const prefix_value = [16]u8{ 0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5 };
         var lengths: [18]u8 = @splat(0);
         var count: [6]u16 = @splat(0);
@@ -778,10 +782,10 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         for (order[hskip..]) |symbol| {
             if (careful) {
                 r.fillAvailable(4);
-                const ix = r.peek(@min(4, r.count));
+                const ix: u4 = @intCast(r.peek(@min(4, r.count)));
                 if (prefix_len[ix] > r.count) return error.NeedInput;
             } else try r.fill(false, 4);
-            const ix = r.peek(4);
+            const ix: u4 = @intCast(r.peek(4));
             const v = prefix_value[ix];
             r.drop(prefix_len[ix]);
             lengths[symbol] = v;
@@ -821,7 +825,8 @@ noinline fn prefixCode(comptime careful: bool, s: *State, t: *Tables, r: *Reader
 inline fn codeLengthSymbol(comptime careful: bool, c: *Code, t: *Tables, r: *Reader) StepError!void {
     if (careful) r.fillAvailable(8) else try r.fill(false, 8);
     const e = t.code_lengths[@as(u5, @truncate(r.buf))];
-    const len = e & 15;
+    // A length of 4 bits, a code-length symbol of the rest.
+    const len: u4 = @truncate(e & 15);
     if (careful and len > r.count) return error.NeedInput;
     const code: u8 = @intCast(e >> 4);
     if (code < 16) {
@@ -837,10 +842,10 @@ inline fn codeLengthSymbol(comptime careful: bool, c: *Code, t: *Tables, r: *Rea
         c.symbol += 1;
         return;
     }
-    const extra: u32 = if (code == 16) 2 else 3;
-    if (careful and len + extra > r.count) return error.NeedInput;
+    const extra: u2 = if (code == 16) 2 else 3;
+    if (careful and @as(u6, len) + extra > r.count) return error.NeedInput;
     r.drop(len);
-    const delta: u32 = @intCast(r.peek(extra));
+    const delta: u32 = @as(u3, @intCast(r.peek(extra)));
     r.drop(extra);
     const new_len: u8 = if (code == 16) c.prev_len else 0;
     if (c.repeat_len != new_len) {
@@ -887,10 +892,11 @@ inline fn readCommand(comptime careful: bool, s: *State, t: *Tables, r: *Reader,
     if (s.blocks.counts[1] == 0) try blockSwitch(careful, s, t, r, 1, at);
     const symbol = try huffman.decode(r, careful, t.command[s.blocks.command_tree..].ptr);
     const c = codes.commands[symbol];
-    try r.fill(careful, @as(u32, c.insert_extra) + c.copy_extra);
-    const insert = c.insert_offset + @as(u32, @intCast(r.peek(c.insert_extra)));
+    try r.fill(careful, @as(u6, c.insert_extra) + c.copy_extra);
+    // Extras are at most 24 bits.
+    const insert = @as(u32, c.insert_offset) + @as(u24, @intCast(r.peek(c.insert_extra)));
     r.drop(c.insert_extra);
-    const copy = c.copy_offset + @as(u32, @intCast(r.peek(c.copy_extra)));
+    const copy = @as(u32, c.copy_offset) + @as(u24, @intCast(r.peek(c.copy_extra)));
     r.drop(c.copy_extra);
     s.blocks.counts[1] -= 1;
     s.insert = insert;
@@ -910,7 +916,7 @@ inline fn readDistance(comptime careful: bool, s: *State, t: *Tables, r: *Reader
     if (symbol < codes.short_distance_codes) return .{ .distance = shortDistance(&s.distances, symbol), .push = symbol != 0 };
     const range = t.distance_ranges[symbol];
     const extra = try r.bits(careful, range.extra);
-    return .{ .distance = range.offset +% (extra << @intCast(s.npostfix)), .push = true };
+    return .{ .distance = range.offset +% (extra << s.npostfix), .push = true };
 }
 
 /// Output room the fast loop keeps past a command: a 16-byte wild copy's
@@ -923,6 +929,7 @@ const fast_room = 48;
 /// path takes up.
 noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepError!?Status {
     const H = @typeInfo(@TypeOf(h)).pointer.child;
+    aegis.assert.invariant(r.in.len >= bits_.margin, "r.in.len >= bits_.margin");
     const end = r.in.len - bits_.margin;
     var f: Fast = .load(s, r, h);
     const buf = h.buf.ptr;
@@ -939,14 +946,14 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         if (f.counts[1] == 0) {
             f.save(s, r, h);
             try blockSwitch(false, s, t, r, 1, at);
-            f = .load(s, r, h);
+            f.reload(s, r, h);
             command_table = t.command[s.blocks.command_tree..].ptr;
         }
         const c = codes.commands[decodeOk(&f.br, command_table)];
-        f.br.fill(false, @as(u32, c.insert_extra) + c.copy_extra) catch unreachable; // unreachable: fast reads never fail
-        const insert = c.insert_offset + @as(u32, @intCast(f.br.peek(c.insert_extra)));
+        f.br.fill(false, @as(u6, c.insert_extra) + c.copy_extra) catch unreachable; // unreachable: a fast read (careful = false) has no error path; fill states its loads
+        const insert = @as(u32, c.insert_offset) + @as(u24, @intCast(f.br.peek(c.insert_extra)));
         f.br.drop(c.insert_extra);
-        const copy = c.copy_offset + @as(u32, @intCast(f.br.peek(c.copy_extra)));
+        const copy = @as(u32, c.copy_offset) + @as(u24, @intCast(f.br.peek(c.copy_extra)));
         f.br.drop(c.copy_extra);
         f.counts[1] -= 1;
         f.remaining -= insert;
@@ -964,12 +971,13 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             if (f.counts[0] == 0) {
                 f.save(s, r, h);
                 try blockSwitch(false, s, t, r, 0, f.br.bitOffset());
-                f = .load(s, r, h);
+                f.reload(s, r, h);
             }
             const batch = @min(left, f.counts[0]);
             const p1 = H.backAt(buf, limit, f.pos, base +% f.pos, 1);
             const p2 = H.backAt(buf, limit, f.pos, base +% f.pos, 2);
             const done = literalBatch(s, t, &f, buf, batch, end, p1, p2);
+            aegis.assert.invariant(done <= left and done <= f.counts[0], "done <= left and done <= f.counts[0]");
             left -= done;
             f.counts[0] -= done;
         }
@@ -992,7 +1000,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             if (f.counts[2] == 0) {
                 f.save(s, r, h);
                 try blockSwitch(false, s, t, r, 2, dat);
-                f = .load(s, r, h);
+                f.reload(s, r, h);
             }
             const symbol = decodeOk(&f.br, t.distance[t.distance_contexts[c.distance_context]..].ptr);
             f.counts[2] -= 1;
@@ -1001,8 +1009,9 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 push = symbol != 0;
             } else {
                 const range = t.distance_ranges[symbol];
-                f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger: fast reads never fail
-                d = range.offset +% (@as(u32, @intCast(f.br.peek(range.extra))) << @intCast(npostfix));
+                f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger: a fast fill (careful = false) has no error path; its loads are stated by fill's invariants
+                // `extra` is 5 bits: at most 31 of them.
+                d = range.offset +% (@as(u32, @as(u31, @intCast(f.br.peek(range.extra)))) << npostfix);
                 f.br.drop(range.extra);
             }
         }
@@ -1021,8 +1030,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         } else {
             f.save(s, r, h);
             s.copy = copy;
-            switch (try resolve(s, h, d, push, dat, buf + h.pos)) {
-                .history => unreachable, // aegis: no-danger: resolve gives .history only for a distance this branch has excluded
+            switch (try resolveBeyond(s, h, d, push, dat, buf + h.pos)) {
                 .prefix => {
                     h.write(h.prefix()[s.prefix_at..][0..copy]);
                     s.from_prefix = false;
@@ -1030,7 +1038,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 .word => h.pos += s.word_len,
             }
             s.copy = 0;
-            f = .load(s, r, h);
+            f.reload(s, r, h);
         }
         if (f.remaining <= 0) {
             f.save(s, r, h);
@@ -1065,6 +1073,14 @@ const Fast = struct {
         return .{ .br = br, .pos = h.pos, .remaining = s.remaining, .distances = s.distances, .counts = s.blocks.counts };
     }
 
+    /// `load` after a call, the input kept as it was: in a register, the
+    /// loop's bound on it still holds.
+    inline fn reload(f: *Fast, s: *const State, r: *const Reader, h: anytype) void {
+        const in = f.br.in;
+        f.* = .load(s, r, h);
+        f.br.in = in;
+    }
+
     inline fn save(f: *const Fast, s: *State, r: *Reader, h: anytype) void {
         r.restore(f.br.mark());
         h.pos = f.pos;
@@ -1084,7 +1100,7 @@ const Fast = struct {
 
 /// A fast read's symbol: fast reads fail only on no input.
 inline fn decodeOk(r: *Reader, table: [*]const Entry) u32 {
-    return huffman.decode(r, false, table) catch unreachable; // unreachable: fast reads never fail
+    return huffman.decode(r, false, table) catch unreachable; // unreachable: a fast read (careful = false) has no error path; fill states its loads
 }
 
 /// `literals` by how the current block type finds its trees.
@@ -1109,7 +1125,7 @@ inline fn literals(comptime by: enum { trivial, contexts, bytes }, s: *const Sta
         const table = switch (by) {
             .trivial => fixed,
             .contexts => t.literal[trees[lookup[p1] | lookup[256 + @as(usize, p2)]]..].ptr,
-            .bytes => t.literal[bytes[@as(usize, p1) << 3 | lookup[256 + @as(usize, p2)]]..].ptr,
+            .bytes => t.literal[bytes[(@as(usize, p1) << 3) | lookup[256 + @as(usize, p2)]]..].ptr,
         };
         const literal: u8 = @intCast(decodeOk(&f.br, table));
         buf[pos] = literal;
@@ -1118,6 +1134,8 @@ inline fn literals(comptime by: enum { trivial, contexts, bytes }, s: *const Sta
         p1 = literal;
     }
     f.pos = pos;
+    // `left` counts down from `n`.
+    aegis.assert.invariant(left <= n, "left <= n");
     return n - left;
 }
 
@@ -1131,6 +1149,9 @@ const Source = enum {
     word,
 };
 
+/// A source past the history: the prefix dictionary or a static word.
+const Beyond = enum { prefix, word };
+
 /// Commit the command's distance: refuse it, or say what it copies from,
 /// with the meta-block's remaining length taken.
 noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: [*]u8) StepError!Source {
@@ -1142,6 +1163,16 @@ noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst
         s.distance = d;
         return .history;
     }
+    return switch (try resolveBeyond(s, h, d, push, at, word_dst)) {
+        .prefix => .prefix,
+        .word => .word,
+    };
+}
+
+/// `resolve` for a distance past the history.
+noinline fn resolveBeyond(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: [*]u8) StepError!Beyond {
+    const max_distance: u64 = @min(h.total(), s.max_backward);
+    aegis.assert.invariant(d > max_distance, "d > max_distance");
     if (d > codes.max_allowed_distance) return s.fail(.distance, at);
     const prefix = h.prefix();
     const beyond = d - max_distance - 1;

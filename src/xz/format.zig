@@ -85,7 +85,7 @@ pub fn streamHeader(in: *const [header_len]u8) union(enum) { check: Check, fault
     if (!std.mem.eql(u8, in[0..6], &header_magic)) return .{ .fault = .stream_magic };
     if (std.hash.Crc32.hash(in[6..8]) != std.mem.readInt(u32, in[8..12], .little)) return .{ .fault = .stream_header_crc };
     if (in[6] != 0 or in[7] & 0xf0 != 0) return .{ .fault = .stream_flags };
-    return .{ .check = @fromBackingInt(@intCast(@as(u4, @truncate(in[7])))) };
+    return .{ .check = @fromBackingInt(@as(u4, @truncate(in[7]))) };
 }
 
 pub const Footer = struct { backward_size: u64, check: Check };
@@ -97,38 +97,40 @@ pub fn streamFooter(in: *const [footer_len]u8) union(enum) { footer: Footer, fau
     if (in[8] != 0 or in[9] & 0xf0 != 0) return .{ .fault = .stream_flags };
     return .{ .footer = .{
         .backward_size = (@as(u64, std.mem.readInt(u32, in[4..8], .little)) + 1) * 4,
-        .check = @fromBackingInt(@intCast(@as(u4, @truncate(in[9])))),
+        .check = @fromBackingInt(@as(u4, @truncate(in[9]))),
     } };
 }
 
 /// The largest variable-length integer, 2^63 - 1.
 pub const vli_max = std.math.maxInt(u63);
 
-/// A variable-length integer of `in` from `pos.*`: seven bits a byte,
+/// A variable-length integer at the start of `rest.*`: seven bits a byte,
 /// least significant first, at most nine bytes, no zero byte last but
-/// alone. Null where it breaks those or runs past `in`.
-pub fn vli(in: []const u8, pos: *usize) ?u64 {
-    var v: u64 = 0;
-    var n: u6 = 0;
-    while (pos.* < in.len) {
-        const b = in[pos.*];
-        pos.* += 1;
-        v |= @as(u64, b & 0x7f) << (n * 7);
-        n += 1;
+/// alone. `rest.*` is cut past the bytes read, also where it is null: where
+/// it breaks those or runs past the end. Nine bytes of seven bits hold 63.
+pub fn vli(rest: *[]const u8) ?u63 {
+    var v: u63 = 0;
+    for (rest.*, 0..) |b, i| {
+        v |= @as(u63, b & 0x7f) << @intCast(i * 7);
         if (b & 0x80 == 0) {
-            if (b == 0 and n > 1) return null;
+            rest.* = rest.*[i + 1 ..];
+            if (b == 0 and i > 0) return null;
             return v;
         }
-        if (n == 9) return null;
+        if (i == 8) {
+            rest.* = rest.*[i + 1 ..];
+            return null;
+        }
     }
+    rest.* = rest.*[rest.len..];
     return null;
 }
 
 pub const BlockHeader = struct {
     /// The header's length, 8 to 1024.
-    len: usize,
-    compressed: ?u64,
-    uncompressed: ?u64,
+    len: u11,
+    compressed: ?u63,
+    uncompressed: ?u63,
     /// The filters before LZMA2, in the order they were applied when
     /// encoding.
     filters: [3]filter_.Filter,
@@ -137,58 +139,76 @@ pub const BlockHeader = struct {
     dictionary: u32,
 };
 
-/// A block header, `in` its `(in[0] + 1) * 4` bytes; the check names the
-/// check's size for the unpadded size's limit.
-pub fn blockHeader(in: []const u8, check: Check) union(enum) { header: BlockHeader, fault: Fault } {
+/// What a block header is read against: the check, whose size bounds the
+/// unpadded size, and where a refusal says why and at which byte.
+pub const HeaderContext = struct { check: Check, fault: *Fault };
+
+pub const HeaderError = error{BlockHeader};
+
+/// The block header `bytes` starts with, its first `(bytes[0] + 1) * 4`
+/// bytes, read through `aegis.input.Untrusted`; a refusal is written to
+/// `context.fault`.
+pub fn blockHeader(context: HeaderContext, bytes: []const u8) HeaderError!BlockHeader {
+    const fault = context.fault;
+    // An index starts with 0; a block header never does.
+    if (bytes.len == 0 or bytes[0] == 0) return refuse(fault, .block_header, 0);
+    const len: u11 = (@as(u11, bytes[0]) + 1) * 4;
+    if (len > bytes.len) return refuse(fault, .truncated, bytes.len);
+    const in = bytes[0..len];
     const n = in.len - 4;
-    if (std.hash.Crc32.hash(in[0..n]) != std.mem.readInt(u32, in[n..][0..4], .little)) return .{ .fault = .{ .reason = .block_header_crc, .at = n } };
+    if (std.hash.Crc32.hash(in[0..n]) != std.mem.readInt(u32, in[n..][0..4], .little)) return refuse(fault, .block_header_crc, n);
     const flags = in[1];
-    if (flags & 0x3c != 0) return .{ .fault = .{ .reason = .block_header, .at = 1 } };
-    var pos: usize = 2;
-    var h: BlockHeader = .{ .len = in.len, .compressed = null, .uncompressed = null, .filters = undefined, .filter_count = 0, .dictionary = 0 };
+    if (flags & 0x3c != 0) return refuse(fault, .block_header, 1);
+    // The fields, cut as they are read; `n - rest.len` is where one starts.
+    var rest = in[2..n];
+    var compressed: ?u63 = null;
     if (flags & 0x40 != 0) {
-        const at = pos;
-        const c = vli(in[0..n], &pos) orelse return .{ .fault = .{ .reason = .block_header, .at = at } };
+        const at = n - rest.len;
+        const c = vli(&rest) orelse return refuse(fault, .block_header, at);
         // The unpadded size (header, data, check) must be 5 to 2^63 - 4.
-        if (c == 0 or c > (vli_max & ~@as(u64, 3)) - in.len - check.size()) return .{ .fault = .{ .reason = .block_size, .at = at } };
-        h.compressed = c;
+        if (c == 0 or c > (vli_max & ~@as(u64, 3)) - in.len - context.check.size()) return refuse(fault, .block_size, at);
+        compressed = c;
     }
+    var uncompressed: ?u63 = null;
     if (flags & 0x80 != 0) {
-        const at = pos;
-        h.uncompressed = vli(in[0..n], &pos) orelse return .{ .fault = .{ .reason = .block_header, .at = at } };
+        const at = n - rest.len;
+        uncompressed = vli(&rest) orelse return refuse(fault, .block_header, at);
     }
     const count = (flags & 3) + 1;
+    var filters: [3]filter_.Filter = undefined;
+    var filter_count: u2 = 0;
     var lzma2: ?u32 = null;
     for (0..count) |i| {
-        const at = pos;
-        const id = vli(in[0..n], &pos) orelse return .{ .fault = .{ .reason = .block_header, .at = at } };
-        if (id >= 1 << 62) return .{ .fault = .{ .reason = .block_header, .at = at } };
-        const props_len = vli(in[0..n], &pos) orelse return .{ .fault = .{ .reason = .block_header, .at = at } };
-        if (props_len > n - pos) return .{ .fault = .{ .reason = .block_header, .at = at } };
-        const props = in[pos..][0..@intCast(props_len)];
-        pos += props.len;
-        const fid: filter_.Id = @fromBackingInt(@intCast(id));
+        const at = n - rest.len;
+        const id = vli(&rest) orelse return refuse(fault, .block_header, at);
+        if (id >= 1 << 62) return refuse(fault, .block_header, at);
+        const props_len = vli(&rest) orelse return refuse(fault, .block_header, at);
+        if (props_len > rest.len) return refuse(fault, .block_header, at);
+        const props = rest[0..@min(rest.len, props_len)];
+        rest = rest[props.len..];
+        const fid: filter_.Id = @fromBackingInt(id);
         if (fid == .lzma2) {
             // Last and only last; one property byte, the dictionary.
-            if (i != count - 1 or props.len != 1) return .{ .fault = .{ .reason = .filter_options, .at = at } };
-            const dict = decode.lzma2Dictionary(props[0]) orelse return .{ .fault = .{ .reason = .filter_options, .at = at } };
-            lzma2 = @intCast(dict);
+            if (i != count - 1 or props.len != 1) return refuse(fault, .filter_options, at);
+            lzma2 = decode.lzma2Dictionary(props[0]) orelse return refuse(fault, .filter_options, at);
             continue;
         }
-        const f = filter_.parse(fid, props) orelse return .{ .fault = .{
-            .reason = if (switch (fid) {
-                .delta, .x86, .powerpc, .ia64, .arm, .armthumb, .sparc, .arm64, .riscv => true,
-                else => false,
-            }) .filter_options else .unsupported_filter,
-            .at = at,
-        } };
-        if (i == count - 1) return .{ .fault = .{ .reason = .filter_options, .at = at } };
-        h.filters[i] = f;
-        h.filter_count += 1;
+        const f = filter_.parse(fid, props) orelse return refuse(fault, switch (fid) {
+            .delta, .x86, .powerpc, .ia64, .arm, .armthumb, .sparc, .arm64, .riscv => .filter_options,
+            else => .unsupported_filter,
+        }, at);
+        if (i == count - 1) return refuse(fault, .filter_options, at);
+        filters[i] = f;
+        filter_count += 1;
     }
-    h.dictionary = lzma2 orelse return .{ .fault = .{ .reason = .filter_options, .at = 2 } };
-    while (pos < n) : (pos += 1) if (in[pos] != 0) return .{ .fault = .{ .reason = .block_header, .at = pos } };
-    return .{ .header = h };
+    const dictionary = lzma2 orelse return refuse(fault, .filter_options, 2);
+    for (rest, n - rest.len..) |b, at| if (b != 0) return refuse(fault, .block_header, at);
+    return .{ .len = len, .compressed = compressed, .uncompressed = uncompressed, .filters = filters, .filter_count = filter_count, .dictionary = dictionary };
+}
+
+fn refuse(fault: *Fault, reason: Diagnostic.Reason, at: usize) HeaderError {
+    fault.* = .{ .reason = reason, .at = at };
+    return error.BlockHeader;
 }
 
 /// A stream header for `check`.
@@ -210,21 +230,18 @@ pub fn writeStreamFooter(out: *[footer_len]u8, index_len: u64, check: Check) voi
 
 /// The bytes `v` takes as a variable-length integer.
 pub fn vliLen(v: u64) usize {
-    var n: usize = 1;
-    var rest = v >> 7;
-    while (rest != 0) : (rest >>= 7) n += 1;
-    return n;
+    // Seven bits a byte, and one byte for zero.
+    return @max(1, (64 - @as(usize, @clz(v)) + 6) / 7);
 }
 
 /// `v` as a variable-length integer at `out[pos.*..]`.
 pub fn putVli(out: []u8, pos: *usize, v: u64) void {
-    var rest = v;
-    while (rest >= 0x80) : (rest >>= 7) {
-        out[pos.*] = @as(u8, @truncate(rest)) | 0x80;
-        pos.* += 1;
+    const n = vliLen(v);
+    for (out[pos.*..][0..n], 0..) |*b, i| {
+        const more: u8 = if (i + 1 < n) 0x80 else 0;
+        b.* = @as(u8, @as(u7, @truncate(v >> @intCast(7 * i)))) | more;
     }
-    out[pos.*] = @intCast(rest);
-    pos.* += 1;
+    pos.* += n;
 }
 
 /// LZMA2's dictionary as its property byte: the smallest size it names
@@ -240,7 +257,7 @@ pub fn lzma2DictionaryByte(dictionary: u32) u8 {
     const v = d + 1;
     // The distance slot of `v`, less 24.
     const n: u5 = @intCast(31 - @clz(v));
-    return @intCast((@as(u32, n) << 1 | (v >> (n - 1) & 1)) - 24);
+    return @intCast(((@as(u32, n) << 1) | ((v >> (n - 1)) & 1)) - 24);
 }
 
 /// What a block header names: its sizes where known, the filters before
@@ -330,12 +347,13 @@ test "written parts read back" {
     writeStreamFooter(&f, 16, .sha256);
     try std.testing.expectEqual(@as(u64, 16), streamFooter(&f).footer.backward_size);
     var buf: [16]u8 = undefined;
-    for ([_]u64{ 0, 127, 128, 300, vli_max }) |v| {
+    for ([_]u63{ 0, 127, 128, 300, vli_max }) |v| {
         var pos: usize = 0;
         putVli(&buf, &pos, v);
         try std.testing.expectEqual(vliLen(v), pos);
-        var at: usize = 0;
-        try std.testing.expectEqual(@as(?u64, v), vli(buf[0..pos], &at));
+        var rest: []const u8 = buf[0..pos];
+        try std.testing.expectEqual(@as(?u63, v), vli(&rest));
+        try std.testing.expectEqual(0, rest.len);
     }
     for ([_]u32{ 4096, 1 << 20, 3 << 20, 8 << 20, (1 << 30) + (1 << 29), std.math.maxInt(u32) }) |d| {
         const named = decode.lzma2Dictionary(lzma2DictionaryByte(d)).?;
@@ -346,27 +364,29 @@ test "written parts read back" {
     const spec: BlockSpec = .{ .compressed = 1000, .uncompressed = 70000, .filters = &filters, .dictionary = 1 << 20 };
     var block: [64]u8 = undefined;
     writeBlockHeader(&block, spec);
-    const got = blockHeader(block[0..blockHeaderLen(spec)], .crc32).header;
-    try std.testing.expectEqual(@as(?u64, 1000), got.compressed);
-    try std.testing.expectEqual(@as(?u64, 70000), got.uncompressed);
+    var fault: Fault = undefined;
+    const got = try blockHeader(.{ .check = .crc32, .fault = &fault }, block[0..blockHeaderLen(spec)]);
+    try std.testing.expectEqual(@as(?u63, 1000), got.compressed);
+    try std.testing.expectEqual(@as(?u63, 70000), got.uncompressed);
     try std.testing.expectEqual(@as(u2, 2), got.filter_count);
     try std.testing.expectEqual(@as(u32, 1 << 20), got.dictionary);
     const open: BlockSpec = .{ .compressed = null, .uncompressed = null, .filters = &.{}, .dictionary = 1 << 20 };
     writeBlockHeader(&block, open);
-    const bare = blockHeader(block[0..blockHeaderLen(open)], .crc32).header;
-    try std.testing.expectEqual(@as(?u64, null), bare.compressed);
+    const bare = try blockHeader(.{ .check = .crc32, .fault = &fault }, block[0..blockHeaderLen(open)]);
+    try std.testing.expectEqual(@as(?u63, null), bare.compressed);
     try std.testing.expectEqual(@as(usize, 12), blockHeaderLen(open));
 }
 
 test "variable-length integers as liblzma reads them" {
-    var pos: usize = 0;
-    try std.testing.expectEqual(@as(?u64, 0), vli(&.{0}, &pos));
-    pos = 0;
-    try std.testing.expectEqual(@as(?u64, 300), vli(&.{ 0xac, 0x02 }, &pos));
-    pos = 0;
-    try std.testing.expectEqual(@as(?u64, null), vli(&.{ 0x80, 0x00 }, &pos));
-    pos = 0;
-    try std.testing.expectEqual(@as(?u64, null), vli(&.{0x80}, &pos));
+    var rest: []const u8 = &.{0};
+    try std.testing.expectEqual(@as(?u63, 0), vli(&rest));
+    rest = &.{ 0xac, 0x02 };
+    try std.testing.expectEqual(@as(?u63, 300), vli(&rest));
+    rest = &.{ 0x80, 0x00 };
+    try std.testing.expectEqual(@as(?u63, null), vli(&rest));
+    rest = &.{0x80};
+    try std.testing.expectEqual(@as(?u63, null), vli(&rest));
+    try std.testing.expectEqual(0, rest.len);
     try std.testing.expectEqual(@as(usize, 8), Check.crc64.size());
     try std.testing.expectEqual(@as(usize, 32), Check.sha256.size());
     try std.testing.expectEqual(@as(usize, 4), @as(Check, @fromBackingInt(@intCast(2))).size());

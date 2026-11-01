@@ -119,16 +119,18 @@ pub fn memory(options: Options) usize {
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
     if (!options.valid()) return error.InvalidOptions;
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options) catch unreachable;
+    var s = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// A compressor in caller memory (`buffer.len >= memory(options)`).
-pub fn initBuffer(buffer: []align(64) u8, options: Options) error{InvalidOptions}!Compress {
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compress {
     if (!options.valid()) return error.InvalidOptions;
-    std.debug.assert(buffer.len >= memory(options));
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+
     const o = options.lzma;
     const coder = std.mem.bytesAsValue(encode.Coder, buffer[0..@sizeOf(encode.Coder)]);
     coder.* = .{};
@@ -276,7 +278,8 @@ fn produceChunk(s: *Compress, f: anytype) bool {
         s.in_chunk = true;
     }
     if (s.chunks.code(s.coder, f) == .need_input) return false;
-    const n = s.chunks.end(s.coder, f, s.output) catch unreachable; // aegis: no-danger: output holds a chunk's header, 64 KiB and what may be stored
+    const n = s.chunks.end(s.coder, f, s.output) catch unreachable; // aegis: no-danger: output is output_len (128 KiB): a chunk's header, its 64 KiB and what may be stored
+
     s.queue(n);
     s.in_chunk = false;
     return true;
@@ -392,7 +395,7 @@ pub const Writer = struct {
     }
 
     fn writeData(interface: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         var n: usize = 0;
@@ -408,7 +411,7 @@ pub const Writer = struct {
     /// The buffered input written; LZMA2 also ends its chunk, so what is
     /// out decodes to everything written (raw LZMA only writes).
     fn flushInput(interface: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         if (w.state.options.format != .lzma2) return;

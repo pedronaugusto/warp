@@ -18,6 +18,8 @@ pub const bzip2 = @import("bzip2.zig");
 pub const lzma = @import("lzma.zig");
 /// `.xz` streams.
 pub const xz = @import("xz.zig");
+/// 7-Zip's BCJ2, x86 code from its four streams, as a reader.
+pub const Bcj2 = @import("Bcj2.zig");
 /// Snappy and S2 blocks.
 pub const snappy = @import("snappy.zig");
 /// GDeflate pages and DirectStorage tile streams, compressed at DEFLATE's levels

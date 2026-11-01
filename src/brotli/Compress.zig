@@ -36,6 +36,13 @@ pub fn deinit(s: *Compress) void {
     s.* = undefined;
 }
 
+/// Start a new stream with `options`, whatever this one had reached, on
+/// the buffers this one grew: a server writing many streams allocates for
+/// its largest only. The new stream is the one `init` would start.
+pub fn reset(s: *Compress, options: Options) std.mem.Allocator.Error!void {
+    return s.encoder.reset(options.params(options.size_hint), options.dictionary);
+}
+
 fn run(s: *Compress, op: encode.Operation, in: *[]const u8, out: *[]u8) Error!void {
     s.encoder.compressStream(op, in, out) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -132,7 +139,7 @@ pub const Writer = struct {
     }
 
     fn writeData(interface: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         var n: usize = 0;
@@ -158,7 +165,7 @@ pub const Writer = struct {
     }
 
     fn flushInput(interface: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         try w.drainStream(false);

@@ -106,7 +106,7 @@ test "parallel compressor caller memory survives a failed sink and reuse" {
     const options: parallel.Options = .{ .chunk_len = .fromRaw(8192), .concurrency = 2 };
     const memory = try testing.allocator.alignedAlloc(u8, .@"64", parallel.Compressor.memory(options));
     defer testing.allocator.free(memory);
-    var p = parallel.Compressor.initBuffer(memory, options);
+    var p = try parallel.Compressor.initBuffer(memory, options);
     defer p.deinit();
     var tiny: [1000]u8 = undefined;
     var failed: std.Io.Writer = .fixed(&tiny);

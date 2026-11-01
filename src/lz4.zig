@@ -83,7 +83,7 @@ pub fn decompressBlock(in: []const u8, out: []u8, options: BlockOptions) BlockEr
         .partial = options.partial,
         .diagnostic = options.diagnostic,
     });
-    return .{ .out_len = r.op, .finished = r.finished };
+    return .{ .out_len = r.written.len, .finished = r.finished };
 }
 
 test {

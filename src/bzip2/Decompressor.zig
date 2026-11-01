@@ -62,14 +62,16 @@ pub const memory = decode.block_max * @sizeOf(u32);
 
 pub fn init(gpa: Allocator) Allocator.Error!Decompressor {
     const tt = try gpa.alloc(u32, decode.block_max);
-    var d = initBuffer(std.mem.sliceAsBytes(tt));
+    var d = initBuffer(std.mem.sliceAsBytes(tt)) catch unreachable; // unreachable: tt is memory bytes
     d.owned = tt;
     d.gpa = gpa;
     return d;
 }
 
-/// A decompressor over caller memory: `buffer.len >= memory`, aligned to 4.
-pub fn initBuffer(buffer: []align(4) u8) Decompressor {
+/// A decompressor over caller memory aligned to 4, refused when shorter
+/// than `memory`.
+pub fn initBuffer(buffer: []align(4) u8) error{BufferTooSmall}!Decompressor {
+    if (buffer.len < memory) return error.BufferTooSmall;
     return .{ .tt = std.mem.bytesAsSlice(u32, buffer[0..memory]), .tables = undefined, .state = .{}, .owned = &.{}, .gpa = undefined };
 }
 

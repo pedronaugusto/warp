@@ -29,7 +29,7 @@ const Slot = struct {
         slot.prepared.decode() catch |err| {
             slot.failure = err;
             slot.reason = slot.prepared.failure;
-            slot.offset = slot.at + 3 + (if (slot.reason == .literals_size) slot.prepared.literal_at else slot.prepared.at);
+            slot.offset = slot.at +| 3 +| (if (slot.reason == .literals_size) slot.prepared.literal_at else slot.prepared.at);
         };
     }
 };
@@ -56,23 +56,29 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var d = initBuffer(buffer, options);
+    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
     d.owned = buffer;
     d.gpa = gpa;
     return d;
 }
 
-/// Valid options and aligned storage of `memory(options)` bytes.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Decompressor {
-    std.debug.assert(buffer.len >= memory(options));
-    const slots: []Slot = @alignCast(std.mem.bytesAsSlice(Slot, buffer[0 .. @as(usize, options.concurrency) * 2 * @sizeOf(Slot)])); // aegis: no-danger: caller buffer is 64-byte aligned
-    var at = std.mem.alignForward(usize, @sizeOf(Slot) * slots.len, 64);
-    const seq_size = max_sequences * @sizeOf(decode.PreparedSequence);
-    const stride = std.mem.alignForward(usize, seq_size + decode.block_max + decode.margin, 64);
-    for (slots) |*slot| {
-        slot.* = .{ .prepared = .{ .tables = undefined, .cursor = undefined, .seqs = @alignCast(std.mem.bytesAsSlice(decode.PreparedSequence, buffer[at..][0..seq_size])), .literals = buffer[at + seq_size ..][0 .. decode.block_max + decode.margin] } }; // aegis: no-danger: each worker starts at a 64-byte boundary
-        at += stride;
-    }
+/// Aligned storage, refused when the options are not valid or it is
+/// shorter than `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Decompressor {
+    if (options.concurrency == 0) return error.InvalidOptions;
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), options) catch error.BufferTooSmall;
+}
+
+fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Decompressor {
+    const slots = try a.alignedAlloc(Slot, .@"64", @as(usize, options.concurrency) * 2);
+    for (slots) |*slot| slot.* = .{ .prepared = .{
+        .tables = undefined,
+        .cursor = undefined,
+        .seqs = try a.alignedAlloc(decode.PreparedSequence, .@"64", max_sequences),
+        .literals = try a.alloc(u8, decode.block_max + decode.margin),
+    } };
     return .{ .slots = slots };
 }
 
@@ -94,6 +100,8 @@ pub fn decompress(d: *Decompressor, io: Io, in: []const u8, out: []u8, options: 
     var op: usize = 0;
     var frames: usize = 0;
     while (at < in.len) {
+        // A skippable frame awaits nothing: each frame is a point.
+        try io.checkCancel();
         const prefix: usize = if (options.format == .standard) 5 else 1;
         if (in.len - at < prefix) return fail(options, error.Truncated, at, if (frames == 0) .truncated else .trailing_data);
         var fault: frame.Fault = undefined;
@@ -172,25 +180,27 @@ fn apply(f: *decode.Frame, slots: []Slot, out: []u8, op: *usize, hash: *std.hash
     for (slots) |*slot| {
         if (slot.kind == .compressed) {
             if (slot.prepared.literal_len > out.len - op.*) return fail(options, error.OutputTooSmall, slot.at + 3, .bad_literals_header);
-            if (slot.prepared.count != 0 and op.* == out.len and (slot.failure == null or slot.reason == .bitstream_left)) return fail(options, error.OutputTooSmall, slot.at + 3 + slot.prepared.sequence_at, .bad_sequences_header);
+            if (slot.prepared.count != 0 and op.* == out.len and (slot.failure == null or slot.reason == .bitstream_left)) return fail(options, error.OutputTooSmall, slot.at +| 3 +| slot.prepared.sequence_at, .bad_sequences_header);
         }
         if (slot.failure) |err| return fail(options, err, slot.offset, slot.reason);
         const before = op.*;
         switch (slot.kind) {
             .raw => {
-                if (slot.bytes.len > out.len - op.*) return fail(options, error.OutputTooSmall, slot.at, .truncated);
-                @memcpy(out[op.*..][0..slot.bytes.len], slot.bytes);
-                op.* += slot.bytes.len;
+                // What is left of the output, cut past what the block writes.
+                const room = out[op.*..];
+                if (slot.bytes.len > room.len) return fail(options, error.OutputTooSmall, slot.at, .truncated);
+                @memcpy(room[0..slot.bytes.len], slot.bytes);
+                op.* = out.len - room[slot.bytes.len..].len;
             },
             .rle => {
-                if (slot.regenerated > out.len - op.*) return fail(options, error.OutputTooSmall, slot.at, .truncated);
-                @memset(out[op.*..][0..slot.regenerated], slot.bytes[0]);
-                op.* += slot.regenerated;
+                const room = out[op.*..];
+                if (slot.regenerated > room.len) return fail(options, error.OutputTooSmall, slot.at, .truncated);
+                @memset(room[0..slot.regenerated], slot.bytes[0]);
+                op.* = out.len - room[slot.regenerated..].len;
             },
             .compressed => {
-                op.* += f.applyBlock(&slot.prepared, op.*) catch |err| return fail(options, err, slot.at + 3 + f.fault.offset, f.fault.reason);
+                op.* += f.applyBlock(&slot.prepared, op.*) catch |err| return fail(options, err, slot.at +| 3 +| f.fault.offset, f.fault.reason);
             },
-            .reserved => unreachable, // aegis: no-danger: prepare refuses reserved blocks
         }
         if (verify) hash.update(out[before..op.*]);
     }
@@ -205,30 +215,37 @@ fn prepare(f: *decode.Frame, slot: *Slot, in: []const u8, at: *usize) void {
     slot.kind = .raw;
     slot.prepared.literal_len = 0;
     slot.prepared.count = 0;
-    if (in.len - at.* < 3) {
+    // What is left of the input, cut as the block is read.
+    const rest = in[at.*..];
+    if (rest.len < 3) {
         slot.failure = error.Truncated;
         return;
     }
-    const block = frame.blockHeader(in[at.*..][0..3]);
+    const block = frame.blockHeader(rest[0..3]) orelse {
+        slot.failure = error.InvalidStream;
+        slot.reason = .bad_block_type;
+        return;
+    };
     slot.kind = block.kind;
     slot.last = block.last;
-    at.* += 3;
-    if (block.kind == .reserved or (block.kind == .compressed and block.size > f.block_max)) {
+    const body = rest[3..];
+    at.* = in.len - body.len;
+    if (block.kind == .compressed and block.size > f.block_max) {
         slot.failure = error.InvalidStream;
-        slot.reason = if (block.kind == .reserved) .bad_block_type else .block_too_large;
+        slot.reason = .block_too_large;
         return;
     }
-    if (block.size > in.len - at.*) {
+    if (block.size > body.len) {
         slot.failure = error.Truncated;
         return;
     }
-    slot.bytes = in[at.*..][0..block.size];
+    slot.bytes = body[0..block.size];
     slot.regenerated = block.regenerated;
     if (block.kind == .compressed) f.prepareBlock(slot.bytes, &slot.prepared) catch |err| {
         slot.failure = err;
         slot.reason = f.fault.reason;
-        slot.offset = slot.at + 3 + f.fault.offset;
+        slot.offset = slot.at +| 3 +| f.fault.offset;
         return;
     };
-    at.* += block.size;
+    at.* = in.len - body[block.size..].len;
 }

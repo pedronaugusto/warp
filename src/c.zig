@@ -1,6 +1,7 @@
 //! The zlib stream ABI. A stream owns one allocation through the caller's
 //! callbacks; all subsequent encode and decode calls use that memory.
 const std = @import("std");
+const aegis = @import("aegis");
 const Deflate = @import("stream/Deflate.zig");
 const Inflate = @import("stream/Inflate.zig");
 const Compressor = @import("Compressor.zig");
@@ -55,7 +56,8 @@ const State = struct {
     header_ready: bool = false,
     dictionary_id: ?u32 = null,
     accept: container.Accept = .zlib,
-    engine_bytes: usize = 0,
+    /// The encoder's tables, after State in the same allocation.
+    engine: []align(64) u8 = &.{},
     gzip_header: ?*Header = null,
     header_at: usize = 0,
     header_check: u32 = 0,
@@ -69,7 +71,7 @@ const State = struct {
 
 fn state(z: *Stream, direction: @TypeOf(@as(State, undefined).direction)) ?*State {
     const pointer = z.state orelse return null;
-    const s: *State = @ptrCast(@alignCast(pointer)); // aegis: no-danger: only initialization assigns a state pointer
+    const s: *State = @ptrCast(@alignCast(pointer)); // aegis: boundary: the C caller's opaque state, which only initialization assigns; its magic is checked next
     if (s.magic != signature or s.direction != direction) return null;
     return s;
 }
@@ -79,12 +81,13 @@ fn create(z: *Stream, bytes: usize) ?*State {
     const n = std.mem.alignForward(usize, @sizeOf(State), 64) + bytes + 63;
     if (n > std.math.maxInt(c_uint)) return null;
     const original: [*]u8 = if (z.zalloc) |allocate|
-        @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: no-danger: allocation callbacks return at least n writable bytes
+        @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: boundary: zlib's contract: zalloc returns at least n writable bytes or null
     else
         std.heap.page_allocator.rawAlloc(n, .@"64", @returnAddress()) orelse return null;
-    const address = std.mem.alignForward(usize, @intFromPtr(original), 64); // aegis: no-danger: 63 padding bytes permit aligning within this allocation
+    const address = std.mem.alignForward(usize, @intFromPtr(original), 64);
     const s: *State = @ptrFromInt(address); // aegis: no-danger: the aligned address and State's size lie within the allocation
-    s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode };
+    const engine: [*]align(64) u8 = @ptrFromInt(address + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger: n reserves `bytes` after State's padded size, past the aligned address
+    s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode, .engine = engine[0..bytes] };
     z.state = s;
     z.total_in = 0;
     z.total_out = 0;
@@ -125,13 +128,28 @@ fn level(value: c_int) ?u4 {
     return @intCast(value);
 }
 
+/// The caller's input, as zlib's contract gives it: `avail_in` bytes at `next_in`.
+fn input(z: *const Stream) []const u8 {
+    return if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in]; // aegis: boundary: zlib's contract: next_in holds avail_in readable bytes
+}
+
+/// The caller's output, as zlib's contract gives it: `avail_out` bytes at `next_out`.
+fn output(z: *const Stream) []u8 {
+    return z.next_out[0..z.avail_out]; // aegis: boundary: zlib's contract: next_out holds avail_out writable bytes
+}
+
+/// Moves the stream past what a step took from `input(z)` and wrote to `output(z)`.
 fn advance(z: *Stream, in_len: usize, out_len: usize) void {
+    // A step takes and writes inside the slices it was given.
+    aegis.assert.invariant(in_len <= z.avail_in, "in_len <= z.avail_in");
+    z.avail_in -= @intCast(in_len);
+    aegis.assert.invariant(out_len <= z.avail_out, "out_len <= z.avail_out");
+    z.avail_out -= @intCast(out_len);
     if (in_len != 0) z.next_in += in_len;
     if (out_len != 0) z.next_out += out_len;
-    z.avail_in -= @intCast(in_len);
-    z.avail_out -= @intCast(out_len);
-    z.total_in +%= @intCast(in_len);
-    z.total_out +%= @intCast(out_len);
+    // The totals wrap as zlib's uLong does: they are reported, never read back to index.
+    z.total_in +%= @truncate(in_len);
+    z.total_out +%= @truncate(out_len);
 }
 
 pub export fn zlibVersion() [*:0]const u8 {
@@ -153,11 +171,11 @@ pub fn deflateInit2(stream: ?*Stream, value: c_int, method: c_int, window_bits: 
     if (method != 8 or bits < 8 or bits > 15 or mem_level < 1 or mem_level > 9 or (bits == 8 and kind != .zlib)) return stream_error;
     if (bits == 8) bits = 9;
     const options: Deflate.Options = .{ .level = lv, .strategy = st, .container = kind, .window_bits = @intCast(bits), .hash_bits = @intCast(mem_level + 7) };
-    const n = Deflate.memory(options);
-    const s = create(z, n) orelse return mem_error;
-    const buffer: [*]align(64) u8 = @ptrFromInt(@intFromPtr(s) + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger: create reserved the aligned engine region after State
-    s.encoder = .initBuffer(buffer[0..n], options);
-    s.engine_bytes = n;
+    const s = create(z, Deflate.memory(options)) orelse return mem_error;
+    s.encoder = Deflate.initBuffer(s.engine, options) catch {
+        destroy(z, s);
+        return mem_error;
+    };
     z.adler = if (kind == .gzip) 0 else 1;
     return ok;
 }
@@ -171,21 +189,21 @@ pub export fn deflate(stream: ?*Stream, flush: c_int) c_int {
     const before_in = z.total_in;
     const before_out = z.total_out;
     if (s.gzip_header) |header| {
-        const n = emitHeader(s, header, z.next_out[0..z.avail_out]);
+        const n = emitHeader(s, header, output(z));
         advance(z, 0, n);
         if (s.header_at < s.header_length or z.avail_out == 0) return ok;
     }
     if (s.encoder.closing == null) {
-        const step = s.encoder.write(if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in], z.next_out[0..z.avail_out]);
+        const step = s.encoder.write(input(z), output(z));
         advance(z, step.in_len, step.out_len);
     }
     if (z.avail_in == 0 and flush != 0 and z.avail_out != 0) {
-        const drained = if (flush == 4) s.encoder.finish(z.next_out[0..z.avail_out]) else s.encoder.flush(switch (flush) {
+        const drained = if (flush == 4) s.encoder.finish(output(z)) else s.encoder.flush(switch (flush) {
             1 => .partial,
             2 => .sync,
             3 => .full,
             else => .block,
-        }, z.next_out[0..z.avail_out]);
+        }, output(z));
         advance(z, 0, drained.out_len);
         z.adler = s.encoder.check;
         if (flush == 4 and drained.done) return stream_end;
@@ -242,7 +260,7 @@ pub export fn deflateParams(stream: ?*Stream, value: c_int, strategy_value: c_in
     const lv = level(value) orelse return stream_error;
     const st = strategy(strategy_value) orelse return stream_error;
     if (s.encoder.finished or z.next_out == null) return stream_error;
-    const drained = s.encoder.setLevel(lv, st, z.next_out[0..z.avail_out]);
+    const drained = s.encoder.setLevel(lv, st, output(z));
     advance(z, 0, drained.out_len);
     if (!drained.done) return buf_error;
     s.encoder.options.level = lv;
@@ -271,8 +289,11 @@ pub export fn deflateBound(stream: ?*Stream, len: c_ulong) c_ulong {
     const frame: Compressor.Frame = .{ .container = s.encoder.options.container, .dictionary = s.encoder.options.dictionary, .gzip = s.encoder.options.gzip };
     const window: usize = @as(usize, 1) << s.encoder.options.window_bits;
     const short_blocks = len / @min(window, 5000) - len / 5000;
-    const custom = if (s.gzip_header != null) s.header_length - gzip.headerLen(frame.gzip) else 0;
-    return @intCast(Compressor.bound(len, frame) + 5 * short_blocks + custom);
+    // What a header of the caller's adds past the encoder's own.
+    const custom = if (s.gzip_header != null) s.header_length -| gzip.headerLen(frame.gzip) else 0;
+    // A bound only reported, for the caller to size a buffer by: past what uLong holds, it is
+    // uLong's largest, as no buffer that large can be.
+    return std.math.cast(c_ulong, Compressor.bound(len, frame) +| 5 *| short_blocks +| custom) orelse std.math.maxInt(c_ulong);
 }
 
 pub fn inflateInit(z: ?*Stream, version: [*c]const u8, size: c_int) callconv(.c) c_int {
@@ -290,7 +311,7 @@ pub fn inflateInit2(stream: ?*Stream, window_bits: c_int, version: [*c]const u8,
     s.direction = .decode;
     s.accept = accept;
     s.header_ready = accept == .raw or accept == .gzip;
-    s.decoder = .init(&s.window, .{ .accept = accept, .window_bits = @intCast(n), .members = .one, .diagnostic = &s.diagnostic });
+    s.decoder = Inflate.init(&s.window, .{ .accept = accept, .window_bits = @intCast(n), .members = .one, .diagnostic = &s.diagnostic }) catch return stream_error;
     z.adler = if (accept == .gzip) 0 else 1;
     return ok;
 }
@@ -344,7 +365,7 @@ pub export fn inflate(stream: ?*Stream, flush: c_int) c_int {
         }
     }
     while (true) {
-        const step = s.decoder.decode(if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in], z.next_out[0..z.avail_out]) catch |err| {
+        const step = s.decoder.decode(input(z), output(z)) catch |err| {
             advance(z, s.decoder.error_in_len, s.decoder.error_out_len);
             s.decoder.error_in_len = 0;
             s.decoder.error_out_len = 0;
@@ -355,7 +376,9 @@ pub export fn inflate(stream: ?*Stream, flush: c_int) c_int {
         advance(z, step.in_len, step.out_len);
         z.adler = s.decoder.state.check;
         updateHeader(s);
-        z.data_type = @intCast(s.decoder.bitsleft);
+        // The bit buffer holds 64 bits at most.
+        aegis.assert.invariant(s.decoder.bitsleft <= 64, "s.decoder.bitsleft <= 64");
+        z.data_type = @as(c_int, @intCast(s.decoder.bitsleft));
         if (s.decoder.state.engine.final) z.data_type += 64;
         if (step.status == .block_end) {
             z.data_type += if (s.decoder.state.engine.phase == .header or s.decoder.state.engine.phase == .done) @as(c_int, 128) else if (flush == 6) @as(c_int, 256) else 0;
@@ -457,7 +480,7 @@ pub export fn inflateMark(stream: ?*Stream) c_long {
     return switch (engine.phase) {
         .stored => -65536 + @as(c_long, engine.stored_left),
         .codes => if (engine.copy_left != 0)
-            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // aegis: no-danger: a DEFLATE match emits at most 258 bytes
+            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // aegis: no-danger: copy_left counts down from copy_length, a DEFLATE match's at most 258
         else
             0,
         else => -65536,
@@ -495,9 +518,10 @@ pub export fn inflateSync(stream: ?*Stream) c_int {
     if (!s.syncing) {
         s.syncing = true;
         s.sync_match = 0;
-        const discard = s.decoder.bitsleft & 7;
-        s.decoder.bitbuf >>= @intCast(discard);
-        s.decoder.bitsleft -= discard;
+        const discard: u3 = @truncate(s.decoder.bitsleft);
+        s.decoder.bitbuf >>= discard;
+        // The bits past the last whole byte, gone.
+        s.decoder.bitsleft &= ~@as(u32, 7);
         while (s.decoder.bitsleft >= 8 and s.sync_match < 4) {
             syncByte(s, @truncate(s.decoder.bitbuf));
             s.decoder.bitbuf >>= 8;
@@ -540,57 +564,94 @@ pub const Header = extern struct {
     done: c_int = 0,
 };
 
-fn headerLength(h: *const Header) usize {
-    return 10 + (if (h.extra != null) 2 + @as(usize, h.extra_len) else @as(usize, 0)) +
-        (if (h.name != null) std.mem.span(h.name).len + 1 else @as(usize, 0)) +
-        (if (h.comment != null) std.mem.span(h.comment).len + 1 else @as(usize, 0)) +
-        (if (h.hcrc != 0) @as(usize, 2) else 0);
+/// The length of the gzip header `h` describes, its fields' lengths given; null past what
+/// memory holds.
+fn headerLength(h: *const Header, extra_len: u16, name_length: usize, comment_length: usize) ?usize {
+    const extra: usize = if (h.extra != null) 2 + @as(usize, extra_len) else 0;
+    const header_crc: usize = if (h.hcrc != 0) 2 else 0;
+    // A name and a comment are each terminated by a zero.
+    const name: usize = if (h.name != null) name_length + 1 else 0;
+    const comment: usize = if (h.comment != null) comment_length + 1 else 0;
+    const fields = std.math.add(usize, name, comment) catch return null;
+    return std.math.add(usize, 10 + extra + header_crc, fields) catch null;
 }
 
-fn headerByte(s: *const State, h: *const Header, offset: usize) u8 {
+/// The header's first ten bytes: magic, method, flags, time, extra flags and system.
+fn headerFixed(s: *const State, h: *const Header) [10]u8 {
     const level_ = s.encoder.options.level;
     var fixed = [_]u8{ 31, 139, 8, 0, 0, 0, 0, 0, 0, @truncate(@as(c_uint, @bitCast(h.os))) };
-    fixed[3] = @as(u8, @intFromBool(h.text != 0)) | @as(u8, @intFromBool(h.hcrc != 0)) << 1 |
-        @as(u8, @intFromBool(h.extra != null)) << 2 | @as(u8, @intFromBool(h.name != null)) << 3 | @as(u8, @intFromBool(h.comment != null)) << 4;
+    fixed[3] = @as(u8, @intFromBool(h.text != 0)) | (@as(u8, @intFromBool(h.hcrc != 0)) << 1) |
+        (@as(u8, @intFromBool(h.extra != null)) << 2) | (@as(u8, @intFromBool(h.name != null)) << 3) | (@as(u8, @intFromBool(h.comment != null)) << 4);
     std.mem.writeInt(u32, fixed[4..8], @truncate(h.time), .little);
     fixed[8] = if (level_ >= 9) 2 else if (level_ == 1) 4 else 0;
-    if (offset < 10) return fixed[offset];
-    var at = offset - 10;
-    if (h.extra != null) {
-        if (at < 2) return @truncate(h.extra_len >> @intCast(at * 8));
-        at -= 2;
-        if (at < h.extra_len) return h.extra[at];
-        at -= h.extra_len;
-    }
-    for ([_][*c]const u8{ h.name, h.comment }, [_]usize{ s.name_length, s.comment_length }) |field, length| if (field != null) {
-        const n = length + 1;
-        if (at < n) return field[at];
-        at -= n;
-    };
-    unreachable; // unreachable: emitHeader handles the final header CRC separately
+    return fixed;
 }
 
+/// Writes what of the header `out` takes, after the `s.header_at` bytes written before; how
+/// many it wrote. The header's CRC covers every byte before it.
 fn emitHeader(s: *State, h: *const Header, out: []u8) usize {
-    const length = s.header_length;
-    const data_end = length - @as(usize, if (h.hcrc != 0) 2 else 0);
-    const n = @min(out.len, length - s.header_at);
-    for (out[0..n]) |*byte| {
-        byte.* = if (s.header_at < data_end) headerByte(s, h, s.header_at) else @truncate(s.header_check >> @intCast((s.header_at - data_end) * 8));
-        if (h.hcrc != 0 and s.header_at < data_end) s.header_check = checksum.crc32(s.header_check, byte[0..1]);
-        s.header_at += 1;
+    const fixed = headerFixed(s, h);
+    var extra_len: [2]u8 = undefined;
+    std.mem.writeInt(u16, &extra_len, @truncate(h.extra_len), .little);
+    const none: []const u8 = &.{};
+    // The header's fields in order, the name and comment with their terminating zeros.
+    const fields = [_][]const u8{
+        &fixed,
+        if (h.extra != null) &extra_len else none,
+        if (h.extra != null) h.extra[0..h.extra_len] else none, // aegis: boundary: zlib's contract: extra holds extra_len bytes
+
+        if (h.name != null) h.name[0 .. s.name_length + 1] else none,
+        if (h.comment != null) h.comment[0 .. s.comment_length + 1] else none,
+    };
+    var cursor: HeaderCursor = .{ .skip = s.header_at, .room = out };
+    for (fields) |field| {
+        if (!cursor.take(field, if (h.hcrc != 0) &s.header_check else null)) break;
+    } else if (h.hcrc != 0) {
+        var header_crc: [2]u8 = undefined;
+        std.mem.writeInt(u16, &header_crc, @truncate(s.header_check), .little);
+        _ = cursor.take(&header_crc, null);
     }
-    return n;
+    const written = out.len - cursor.room.len;
+    s.header_at += written;
+    return written;
 }
+
+/// Where a header's emission is: the bytes of it written before still to skip, and what is
+/// left of the output, cut as it fills.
+const HeaderCursor = struct {
+    skip: usize,
+    room: []u8,
+
+    /// Writes what of `field` the output takes, past what was written before, and adds it to
+    /// `check` when given; whether the field is written whole.
+    fn take(cursor: *HeaderCursor, field: []const u8, check: ?*u32) bool {
+        if (cursor.skip >= field.len) {
+            cursor.skip -= field.len;
+            return true;
+        }
+        const left = field[cursor.skip..];
+        cursor.skip = 0;
+        const n = @min(cursor.room.len, left.len);
+        @memcpy(cursor.room[0..n], left[0..n]);
+        if (check) |sum| sum.* = checksum.crc32(sum.*, left[0..n]);
+        cursor.room = cursor.room[n..];
+        return n == left.len;
+    }
+};
 
 pub export fn deflateSetHeader(stream: ?*Stream, header: ?*Header) c_int {
     const z = stream orelse return stream_error;
     const s = state(z, .encode) orelse return stream_error;
     const h = header orelse return stream_error;
-    if (s.encoder.options.container != .gzip or z.total_in != 0 or z.total_out != 0 or h.extra_len > 65535) return stream_error;
+    if (s.encoder.options.container != .gzip or z.total_in != 0 or z.total_out != 0) return stream_error;
+    if (h.extra_len > 65535) return stream_error;
+    const extra_len: u16 = @intCast(h.extra_len);
+    const name_length = if (h.name != null) std.mem.span(h.name).len else 0;
+    const comment_length = if (h.comment != null) std.mem.span(h.comment).len else 0;
+    s.header_length = headerLength(h, extra_len, name_length, comment_length) orelse return stream_error;
     s.gzip_header = h;
-    s.header_length = headerLength(h);
-    s.name_length = if (h.name != null) std.mem.span(h.name).len else 0;
-    s.comment_length = if (h.comment != null) std.mem.span(h.comment).len else 0;
+    s.name_length = name_length;
+    s.comment_length = comment_length;
     s.header_at = 0;
     s.header_check = 0;
     s.encoder.pending_start = 0;
@@ -677,22 +738,28 @@ pub export fn deflateGetDictionary(stream: ?*Stream, dictionary: [*c]u8, len: ?*
 pub export fn deflatePending(stream: ?*Stream, pending: ?*c_uint, bit_count: ?*c_int) c_int {
     const z = stream orelse return stream_error;
     const s = state(z, .encode) orelse return stream_error;
-    if (pending) |p| p.* = @intCast(s.encoder.pending_end - s.encoder.pending_start);
-    if (bit_count) |p| p.* = @intCast(s.encoder.bitcount);
+    if (pending) |p| {
+        aegis.assert.invariant(s.encoder.pending_start <= s.encoder.pending_end, "s.encoder.pending_start <= s.encoder.pending_end");
+        // Reported only: a count past what uInt holds is uInt's largest.
+        p.* = std.math.cast(c_uint, s.encoder.pending_end - s.encoder.pending_start) orelse std.math.maxInt(c_uint);
+    }
+    if (bit_count) |p| p.* = s.encoder.bitcount;
     return ok;
 }
 
 fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State {
     dest.* = source.*;
     dest.state = null;
-    const fresh = create(dest, old.engine_bytes) orelse return null;
+    const fresh = create(dest, old.engine.len) orelse return null;
     const original = fresh.original;
     const allocation_len = fresh.allocation_len;
+    const engine = fresh.engine;
     const release = fresh.free;
     const userdata = fresh.@"opaque";
     fresh.* = old.*;
     fresh.original = original;
     fresh.allocation_len = allocation_len;
+    fresh.engine = engine;
     fresh.free = release;
     fresh.@"opaque" = userdata;
     dest.* = source.*;
@@ -702,7 +769,7 @@ fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State 
 
 fn moved(slice: anytype, old: *const State, fresh: *State) @TypeOf(slice) {
     if (slice.len == 0) return slice;
-    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old); // aegis: no-danger: this slice lies within the old state's allocation
+    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old);
     const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // aegis: no-danger: the identical copied layout preserves the slice's alignment and length
     return pointer[0..slice.len];
 }
@@ -725,10 +792,8 @@ pub export fn deflateCopy(destination: ?*Stream, source: ?*Stream) c_int {
     if (dest == src) return stream_error;
     const old = state(src, .encode) orelse return stream_error;
     const fresh = copiedState(dest, src, old) orelse return mem_error;
-    const padding = std.mem.alignForward(usize, @sizeOf(State), 64);
-    const from: [*]const u8 = @ptrCast(old); // aegis: no-danger: the engine allocation follows State at padding
-    const to: [*]u8 = @ptrCast(fresh); // aegis: no-danger: copiedState reserved the same engine bytes
-    @memcpy(to[padding..][0..old.engine_bytes], from[padding..][0..old.engine_bytes]);
+    @memcpy(fresh.engine, old.engine);
+
     fresh.encoder.window = moved(old.encoder.window, old, fresh);
     fresh.encoder.pending = moved(old.encoder.pending, old, fresh);
     fresh.encoder.options.dictionary = moved(old.encoder.options.dictionary, old, fresh);
@@ -757,8 +822,8 @@ pub export fn zError(code: c_int) [*:0]const u8 {
 }
 
 pub export fn zlibCompileFlags() c_ulong {
-    return (if (@sizeOf(c_uint) == 4) @as(c_ulong, 1) else 2) | (if (@sizeOf(c_ulong) == 4) @as(c_ulong, 1) else 2) << 2 |
-        (if (@sizeOf(usize) == 4) @as(c_ulong, 1) else 2) << 4 | (if (@sizeOf(c_long) == 4) @as(c_ulong, 1) else 2) << 6 | @as(c_ulong, 1) << 16;
+    return (if (@sizeOf(c_uint) == 4) @as(c_ulong, 1) else 2) | ((if (@sizeOf(c_ulong) == 4) @as(c_ulong, 1) else 2) << 2) |
+        ((if (@sizeOf(usize) == 4) @as(c_ulong, 1) else 2) << 4) | ((if (@sizeOf(c_long) == 4) @as(c_ulong, 1) else 2) << 6) | (@as(c_ulong, 1) << 16);
 }
 
 pub export fn compressBound(len: c_ulong) c_ulong {
@@ -775,9 +840,13 @@ pub export fn compress2(out: [*c]u8, out_len: ?*c_ulong, in: [*c]const u8, in_le
     const capacity = n.*;
     n.* = 0;
     while (true) {
-        if (z.avail_in == 0) z.avail_in = @intCast(@min(in_len - z.total_in, std.math.maxInt(c_uint)));
+        // deflate takes and writes no more than it is offered.
+        aegis.assert.invariant(z.total_in <= in_len, "z.total_in <= in_len");
+        aegis.assert.invariant(z.total_out <= capacity, "z.total_out <= capacity");
+        const in_left = in_len - z.total_in;
+        if (z.avail_in == 0) z.avail_in = @intCast(@min(in_left, std.math.maxInt(c_uint)));
         if (z.avail_out == 0) z.avail_out = @intCast(@min(capacity - z.total_out, std.math.maxInt(c_uint)));
-        const rc = deflate(&z, if (in_len - z.total_in > z.avail_in) 0 else 4);
+        const rc = deflate(&z, if (in_left > z.avail_in) 0 else 4);
         n.* = z.total_out;
         if (rc == stream_end) return ok;
         if (rc != ok) return rc;
@@ -801,6 +870,9 @@ pub export fn uncompress2(out: [*c]u8, out_len: ?*c_ulong, in: [*c]const u8, in_
     defer _ = inflateEnd(&z);
     const output_length = if (capacity == 0) 1 else capacity;
     while (true) {
+        // inflate takes and writes no more than it is offered.
+        aegis.assert.invariant(z.total_in <= input_length, "z.total_in <= input_length");
+        aegis.assert.invariant(z.total_out <= output_length, "z.total_out <= output_length");
         if (z.avail_in == 0) z.avail_in = @intCast(@min(input_length - z.total_in, std.math.maxInt(c_uint)));
         if (z.avail_out == 0) z.avail_out = @intCast(@min(output_length - z.total_out, std.math.maxInt(c_uint)));
         const rc = inflate(&z, 0);

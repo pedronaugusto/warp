@@ -9,6 +9,7 @@
 //! sizes for the input it is given.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const bits = @import("bits.zig");
 const command = @import("command.zig");
@@ -22,7 +23,6 @@ const Prepared = @import("Prepared.zig");
 const settings = @import("settings.zig");
 
 const Writer = bits.Writer;
-const Mode = settings.Mode;
 const Params = settings.Params;
 const Resolved = settings.Resolved;
 const resolve = settings.resolve;
@@ -56,7 +56,10 @@ pub const Ring = struct {
     total_size: u32,
     cur_size: u32 = 0,
     pos: u32 = 0,
-    /// Two bytes before `buffer`, `cur_size + 7` after.
+    /// Whether this stream has written to the ring: its buffer may be one
+    /// an earlier stream left (`Encoder.reset`).
+    written: bool = false,
+    /// Two bytes before `buffer`, at least `cur_size + 7` after.
     data: []u8 = &.{},
 
     const slack = 7;
@@ -72,17 +75,22 @@ pub const Ring = struct {
         return rb.data[2..];
     }
 
+    /// The buffer grown to `len`, what it holds kept; one already large
+    /// enough is kept as it is.
     fn initBuffer(rb: *Ring, gpa: Allocator, len: u32) Allocator.Error!void {
-        const new = try gpa.alloc(u8, 2 + len + slack);
-        if (rb.data.len != 0) {
-            @memcpy(new[0 .. 2 + rb.cur_size + slack], rb.data[0 .. 2 + rb.cur_size + slack]);
-            gpa.free(rb.data);
+        if (rb.data.len < 2 + len + slack) {
+            const new = try gpa.alloc(u8, 2 + len + slack);
+            if (rb.data.len != 0) {
+                @memcpy(new[0 .. 2 + rb.cur_size + slack], rb.data[0 .. 2 + rb.cur_size + slack]);
+                gpa.free(rb.data);
+            }
+            rb.data = new;
         }
-        rb.data = new;
+        rb.written = true;
         rb.cur_size = len;
-        new[0] = 0;
-        new[1] = 0;
-        @memset(new[2 + len ..][0..slack], 0);
+        rb.data[0] = 0;
+        rb.data[1] = 0;
+        @memset(rb.data[2 + len ..][0..slack], 0);
     }
 
     fn writeTail(rb: *Ring, bytes: []const u8) void {
@@ -192,6 +200,55 @@ pub const Encoder = struct {
     scratch: metablock.Scratch = .{},
 
     pub fn init(gpa: Allocator, p: Params, dictionary: ?*const Prepared) Allocator.Error!Encoder {
+        var e: Encoder = .fresh(gpa, p, dictionary);
+        try e.makeArena();
+        return e;
+    }
+
+    /// The encoder ready for a new stream, as `init` leaves one, its
+    /// buffers kept where they are large enough for it. Nothing an earlier
+    /// stream left in them is read: what a stream reads it has written, as
+    /// with a fresh allocation, and the hasher keeps its tables only for
+    /// the same hasher, rewound (`Hasher.startStream`). On failure the
+    /// encoder is still one `deinit` frees.
+    pub fn reset(e: *Encoder, p: Params, dictionary: ?*const Prepared) Allocator.Error!void {
+        const gpa = e.gpa;
+        const old = e.*;
+        e.* = .fresh(gpa, p, dictionary);
+        e.storage = old.storage;
+        e.commands = old.commands;
+        e.large_table = old.large_table;
+        e.command_buf = old.command_buf;
+        e.literal_buf = old.literal_buf;
+        e.scratch = old.scratch;
+        e.ring.data = old.ring.data;
+        e.hasher = old.hasher;
+        e.hasher.startStream();
+        // The fragment coders' arena, kept for the quality that takes it.
+        if (old.one_pass) |a| {
+            if (e.params.quality == 0) e.one_pass = a else gpa.destroy(a);
+        }
+        if (old.two_pass) |a| {
+            if (e.params.quality == 1) e.two_pass = a else gpa.destroy(a);
+        }
+        try e.makeArena();
+    }
+
+    /// The fragment coders' arena, set as new: quality 0's or 1's.
+    fn makeArena(e: *Encoder) Allocator.Error!void {
+        if (e.params.quality == 0) {
+            const arena = e.one_pass orelse try e.gpa.create(fragment.Arena);
+            arena.* = .{};
+            e.one_pass = arena;
+        } else if (e.params.quality == 1) {
+            const arena = e.two_pass orelse try e.gpa.create(fragment2.Arena);
+            arena.* = .{};
+            e.two_pass = arena;
+        }
+    }
+
+    /// The state `init` starts from, before its arena.
+    fn fresh(gpa: Allocator, p: Params, dictionary: ?*const Prepared) Encoder {
         var r = resolve(p);
         r.dictionary = dictionary;
         settings.chooseHasher(&r);
@@ -210,15 +267,6 @@ pub const Encoder = struct {
             e.last_bytes_bits = wb.count;
         } else {
             e.params.stream_offset = @min(r.stream_offset, (@as(usize, 1) << lgwin) - window_gap);
-        }
-        if (r.quality == 0) {
-            const arena = try gpa.create(fragment.Arena);
-            arena.* = .{};
-            e.one_pass = arena;
-        } else if (r.quality == 1) {
-            const arena = try gpa.create(fragment2.Arena);
-            arena.* = .{};
-            e.two_pass = arena;
         }
         return e;
     }
@@ -260,6 +308,21 @@ pub const Encoder = struct {
             e.storage = try e.gpa.alloc(u8, size);
         }
         return e.storage;
+    }
+
+    /// Quality 1's command and literal buffers, at least `size` long, kept
+    /// for the calls and streams after (`size` is at most a whole block).
+    fn twoPassBuffers(e: *Encoder, size: usize) Error!void {
+        if (e.command_buf.len < size) {
+            if (e.command_buf.len != 0) e.gpa.free(e.command_buf);
+            e.command_buf = &.{};
+            e.command_buf = try e.gpa.alloc(u32, size);
+        }
+        if (e.literal_buf.len < size) {
+            if (e.literal_buf.len != 0) e.gpa.free(e.literal_buf);
+            e.literal_buf = &.{};
+            e.literal_buf = try e.gpa.alloc(u8, size);
+        }
     }
 
     fn hashTable(e: *Encoder, quality: u4, input_size: usize) Error![]i32 {
@@ -336,7 +399,7 @@ pub const Encoder = struct {
         const fast = quality <= 1;
         e.available_out = 0;
         if (delta == 0) {
-            if (e.ring.data.len == 0) {
+            if (!e.ring.written) {
                 if (is_last) {
                     // The stream header, then ISLAST and ISEMPTY.
                     e.last_bytes |= @as(u16, 3) << @intCast(e.last_bytes_bits);
@@ -353,14 +416,11 @@ pub const Encoder = struct {
         }
         if (e.is_last_block_emitted) return error.InvalidOperation;
         if (is_last) e.is_last_block_emitted = true;
-        std.debug.assert(delta <= e.inputBlockSize());
+        aegis.assert.invariant(delta <= e.inputBlockSize(), "delta <= e.inputBlockSize()");
         const data = e.ring.buffer();
         const mask = e.ring.mask;
 
-        if (quality == 1 and e.command_buf.len == 0) {
-            e.command_buf = try e.gpa.alloc(u32, two_pass_block_size);
-            e.literal_buf = try e.gpa.alloc(u8, two_pass_block_size);
-        }
+        if (quality == 1) try e.twoPassBuffers(two_pass_block_size);
         if (fast) {
             const storage = try e.getStorage(2 * bytes + 503);
             var w: Writer = .{ .buf = storage, .pos = e.last_bytes_bits };
@@ -428,7 +488,7 @@ pub const Encoder = struct {
             e.last_insert_len = 0;
         }
         if (!is_last and e.input_pos == e.last_flush_pos) return;
-        std.debug.assert(e.input_pos - e.last_flush_pos <= 1 << 24);
+        aegis.assert.invariant(e.input_pos - e.last_flush_pos <= 1 << 24, "e.input_pos - e.last_flush_pos <= 1 << 24");
         const metablock_size: u32 = @intCast(e.input_pos - e.last_flush_pos);
         const storage = try e.getStorage(2 * @as(usize, metablock_size) + 503);
         var w: Writer = .{ .buf = storage, .pos = e.last_bytes_bits };
@@ -518,29 +578,7 @@ pub const Encoder = struct {
     fn compressStreamFast(e: *Encoder, op: Operation, in: *[]const u8, out: *[]u8) Error!void {
         const block_size_limit = @as(usize, 1) << e.params.lgwin;
         const buf_size: usize = @min(two_pass_block_size, @min(in.len, block_size_limit));
-        var tmp_command: []u32 = &.{};
-        var tmp_literal: []u8 = &.{};
-        defer if (tmp_command.len != 0) {
-            e.gpa.free(tmp_command);
-            e.gpa.free(tmp_literal);
-        };
-        var command_buf: []u32 = &.{};
-        var literal_buf: []u8 = &.{};
-        if (e.params.quality == 1) {
-            if (e.command_buf.len == 0 and buf_size == two_pass_block_size) {
-                e.command_buf = try e.gpa.alloc(u32, two_pass_block_size);
-                e.literal_buf = try e.gpa.alloc(u8, two_pass_block_size);
-            }
-            if (e.command_buf.len != 0) {
-                command_buf = e.command_buf;
-                literal_buf = e.literal_buf;
-            } else {
-                tmp_command = try e.gpa.alloc(u32, buf_size);
-                tmp_literal = try e.gpa.alloc(u8, buf_size);
-                command_buf = tmp_command;
-                literal_buf = tmp_literal;
-            }
-        }
+        if (e.params.quality == 1) try e.twoPassBuffers(buf_size);
         while (true) {
             if (e.injectFlushOrPushOutput(out)) continue;
             if (e.available_out == 0 and e.stream_state == .processing and (in.len != 0 or op != .process)) {
@@ -561,7 +599,7 @@ pub const Encoder = struct {
                 if (e.params.quality == 0) {
                     fragment.compress(e.one_pass.?, in.*[0..block_size], is_last, table, &w);
                 } else {
-                    fragment2.compress(e.two_pass.?, in.*[0..block_size], is_last, command_buf, literal_buf, table, &w);
+                    fragment2.compress(e.two_pass.?, in.*[0..block_size], is_last, e.command_buf, e.literal_buf, table, &w);
                 }
                 in.* = in.*[block_size..];
                 e.total_in += block_size;

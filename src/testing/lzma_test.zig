@@ -1,6 +1,7 @@
 //! LZMA, LZMA2, `.lzma` and `.xz` decoding against liblzma 5.8.4: its
 //! streams decoded to their inputs, and its verdicts on constructed and
-//! mutated streams given for the same reasons.
+//! mutated streams given for the same reasons. 7-Zip 26.05's raw LZMA and
+//! LZMA2, out of its 7z and zip archives, decoded to their inputs.
 
 const std = @import("std");
 const testing = std.testing;
@@ -10,6 +11,7 @@ const lzma = @import("../lzma.zig");
 const xz = @import("../xz.zig");
 
 const streams_corpus = @embedFile("xz-streams.corpus");
+const seven_zip_corpus = @embedFile("xz-7zip.corpus");
 const invalid_corpus = @embedFile("xz-invalid.corpus");
 
 const Error = xz.Decompressor.Error;
@@ -51,9 +53,19 @@ fn decodeAs(d: *Decoders, format: []const u8, in: []const u8, out: []u8, diag: *
 }
 
 test "liblzma's LZMA, LZMA2, .lzma and .xz streams decode to their inputs" {
+    try testing.expectEqual(131, try decodeWhole(streams_corpus));
+}
+
+test "7-Zip's raw LZMA and LZMA2, out of its 7z and zip archives, decode to their inputs" {
+    try testing.expectEqual(99, try decodeWhole(seven_zip_corpus));
+}
+
+/// Every stream of a corpus decoded whole to its input, taking exactly
+/// its `in_len`; how many there were.
+fn decodeWhole(text: []const u8) !usize {
     const gpa = testing.allocator;
     var d: Decoders = .{};
-    const c = try corpus.Corpus.parse(streams_corpus);
+    const c = try corpus.Corpus.parse(text);
     var it = c.records();
     var count: usize = 0;
     while (it.next()) |r| {
@@ -73,7 +85,7 @@ test "liblzma's LZMA, LZMA2, .lzma and .xz streams decode to their inputs" {
         try testing.expectEqualSlices(u8, in, out[0..got.out_len]);
         if (in.len != 0) try testing.expectError(error.OutputTooSmall, (try decodeAs(&d, r.fields[1], r.fields[4], out[0 .. in.len - 1], &diag)).?);
     }
-    try testing.expectEqual(131, count);
+    return count;
 }
 
 /// liblzma's verdict, as warp answers it.
@@ -154,8 +166,19 @@ fn streamed(gpa: std.mem.Allocator, format: lzma.Decompress.Format, in: []const 
 }
 
 test "liblzma's LZMA, LZMA2 and .lzma streams decode in pieces of any size, to their exact end" {
+    try testing.expectEqual(50, try decodeInPieces(streams_corpus));
+}
+
+test "7-Zip's raw LZMA and LZMA2 decode in pieces of any size, to their exact end" {
+    try testing.expectEqual(99, try decodeInPieces(seven_zip_corpus));
+}
+
+/// Every raw and `.lzma` stream of a corpus decoded by the resumable
+/// decoder in pieces, followed by bytes it never takes; how many there
+/// were.
+fn decodeInPieces(text: []const u8) !usize {
     const gpa = testing.allocator;
-    const c = try corpus.Corpus.parse(streams_corpus);
+    const c = try corpus.Corpus.parse(text);
     var it = c.records();
     var count: usize = 0;
     while (it.next()) |r| {
@@ -177,12 +200,13 @@ test "liblzma's LZMA, LZMA2 and .lzma streams decode in pieces of any size, to t
             try testing.expectEqualSlices(u8, in, out[0..got.out_len]);
         }
     }
-    try testing.expectEqual(50, count);
+    return count;
 }
 
-/// What the resumable .xz decoder makes of `in` in pieces.
+/// What the resumable .xz decoder makes of `in` in pieces, its window
+/// given as each block's header asks, up to 64 MiB.
 fn streamedXz(gpa: std.mem.Allocator, streams: xz.Streams, in: []const u8, out: []u8, cut: usize, out_cut: usize) (xz.Decompress.Error || error{ OutputTooSmall, OutOfMemory })!lzma.Decompressor.Result {
-    const window = try gpa.alloc(u8, 64 << 20);
+    var window: []u8 = &.{};
     defer gpa.free(window);
     var z: xz.Decompress = .init(window, .{ .streams = streams });
     var ip: usize = 0;
@@ -199,6 +223,13 @@ fn streamedXz(gpa: std.mem.Allocator, streams: xz.Streams, in: []const u8, out: 
             .need_input => if (ip == in.len) {
                 try z.finish();
                 return .{ .in_len = ip, .out_len = op };
+            },
+            .need_window => {
+                if (z.windowNeeded() > 64 << 20) return z.refuseWindow();
+                gpa.free(window);
+                window = &.{};
+                window = try gpa.alloc(u8, z.windowNeeded());
+                z.setWindow(window);
             },
         }
     }
@@ -316,7 +347,8 @@ test "the reader adapters read what the decoders write, and leave what follows t
         const in_len = try std.fmt.parseInt(usize, r.fields[5], 10);
         var source: std.Io.Reader = .fixed(r.fields[4]);
         const got = if (is_xz) blk: {
-            var reader: xz.Decompress.Reader = .init(&source, &buffer, window, .{ .streams = .one });
+            var reader: xz.Decompress.Reader = .init(gpa, &source, &buffer, 16 << 20, .{ .streams = .one });
+            defer reader.deinit();
             break :blk try reader.interface.allocRemaining(gpa, .unlimited);
         } else blk: {
             var reader: lzma.Decompress.Reader = .init(&source, &buffer, window, format.?, .{});
@@ -367,4 +399,125 @@ test "the parallel .xz decoder answers as the whole-buffer one, and decodes mult
     // The two multi-block streams (10 and 4 blocks) and the single-block
     // ones with sizes.
     try testing.expect(parallel_blocks >= 14);
+}
+
+test "liblzma's filtered .xz streams: their LZMA2 through xz.FilterReader, one reader a filter, is the input" {
+    const format = @import("../xz/format.zig");
+    const gpa = testing.allocator;
+    const c = try corpus.Corpus.parse(streams_corpus);
+    var it = c.records();
+    var count: usize = 0;
+    while (it.next()) |r| {
+        if (!std.mem.eql(u8, r.fields[1], "xz") or std.mem.find(u8, r.fields[2], "filters ") == null) continue;
+        errdefer std.debug.print("{s} ({s}): {s}\n", .{ r.fields[1], r.fields[2], r.fields[3] });
+        count += 1;
+        const in = try input(gpa, r.fields[3]);
+        defer gpa.free(in);
+        const stream = r.fields[4];
+        const check = switch (format.streamHeader(stream[0..format.header_len])) {
+            .check => |k| k,
+            .fault => return error.TestUnexpectedResult,
+        };
+        const block = stream[format.header_len..];
+        var fault: format.Fault = undefined;
+        const header = try format.blockHeader(.{ .check = check, .fault = &fault }, block[0 .. (@as(usize, block[0]) + 1) * 4]);
+        // liblzma's filtered bytes: the block's LZMA2, decoded alone.
+        var source: std.Io.Reader = .fixed(block[header.len..]);
+        const window = try gpa.alloc(u8, lzma.Decompress.windowLength(header.dictionary));
+        defer gpa.free(window);
+        var lzma_buffer: [4096]u8 = undefined;
+        var lzma2: lzma.Decompress.Reader = .init(&source, &lzma_buffer, window, .{ .lzma2 = .{ .dictionary = header.dictionary } }, .{});
+        // Each filter undone, the last applied first.
+        var readers: [3]xz.FilterReader = undefined;
+        var buffers: [3][300]u8 = undefined;
+        var top: *std.Io.Reader = &lzma2.interface;
+        var i: usize = header.filter_count;
+        while (i > 0) {
+            i -= 1;
+            readers[i] = .init(top, &buffers[i], header.filters[i]);
+            top = &readers[i].interface;
+        }
+        const out = try gpa.alloc(u8, in.len + 1);
+        defer gpa.free(out);
+        const n = try top.readSliceShort(out);
+        try testing.expectEqualSlices(u8, in, out[0..n]);
+    }
+    try testing.expectEqual(12, count);
+}
+
+/// `s` `n` times over.
+fn repeated(comptime s: []const u8, comptime n: usize) *const [s.len * n]u8 {
+    const text = comptime blk: {
+        var out: [s.len * n]u8 = undefined;
+        for (0..n) |i| @memcpy(out[i * s.len ..][0..s.len], s);
+        break :blk out;
+    };
+    return &text;
+}
+
+/// `in` as one .xz stream, compressed at liblzma's preset `level`.
+/// `in` as one .xz stream from the streaming encoder: one block whose
+/// header declares no sizes, or blocks of `block_size` whose headers do.
+fn xzStream(gpa: std.mem.Allocator, in: []const u8, level: u4, block_size: ?u64) ![]u8 {
+    var state: xz.Compress = try .init(gpa, .{ .lzma = .preset(level, false), .block_size = block_size });
+    defer state.deinit();
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    var staging: [4096]u8 = undefined;
+    var writer: xz.Compress.Writer = .init(&state, &out.writer, &staging);
+    try writer.interface.writeAll(in);
+    try writer.finish();
+    return out.toOwnedSlice();
+}
+
+test "the .xz reader sizes its window from each block's header: grown for a larger dictionary, refused past its limit, no larger than a declared size" {
+    const gpa = testing.allocator;
+    const first = comptime repeated("a first stream, at preset 0: a 256 KiB dictionary. ", 40);
+    const second = comptime repeated("a second stream, at preset 1: a 1 MiB dictionary. ", 40);
+    const small = try xzStream(gpa, first, 0, null);
+    defer gpa.free(small);
+    const large = try xzStream(gpa, second, 1, null);
+    defer gpa.free(large);
+    const both = try std.mem.concat(gpa, u8, &.{ small, large });
+    defer gpa.free(both);
+    var buffer: [4096]u8 = undefined;
+
+    // Room for both: the window grows at the second stream's block.
+    {
+        var source: std.Io.Reader = .fixed(both);
+        var reader: xz.Decompress.Reader = .init(gpa, &source, &buffer, xz.Decompress.windowLength(1 << 20), .{});
+        defer reader.deinit();
+        const got = try reader.interface.allocRemaining(gpa, .unlimited);
+        defer gpa.free(got);
+        try testing.expectEqualStrings(first ++ second, got);
+        try testing.expectEqual(xz.Decompress.windowLength(1 << 20), reader.state.window.len);
+    }
+
+    // Room for the first only: the second's block header is refused, where
+    // it starts.
+    {
+        var diagnostic: lzma.Diagnostic = .{};
+        var source: std.Io.Reader = .fixed(both);
+        var reader: xz.Decompress.Reader = .init(gpa, &source, &buffer, xz.Decompress.windowLength(256 << 10), .{ .diagnostic = &diagnostic });
+        defer reader.deinit();
+        try testing.expectError(error.ReadFailed, reader.interface.allocRemaining(gpa, .unlimited));
+        try testing.expectEqual(error.WindowTooLarge, reader.err().?);
+        try testing.expectEqual(lzma.Diagnostic.Reason.memory_limit, diagnostic.reason);
+        // The second stream's header, then its block's.
+        try testing.expectEqual(small.len + 12, diagnostic.offset.raw());
+    }
+
+    // A block whose header declares its size keeps no more history than
+    // it: the 1 MiB dictionary's block, sized, fits the smallest window.
+    {
+        const sized = try xzStream(gpa, second, 1, 1 << 20);
+        defer gpa.free(sized);
+        var source: std.Io.Reader = .fixed(sized);
+        var reader: xz.Decompress.Reader = .init(gpa, &source, &buffer, xz.Decompress.windowLength(second.len), .{});
+        defer reader.deinit();
+        const got = try reader.interface.allocRemaining(gpa, .unlimited);
+        defer gpa.free(got);
+        try testing.expectEqualStrings(second, got);
+        try testing.expectEqual(xz.Decompress.windowLength(second.len), reader.state.window.len);
+    }
 }

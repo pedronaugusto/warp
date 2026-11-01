@@ -5,10 +5,16 @@
 //! it.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const bits = @import("bits.zig");
 const fse = @import("fse.zig");
 
 pub const max_log = 12;
+/// A decoding table's cell: `log` bits peeked, at most `max_log`.
+const Index = u12;
+comptime {
+    std.debug.assert(@bitSizeOf(Index) == max_log);
+}
 pub const max_symbols = 256;
 
 pub const Error = error{InvalidStream};
@@ -26,9 +32,11 @@ pub const Weights = struct {
     len: usize,
 };
 
-/// Read a tree description from the start of `in`.
-pub fn readWeights(in: []const u8, w: *Weights) Error!void {
+/// Read a tree description from the start of `in`. A parser for
+/// `aegis.input.Untrusted`.
+pub fn readWeights(_: void, in: []const u8) Error!Weights {
     if (in.len == 0) return error.InvalidStream;
+    var w: Weights = undefined;
     const header = in[0];
     var n: usize = undefined;
     if (header >= 128) {
@@ -72,20 +80,21 @@ pub fn readWeights(in: []const u8, w: *Weights) Error!void {
     if (w.rank[1] < 2 or w.rank[1] & 1 != 0) return error.InvalidStream;
     w.count = @intCast(n + 1);
     w.log = @intCast(log);
+    return w;
 }
 
 /// FSE-compressed weights: two interleaved states, decoded until the
 /// stream overruns, the way the format's reference decoder counts them.
 fn decodeWeights(in: []const u8, out: []u8) Error!usize {
-    var counts: fse.Counts = undefined;
-    try fse.readCounts(in, 255, &counts);
+    const counts = try aegis.input.Untrusted([]const u8).init(in).parse(@as(u8, 255), fse.readCounts);
     if (counts.log > 6) return error.InvalidStream;
     var table: fse.Table(6) = undefined;
     table.build(counts.norm[0 .. @as(usize, counts.max_symbol) + 1], counts.log);
     var r = try bits.Reader.init(in[counts.len..]);
-    var s1: u32 = @intCast(r.read(counts.log));
+    // The weights' table has a log of 6 at most: its states fit 6 bits.
+    var s1: WeightState = @intCast(r.read(counts.log));
     _ = r.reload();
-    var s2: u32 = @intCast(r.read(counts.log));
+    var s2: WeightState = @intCast(r.read(counts.log));
     _ = r.reload();
     if (r.reload() == .overflow) return error.InvalidStream;
     const cells = &table.cells;
@@ -118,9 +127,14 @@ fn decodeWeights(in: []const u8, out: []u8) Error!usize {
     return op;
 }
 
-inline fn weightSymbol(cells: []const fse.Cell, state: *u32, r: *bits.Reader) u8 {
+const WeightState = u6;
+
+inline fn weightSymbol(cells: *const [1 << 6]fse.Cell, state: *WeightState, r: *bits.Reader) u8 {
     const c = cells[state.*];
-    state.* = c.next_state + @as(u32, @intCast(r.read(@intCast(c.nb_bits))));
+    // The next state and the bits after it stay below the table's size.
+    const next: WeightState = @intCast(c.next_state);
+    const bits_read: WeightState = @intCast(r.read(@intCast(c.nb_bits)));
+    state.* = next +% bits_read;
     return c.symbol;
 }
 
@@ -167,9 +181,9 @@ pub const Table = struct {
                 const pair = len1 + len2 <= log;
                 const size = if (pair) span >> len2 else 1;
                 const cell = if (pair)
-                    @as(u32, @as(u8, @truncate(first))) | @as(u32, @as(u8, @truncate(second))) << 8 | @as(u32, len1 + len2) << 16 | 2 << 24
+                    @as(u32, @as(u8, @truncate(first))) | (@as(u32, @as(u8, @truncate(second))) << 8) | (@as(u32, len1 + len2) << 16) | (2 << 24)
                 else
-                    @as(u32, @as(u8, @truncate(first))) | @as(u32, len1) << 16 | 1 << 24;
+                    @as(u32, @as(u8, @truncate(first))) | (@as(u32, len1) << 16) | (1 << 24);
                 @memset(t.cells.double[at + sub ..][0..size], cell);
                 sub += size;
             }
@@ -235,8 +249,8 @@ fn fillSingle(w: *const Weights, log: u4, cells: *[1 << max_log]u16) void {
 /// Whether two symbols per lookup decode faster than one, from the
 /// section's sizes: the format's reference decoder's measured costs, so a
 /// table is built the same way, and treeless sections after it decode the
-/// same way.
-pub fn chooseDouble(len: usize, csize: usize) bool {
+/// same way. Both sizes are 18-bit fields of a literals section's header.
+pub fn chooseDouble(len: u18, csize: u18) bool {
     const Cost = struct { table: u32, per256: u32 };
     const costs = [16][2]Cost{
         .{ .{ .table = 0, .per256 = 0 }, .{ .table = 1, .per256 = 1 } },
@@ -256,10 +270,11 @@ pub fn chooseDouble(len: usize, csize: usize) bool {
         .{ .{ .table = 1377, .per256 = 185 }, .{ .table = 1731, .per256 = 202 } },
         .{ .{ .table = 1412, .per256 = 185 }, .{ .table = 1695, .per256 = 202 } },
     };
-    const q: usize = if (csize >= len) 15 else csize * 16 / len;
-    const d256: u32 = @intCast(len >> 8);
-    const one = costs[q][0].table + costs[q][0].per256 * d256;
-    var two = costs[q][1].table + costs[q][1].per256 * d256;
+    // Below 16 sixteenths where `csize < len`: a 4-bit quantile.
+    const q: u4 = if (csize >= len) 15 else @intCast(@as(u22, csize) * 16 / len);
+    const d256: u10 = @intCast(len >> 8);
+    const one = costs[q][0].table + costs[q][0].per256 * @as(u32, d256);
+    var two = costs[q][1].table + costs[q][1].per256 * @as(u32, d256);
     two += two >> 5;
     return two < one;
 }
@@ -308,7 +323,7 @@ pub fn decode4(t: *const Table, in: []const u8, out: []u8) Error!void {
 }
 
 inline fn lookupSingle(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader) u8 {
-    const c = cells[@intCast(r.peek(log))];
+    const c = cells[@as(Index, @intCast(r.peek(log)))];
     r.skip(c >> 8);
     return @truncate(c);
 }
@@ -316,7 +331,7 @@ inline fn lookupSingle(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader
 /// Two symbols' bytes written (the second may be overwritten next); the
 /// count returned.
 inline fn lookupDouble(cells: *const [1 << max_log]u32, log: u4, r: *bits.Reader, out: [*]u8) u32 {
-    const c = cells[@intCast(r.peek(log))];
+    const c = cells[@as(Index, @intCast(r.peek(log)))];
     std.mem.writeInt(u16, out[0..2], @truncate(c), .little);
     r.skip((c >> 16) & 0xff);
     return c >> 24;
@@ -394,7 +409,7 @@ fn streamDouble(t: *const Table, r: *bits.Reader, out: []u8) void {
     if (p < end) {
         // The last symbol: a lookup may hold two, of which one is wanted;
         // its bits are taken up to the stream's start and no further.
-        const c = cells[@intCast(r.peek(log))];
+        const c = cells[@as(Index, @intCast(r.peek(log)))];
         out[p] = @truncate(c);
         if (c >> 24 == 1) {
             r.skip((c >> 16) & 0xff);
@@ -465,7 +480,7 @@ pub const EncodeTable = struct {
         }
         for (&t.lens, &t.codes, &t.cells) |length, *code, *cell| {
             code.* = if (length == 0) 0 else values[length];
-            cell.* = @as(u32, code.*) << 8 | length;
+            cell.* = (@as(u32, code.*) << 8) | length;
             if (length != 0) values[length] += 1;
         }
         t.max_symbol = @intCast(w.count - 1);
@@ -550,7 +565,7 @@ pub const EncodeTable = struct {
                     continue;
                 }
                 code.* = value[len];
-                cell.* = @as(u32, code.*) << 8 | len;
+                cell.* = (@as(u32, code.*) << 8) | len;
                 value[len] += 1;
             }
             t.max_symbol = tree.max_symbol;
@@ -711,7 +726,7 @@ pub const EncodeTable = struct {
         out[0] = 128 + (n - 1);
         weights[n] = 0;
         var k: usize = 0;
-        while (k < n) : (k += 2) out[k / 2 + 1] = weights[k] << 4 | weights[k + 1];
+        while (k < n) : (k += 2) out[k / 2 + 1] = (weights[k] << 4) | weights[k + 1];
         return size + 1;
     }
 };
@@ -853,7 +868,7 @@ test "a direct description: weights read, the last implied, and the table's code
     // implied. Five weights in three bytes behind the header 127 + 5.
     const desc = [_]u8{ 127 + 5, 0x43, 0x20, 0x10 };
     var w: Weights = undefined;
-    try readWeights(&desc, &w);
+    w = try readWeights({}, &desc);
     try std.testing.expectEqual(@as(u32, 6), w.count);
     try std.testing.expectEqual(@as(u4, 4), w.log);
     try std.testing.expectEqualSlices(u8, &.{ 4, 3, 2, 0, 1, 1 }, w.weights[0..6]);
@@ -862,14 +877,14 @@ test "a direct description: weights read, the last implied, and the table's code
     // Codes: 0 -> 1, 1 -> 01, 2 -> 001, 4 -> 0000, 5 -> 0001.
     const want = [_]struct { u16, u8, u8 }{ .{ 0b1000, 0, 1 }, .{ 0b0100, 1, 2 }, .{ 0b0010, 2, 3 }, .{ 0b0000, 4, 4 }, .{ 0b0001, 5, 4 } };
     for (want) |c| {
-        try std.testing.expectEqual(@as(u16, c[1]) | @as(u16, c[2]) << 8, t.cells.single[c[0]]);
+        try std.testing.expectEqual(@as(u16, c[1]) | (@as(u16, c[2]) << 8), t.cells.single[c[0]]);
     }
     // Over 11 bits, two symbols where they fit: "1" then "01" is 0b101
     // followed by anything, three bits.
     t.buildDouble(&w);
     try std.testing.expectEqual(@as(u4, 11), t.log);
     const pair = t.cells.double[0b101 << 8];
-    try std.testing.expectEqual(@as(u32, 0 | 1 << 8 | 3 << 16 | 2 << 24), pair);
+    try std.testing.expectEqual(@as(u32, 0 | (1 << 8) | (3 << 16) | (2 << 24)), pair);
 }
 
 test "double tables agree with two single lookups at every code length" {
@@ -939,7 +954,7 @@ test "single tables list the symbols by weight, then symbol, at every scale" {
                 for (w.weights[0..w.count], 0..) |x, s| {
                     if (x != weight) continue;
                     const cells = @as(usize, 1) << @intCast(weight - 1 + (wide - log));
-                    for (table[at..][0..cells]) |cell| try std.testing.expectEqual(@as(u16, @intCast(s)) | @as(u16, log + 1 - @as(u4, @intCast(weight))) << 8, cell);
+                    for (table[at..][0..cells]) |cell| try std.testing.expectEqual(@as(u16, @intCast(s)) | (@as(u16, log + 1 - @as(u4, @intCast(weight))) << 8), cell);
                     at += cells;
                 }
             }
@@ -951,29 +966,28 @@ test "single tables list the symbols by weight, then symbol, at every scale" {
 test "weights are counted whatever their number, and any above the longest code are refused" {
     var w: Weights = undefined;
     // Four direct weights (1, 1, 2, 3) and the implied one (4): 1+1+2+4+8.
-    try readWeights(&.{ 127 + 4, 0x11, 0x32 }, &w);
+    w = try readWeights({}, &.{ 127 + 4, 0x11, 0x32 });
     try std.testing.expectEqual([_]u32{ 0, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }, w.rank);
     try std.testing.expectEqual(@as(u32, 5), w.count);
     // Five direct weights (1, 1, 1, 1, 3) and the implied one (4).
-    try readWeights(&.{ 127 + 5, 0x11, 0x11, 0x30 }, &w);
+    w = try readWeights({}, &.{ 127 + 5, 0x11, 0x11, 0x30 });
     try std.testing.expectEqual([_]u32{ 0, 4, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }, w.rank);
     try std.testing.expectEqual(@as(u32, 6), w.count);
     // A weight of 13 cannot be a code of up to 12 bits.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0xd1 }, &w));
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 5, 0x11, 0x11, 0xf0 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 2, 0xd1 }));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 5, 0x11, 0x11, 0xf0 }));
 }
 
 test "descriptions whose weights do not form a code are refused" {
-    var w: Weights = undefined;
     // Weights 3 and 1 leave 3 to a power of two: no last weight does it.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0x31 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 2, 0x31 }));
     // Weight 2 alone: the last is 2 as well, and no code has two symbols
     // of length 1 and none longer.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 1, 0x20 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 1, 0x20 }));
     // All zero.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 2, 0x00 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 2, 0x00 }));
     // Truncated.
-    try std.testing.expectError(error.InvalidStream, readWeights(&.{ 127 + 4, 0x11 }, &w));
+    try std.testing.expectError(error.InvalidStream, readWeights({}, &.{ 127 + 4, 0x11 }));
 }
 
 /// Sequential symbols for partial decoding: literals are read directly
@@ -1022,7 +1036,7 @@ pub const Symbols = struct {
                 switch (s.table.kind) {
                     .single => byte.* = lookupSingle(&s.table.cells.single, s.table.log, r),
                     .double => {
-                        const cell = s.table.cells.double[@intCast(r.peek(s.table.log))];
+                        const cell = s.table.cells.double[@as(Index, @intCast(r.peek(s.table.log)))];
                         byte.* = @truncate(cell);
                         r.skip((cell >> 16) & 0xff);
                         if (cell >> 24 == 2) {

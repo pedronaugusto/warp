@@ -234,47 +234,38 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
     const size = memory(options);
     if (size == std.math.maxInt(usize)) return error.OutOfMemory;
     const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var c = initBuffer(buffer, options);
+    var c = initBuffer(buffer, options) catch aegis.assert.never("buffer is memory(options) bytes");
     c.owned = buffer;
     c.gpa = gpa;
     return c;
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`; `deinit`
-/// then frees nothing.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
-    const p = resolve(options, options.sizeHint());
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`; `deinit` then frees nothing.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Encoder {
     const l = Layout.of(options);
-    std.debug.assert(buffer.len >= l.bytes());
-    var at: usize = 0;
-    const long_matches: []long_match.Match = @alignCast(std.mem.bytesAsSlice(long_match.Match, buffer[at..][0 .. l.long_matches * @sizeOf(long_match.Match)])); // aegis: no-danger: base has 64-byte alignment
-    at += l.long_matches * @sizeOf(long_match.Match);
-    const long_entries: []long_match.Entry = @alignCast(std.mem.bytesAsSlice(long_match.Entry, buffer[at..][0 .. l.long_entries * @sizeOf(long_match.Entry)])); // aegis: no-danger: preceding table size is divisible by eight
-    at += l.long_entries * @sizeOf(long_match.Entry);
-    const long_heads = buffer[at..][0..l.long_heads];
-    at += l.long_heads;
-    // Even the smallest long table has four heads.
-    const dictionary_heads: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_heads * 4])); // aegis: no-danger: base has 64-byte alignment
-    at += l.dict_heads * 4;
-    const dictionary_chain: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.dict_chain * 4])); // aegis: no-danger: preceding table size is divisible by four
-    at += l.dict_chain * 4;
-    const dictionary_sequences: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.dict_sequences * @sizeOf(encode.Sequence)])); // aegis: no-danger: preceding tables and Sequence have four-byte alignment
-    at += l.dict_sequences * @sizeOf(encode.Sequence);
-    const hash_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash * 4])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
-    at += l.hash * 4;
-    const chain_table: []u32 = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.chain * 4])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
-    if (l.chain_offset == null) at += l.chain * 4;
-    const tag_table = buffer[at..][0..l.tags];
-    at += l.tags;
-    const hash3_table: []u32 = @alignCast(std.mem.bytesAsSlice(u32, buffer[at..][0 .. l.hash3 * 4])); // aegis: no-danger: preceding tables have sizes divisible by four
-    at += l.hash3 * 4;
-    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) @ptrCast(@alignCast(buffer[at..][0..l.opt])) else null; // aegis: no-danger: preceding tables and Workspace have four-byte alignment
-    at += l.opt;
-    const seqs: []encode.Sequence = @alignCast(std.mem.bytesAsSlice(encode.Sequence, buffer[at..][0 .. l.seqs * @sizeOf(encode.Sequence)])); // aegis: no-danger: 64-byte base and preceding tables have sizes divisible by four
-    at += l.seqs * @sizeOf(encode.Sequence);
-    const codes_ = buffer[at..][0 .. 3 * l.seqs];
-    at += 3 * l.seqs;
-    const lits = buffer[at..][0..l.lits];
+    if (buffer.len < l.bytes()) return error.BufferTooSmall;
+    var fba: std.heap.FixedBufferAllocator = .init(buffer);
+    return carve(fba.allocator(), options, l) catch error.BufferTooSmall;
+}
+
+fn carve(a: Allocator, options: Options, l: Layout) Allocator.Error!Encoder {
+    const p = resolve(options, options.sizeHint());
+    const long_matches = try a.alloc(long_match.Match, l.long_matches);
+    const long_entries = try a.alloc(long_match.Entry, l.long_entries);
+    const long_heads = try a.alloc(u8, l.long_heads);
+    const dictionary_heads = try a.alloc(u32, l.dict_heads);
+    const dictionary_chain = try a.alloc(u32, l.dict_chain);
+    const dictionary_sequences = try a.alloc(encode.Sequence, l.dict_sequences);
+    const hash_table = try a.alloc(u32, l.hash);
+    const chain_table = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else try a.alloc(u32, l.chain);
+    const tag_table = try a.alloc(u8, l.tags);
+    const hash3_table = try a.alloc(u32, l.hash3);
+    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) try a.create(opt_.Workspace) else null;
+    const seqs = try a.alloc(encode.Sequence, l.seqs);
+    const codes_ = try a.alloc(u8, 3 * l.seqs);
+    const lits = try a.alloc(u8, l.lits);
+
     @memset(hash_table, 0);
     @memset(chain_table, 0);
     @memset(tag_table, 0);
@@ -291,7 +282,7 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) Encoder {
         .optimal = undefined,
         .hash3_table = hash3_table,
         .opt_workspace = opt_workspace,
-        .store = .{ .seqs = seqs, .lits = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
+        .store = .{ .seqs = seqs, .lits = lits, .lit_buffer = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
         .entropy = undefined,
         .next_index = first_index,
         .owned = &.{},
@@ -353,7 +344,7 @@ pub fn compress(c: *Encoder, in: []const u8, out: []u8, f: Frame) CompressError!
         if (@backingInt(p.strategy) >= @backingInt(Strategy.btopt)) c.prepareOptimal(p, start);
     }
     var o = try c.header(out, p, in.len, f);
-    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lit_buffer.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
     var prev: usize = 0;
     c.startEntropy();
@@ -447,7 +438,7 @@ pub fn compressLong(c: *Encoder, in: []const u8, out: []u8, f: Frame, limit: u32
     var base: u32 = first_index;
     c.prepare(p, base);
     var o = try c.header(out, p, in.len, f);
-    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lit_buffer.len - 32, @as(usize, 1) << p.window_log);
     var reps = c.initialReps();
     var prev: usize = 0;
     var pos: usize = 0;
@@ -503,7 +494,7 @@ pub fn normalize(c: *Encoder, base: *u32, p: Params, span: usize, limit: u32) vo
     const ring_log = if (p.strategy == .btlazy2 or @backingInt(p.strategy) >= @backingInt(Strategy.btopt) or (params_.usesRows(p.strategy) and !rows(p))) p.chain_log - @as(u5, @intFromBool(p.strategy == .btlazy2 or @backingInt(p.strategy) >= @backingInt(Strategy.btopt))) else 0;
     const mask = (@as(u32, 1) << ring_log) - 1;
     const amount = (base.* - first_index) & ~mask;
-    std.debug.assert(amount != 0);
+    aegis.assert.invariant(amount != 0, "amount != 0");
     c.reduceIndices(amount);
     base.* -= amount;
 }
@@ -520,7 +511,7 @@ pub fn job(c: *Encoder, p: Params, in: []const u8, prefix: usize, first_job: boo
     c.prepare(p, base);
     var reps: [3]u32 = if (first_job) c.initialReps() else .{ 0, 0, 0 };
     if (!first_job) c.entropy[0].reset();
-    const block_max: usize = @min(c.store.lits.len - 32, @as(usize, 1) << p.window_log);
+    const block_max: usize = @min(c.store.lit_buffer.len - 32, @as(usize, 1) << p.window_log);
     var at: usize = 0;
     var prime_reps: [3]u32 = .{ 0, 0, 0 };
     while (at < prefix) {
@@ -624,7 +615,7 @@ fn writeLiteralTargets(c: *Encoder, p: Params, in: []const u8, out: []u8, raw_li
         var part = c.store;
         part.count = 0;
         part.long = null;
-        part.lits = @constCast(in[at..][0..len]); // aegis: no-danger: emission only reads literals
+        part.lits = in[at..][0..len];
         part.lit_len = len;
         o += try c.writeBlock(&part, p.strategy, in[at..][0..len], out[o..], raw_literals, reps, reps.*, prev, first and at == 0, last and at + len == in.len);
         at += len;
@@ -650,16 +641,16 @@ fn writeBlockWithPlan(c: *Encoder, store: *encode.SeqStore, strategy: Strategy, 
     var written: usize = 0;
     if (size == 0) {
         if (out.len - 3 < in.len) return error.OutputTooSmall;
-        std.mem.writeInt(u24, out[0..3], @intCast(end | in.len << 3), .little);
+        std.mem.writeInt(u24, out[0..3], @intCast(end | (in.len << 3)), .little);
         @memcpy(out[3..][0..in.len], in);
         written = 3 + in.len;
     } else if (size == 1) {
         if (out.len < 4) return error.OutputTooSmall;
-        std.mem.writeInt(u24, out[0..3], @intCast(end | 1 << 1 | in.len << 3), .little);
+        std.mem.writeInt(u24, out[0..3], @intCast(end | (1 << 1) | (in.len << 3)), .little);
         out[3] = in[0];
         written = 4;
     } else {
-        std.mem.writeInt(u24, out[0..3], @intCast(end | 2 << 1 | size << 3), .little);
+        std.mem.writeInt(u24, out[0..3], @intCast(end | (2 << 1) | (size << 3)), .little);
         prev.* = 1 - prev.*;
         written = 3 + size;
         reps.* = next_reps;
@@ -820,7 +811,7 @@ pub fn searchPrefix(c: *Encoder, p: Params, w: window.Window, reps: *[3]u32, sta
                 inline .greedy, .lazy, .lazy2 => |s| if (rows(p))
                     switch (c.lazy.row_log) {
                         inline 4, 5, 6 => |rl| lazy_.compress(.row, depthOf(s), mls, rl, &c.lazy, w, &c.store, reps, start, end),
-                        else => unreachable,
+                        else => aegis.assert.never("row_log is clamped to 4..6 at init"),
                     }
                 else
                     lazy_.compress(.chain, depthOf(s), mls, 0, &c.lazy, w, &c.store, reps, start, end),
@@ -869,7 +860,7 @@ fn writeHeaderWithDictionary(out: []u8, p: Params, size: u64, f: Frame, id: u32)
         std.mem.writeInt(u32, out[0..4], frame.magic, .little);
         o = 4;
     }
-    out[o] = @as(u8, @intFromBool(f.checksum)) << 2 | @as(u8, @intFromBool(single)) << 5 | fcs << 6 | dict_flag;
+    out[o] = (@as(u8, @intFromBool(f.checksum)) << 2) | (@as(u8, @intFromBool(single)) << 5) | (fcs << 6) | dict_flag;
     o += 1;
     if (!single) {
         out[o] = (@as(u8, p.window_log) - params_.window_log_min) << 3;

@@ -66,21 +66,23 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compress {
     const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options);
+    var s = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
     s.owned = buffer;
     s.gpa = gpa;
     return s;
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Compress {
-    std.debug.assert(buffer.len >= memory(options));
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compress {
+    if (buffer.len < memory(options)) return error.BufferTooSmall;
     const b = blockLen(options);
     const c_len = std.mem.alignForward(usize, Compressor.memory(options.compressor), 64);
     const rest = buffer[c_len..];
     return .{
         .options = options,
-        .compressor = Compressor.initBuffer(buffer[0..c_len], options.compressor),
+        .compressor = try Compressor.initBuffer(buffer[0..c_len], options.compressor),
+
         .input = rest[0 .. history_len + b],
         .output = rest[history_len + b ..],
     };
@@ -208,11 +210,11 @@ fn block(s: *Compress) Error!void {
         const level = s.compressor.level;
         defer s.compressor.level = level;
         if (level < 3) s.compressor.level = @min(level, 1);
-        const n = s.compressor.compressBlock(src, s.output[at + 4 ..], .{}) catch unreachable; // unreachable: the output holds a block's bound
+        const n = s.compressor.compressBlock(src, s.output[at + 4 ..], .{}) catch aegis.assert.never("the output holds a block's bound");
         std.mem.writeInt(u32, s.output[at..][0..4], @intCast(n), .little);
         s.pending_end = at + 4 + n;
     } else {
-        s.pending_end = at + (s.compressor.frameBlock(src, s.output[at..], f, s.first) catch unreachable); // unreachable: the output holds a block's bound
+        s.pending_end = at + (s.compressor.frameBlock(src, s.output[at..], f, s.first) catch aegis.assert.never("the output holds a block's bound"));
     }
     s.first = false;
     if (!f.independent and f.format == .standard) {
@@ -274,7 +276,7 @@ pub const Writer = struct {
     }
 
     fn writeData(interface: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         var n: usize = 0;
@@ -300,7 +302,7 @@ pub const Writer = struct {
     }
 
     fn flushInput(interface: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: interface is the embedded Writer field
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         try w.writeSlice(interface.buffered());
         interface.end = 0;
         try w.drainFrame(false);

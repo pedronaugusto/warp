@@ -37,7 +37,7 @@ test "gzip index round-trips and every checkpoint resumes the checksum and histo
     try testing.expectEqualSlices(u8, in, back[0..pn]);
     var window: [32768]u8 = undefined;
     for (loaded.points) |*point| {
-        var z: Inflate = .init(&window, .{ .accept = .gzip });
+        var z: Inflate = try .init(&window, .{ .accept = .gzip });
         try z.@"resume"(point);
         var ip: usize = @intCast(point.in_offset);
         var op: usize = @intCast(point.out_offset);
@@ -54,7 +54,7 @@ test "gzip index round-trips and every checkpoint resumes the checksum and histo
         try testing.expectEqual(point.in_offset, found.in_offset);
         var source: std.Io.Reader = .fixed(stream[@intCast(point.in_offset)..]);
         var buffer: [32768 + 4096]u8 = undefined;
-        var reader: Inflate.Reader = .init(&source, &buffer, .{ .accept = .gzip });
+        var reader: Inflate.Reader = try .init(&source, &buffer, .{ .accept = .gzip });
         try reader.seek(point);
         const n = try reader.interface.readSliceShort(back);
         try testing.expectEqualSlices(u8, in[@intCast(point.out_offset)..], back[0..n]);
@@ -110,7 +110,7 @@ test "BGZF members respect both size bounds and end with the EOF member" {
 
 test "checkpoint restoration refuses another window size or container" {
     var window: [32768]u8 = undefined;
-    var z: Inflate = .init(&window, .{ .accept = .gzip });
+    var z: Inflate = try .init(&window, .{ .accept = .gzip });
     var point: Inflate.Checkpoint = .{ .in_offset = 10, .out_offset = 100, .window_bits = 14, .bits = 0, .pending = 0, .wrapper = .gzip, .check = 0, .size = 100, .members = 0, .history_len = 0 };
     try testing.expectError(error.InvalidCheckpoint, z.@"resume"(&point));
     point.window_bits = 15;
@@ -131,7 +131,7 @@ test "BGZF and parallel decoder accept exact caller memory and initialization fa
     }.once, .{});
     const memory = try gpa.alignedAlloc(u8, .@"64", Bgzf.memory(.{}));
     defer gpa.free(memory);
-    var b = Bgzf.initBuffer(memory, .{});
+    var b = try Bgzf.initBuffer(memory, .{});
     defer b.deinit();
     var output: [128]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&output);
@@ -141,7 +141,7 @@ test "BGZF and parallel decoder accept exact caller memory and initialization fa
     defer index.deinit();
     const decode_memory = try gpa.alignedAlloc(u8, .@"64", parallel.Decompressor.memory(.{ .concurrency = 2 }));
     defer gpa.free(decode_memory);
-    var p = parallel.Decompressor.initBuffer(decode_memory, .{ .concurrency = 2 });
+    var p = try parallel.Decompressor.initBuffer(decode_memory, .{ .concurrency = 2 });
     defer p.deinit();
     var back: [5]u8 = undefined;
     try testing.expectEqual(@as(usize, 5), try p.decompress(testing.io, sink.buffered(), &back, &index));

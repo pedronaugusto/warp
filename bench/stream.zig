@@ -81,7 +81,7 @@ pub const Decode = struct {
                 if (r.out_len != in.len) return error.WrongLength;
             },
             .pieces => for (c.streams, c.inputs) |s, in| {
-                var z: warp.Inflate = .init(c.window, .{});
+                var z: warp.Inflate = try .init(c.window, .{});
                 var at: usize = 0;
                 var written: usize = 0;
                 while (true) {
@@ -96,7 +96,7 @@ pub const Decode = struct {
             },
             .reader => for (c.streams, c.inputs) |s, in| {
                 var input: Io.Reader = .fixed(s);
-                var r: warp.Inflate.Reader = .init(&input, c.reader_buffer, .{});
+                var r: warp.Inflate.Reader = try .init(&input, c.reader_buffer, .{});
                 var written: usize = 0;
                 while (true) {
                     const n = try r.interface.readSliceShort(c.out[written..][0..@min(c.shape.out_piece, c.out.len - written)]);
@@ -243,7 +243,7 @@ pub const WebSocket = struct {
             x.d.* = try .init(a, .{ .level = 1, .container = .raw, .window_bits = @intCast(x.bits) });
             const window = try a.alloc(u8, @as(usize, 1) << @intCast(x.bits));
             x.z = try a.create(warp.Inflate);
-            x.z.* = .init(window, .{ .accept = .raw, .window_bits = @intCast(x.bits) });
+            x.z.* = try .init(window, .{ .accept = .raw, .window_bits = @intCast(x.bits) });
             x.d.reset(.nothing);
             x.z.reset(.nothing);
         }

@@ -109,7 +109,7 @@ pub const Bytes = struct {
     base: usize,
 
     pub fn of(w: Window) Bytes {
-        return .{ .base = @intFromPtr(w.in.ptr) -% w.start }; // aegis: no-danger: an address, dereferenced only with an index into w.in
+        return .{ .base = @intFromPtr(w.in.ptr) -% w.start };
     }
 
     pub inline fn ptr(b: Bytes, i: usize) [*]const u8 {

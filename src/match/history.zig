@@ -67,7 +67,7 @@ pub const History = struct {
     /// low bits.
     pub inline fn load24(h: History, p: isize) u32 {
         const i: usize = @intCast(p);
-        return @as(u32, h.in[i]) | @as(u32, h.in[i + 1]) << 8 | @as(u32, h.in[i + 2]) << 16;
+        return @as(u32, h.in[i]) | (@as(u32, h.in[i + 1]) << 8) | (@as(u32, h.in[i + 2]) << 16);
     }
 
     /// `load32`, straight from the input when there is no dictionary.
@@ -133,14 +133,14 @@ pub const LzmaHashes = struct {
     four: u32,
 
     pub inline fn of(word: u32, mask: u32) LzmaHashes {
-        const t = crc_table[word & 0xff] ^ (word >> 8 & 0xff);
-        const t3 = t ^ (word >> 16 & 0xff) << 8;
-        return .{ .two = t & 0x3ff, .three = t3 & 0xffff, .four = (t3 ^ crc_table[word >> 24] << 5) & mask };
+        const t = crc_table[word & 0xff] ^ ((word >> 8) & 0xff);
+        const t3 = t ^ (((word >> 16) & 0xff) << 8);
+        return .{ .two = t & 0x3ff, .three = t3 & 0xffff, .four = (t3 ^ (crc_table[word >> 24] << 5)) & mask };
     }
 
     /// The hash of three bytes into `mask + 1` (liblzma's hc3 chains).
     pub inline fn threeOf(word: u32, mask: u32) u32 {
-        return (crc_table[word & 0xff] ^ (word >> 8 & 0xff) ^ (word >> 16 & 0xff) << 8) & mask;
+        return (crc_table[word & 0xff] ^ ((word >> 8) & 0xff) ^ (((word >> 16) & 0xff) << 8)) & mask;
     }
 };
 
@@ -149,7 +149,7 @@ const crc_table: [256]u32 = blk: {
     var t: [256]u32 = undefined;
     for (&t, 0..) |*e, i| {
         var r: u32 = i;
-        for (0..8) |_| r = if (r & 1 != 0) r >> 1 ^ 0xedb8_8320 else r >> 1;
+        for (0..8) |_| r = if (r & 1 != 0) (r >> 1) ^ 0xedb8_8320 else r >> 1;
         e.* = r;
     }
     break :blk t;

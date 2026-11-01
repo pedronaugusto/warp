@@ -31,7 +31,7 @@ pub const Members = enum {
 /// Whether `cmf` and `flg` form a zlib header: DEFLATE, a window of at
 /// most 32 KiB, and the check.
 pub fn isZlibHeader(cmf: u8, flg: u8) bool {
-    return (@as(u16, cmf) << 8 | flg) % 31 == 0 and cmf & 15 == 8 and cmf >> 4 <= 7;
+    return ((@as(u16, cmf) << 8) | flg) % 31 == 0 and cmf & 15 == 8 and cmf >> 4 <= 7;
 }
 
 /// The container a decoder accepting `accept` reads from input starting
@@ -50,11 +50,11 @@ pub fn detect(accept: Accept, first: []const u8) Container {
 /// `level` (zlib's FLEVEL, informative) and, with a dictionary, its
 /// Adler-32.
 pub fn zlibHeader(window_bits: u4, level: u4, huffman_only: bool, dictionary_id: ?u32, out: []u8) usize {
-    const cmf: u8 = (@as(u8, window_bits) - 8) << 4 | 8;
+    const cmf: u8 = ((@as(u8, window_bits) - 8) << 4) | 8;
     const flevel: u8 = if (huffman_only or level < 2) 0 else if (level < 6) 1 else if (level == 6) 2 else 3;
     var flg: u8 = flevel << 6;
     if (dictionary_id != null) flg |= 0x20;
-    flg += @intCast(31 - (@as(u16, cmf) << 8 | flg) % 31);
+    flg += @intCast(31 - ((@as(u16, cmf) << 8) | flg) % 31);
     out[0] = cmf;
     out[1] = flg;
     if (dictionary_id) |id| {

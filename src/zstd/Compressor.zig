@@ -21,9 +21,10 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
     return .{ .encoder = try Encoder.init(gpa, options) };
 }
 
-/// A compressor in caller memory: `buffer.len >= memory(options)`.
-pub fn initBuffer(buffer: []align(64) u8, options: Options) Compressor {
-    return .{ .encoder = Encoder.initBuffer(buffer, options) };
+/// A compressor in caller memory, refused when shorter than
+/// `memory(options)`.
+pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
+    return .{ .encoder = try Encoder.initBuffer(buffer, options) };
 }
 
 pub fn deinit(c: *Compressor) void {

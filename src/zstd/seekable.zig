@@ -229,18 +229,23 @@ pub const Writer = struct {
         const size = memory(options);
         if (size == std.math.maxInt(usize)) return error.OutOfMemory;
         const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-        var w = initBuffer(buffer, output, options);
+        var w = initBuffer(buffer, output, options) catch aegis.assert.never("buffer is memory(options) bytes");
         w.owned = buffer;
         w.gpa = gpa;
         return w;
     }
 
-    pub fn initBuffer(buffer: []align(64) u8, output: *Io.Writer, options: Options) Writer {
-        std.debug.assert(buffer.len >= memory(options));
-        const size = Compressor.memory(encoderOptions(options));
-        const records_size = @as(usize, options.max_frames) * @sizeOf(Record);
+    /// Refused when `buffer` is shorter than `memory(options)`.
+    pub fn initBuffer(buffer: []align(64) u8, output: *Io.Writer, options: Options) error{BufferTooSmall}!Writer {
+        if (buffer.len < memory(options)) return error.BufferTooSmall;
+        var fba: std.heap.FixedBufferAllocator = .init(buffer);
+        return carve(fba.allocator(), output, options) catch error.BufferTooSmall;
+    }
+
+    fn carve(a: Allocator, output: *Io.Writer, options: Options) error{ OutOfMemory, BufferTooSmall }!Writer {
         const len = options.frameLen();
-        return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = .initBuffer(buffer[0..size], encoderOptions(options)), .entries = @alignCast(std.mem.bytesAsSlice(Record, buffer[size..][0..records_size])), .input = buffer[size + records_size ..][0..len], .encoded = buffer[size + records_size + len ..][0..Compressor.bound(len)], .checksum = options.checksum, .frame_checksum = options.frame_checksum }; // aegis: no-danger: Record has four-byte alignment and compressor storage is a multiple of 64
+        const compressor = try a.alignedAlloc(u8, .@"64", Compressor.memory(encoderOptions(options)));
+        return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = try .initBuffer(compressor, encoderOptions(options)), .entries = try a.alloc(Record, options.max_frames), .input = try a.alloc(u8, len), .encoded = try a.alloc(u8, Compressor.bound(len)), .checksum = options.checksum, .frame_checksum = options.frame_checksum };
     }
 
     pub fn deinit(w: *Writer) void {
@@ -261,7 +266,8 @@ pub const Writer = struct {
             w.failure = error.TooManyFrames;
             return error.WriteFailed;
         }
-        const n = w.compressor.compress(w.input[0..w.have], w.encoded, .{ .checksum = w.frame_checksum }) catch unreachable; // aegis: no-danger: encoded has the codec's full bound
+        const n = w.compressor.compress(w.input[0..w.have], w.encoded, .{ .checksum = w.frame_checksum }) catch unreachable; // aegis: no-danger: encoded is Compressor.bound(frameLen) bytes (initBuffer), and have is at most frameLen
+
         try w.output.writeAll(w.encoded[0..n]);
         w.entries[w.count] = .{ .compressed = @intCast(n), .decompressed = @intCast(w.have), .checksum = @truncate(std.hash.XxHash64.hash(0, w.input[0..w.have])) };
         w.count += 1;
@@ -284,7 +290,7 @@ pub const Writer = struct {
     }
 
     fn writeData(interface: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: the embedded interface belongs to Writer
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         var n: usize = 0;
         for (data[0 .. data.len - 1]) |part| {
             try w.writeSlice(part);
@@ -296,7 +302,7 @@ pub const Writer = struct {
     }
 
     fn flushInput(interface: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface)); // aegis: no-danger: the embedded interface belongs to Writer
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", interface));
         if (w.have != 0) try w.emit();
     }
 

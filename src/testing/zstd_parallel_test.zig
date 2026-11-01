@@ -387,3 +387,29 @@ test "zstd parallel: large windows use bounded default jobs" {
         if (@bitSizeOf(usize) == 64) try testing.expect(size != std.math.maxInt(usize));
     }
 }
+
+fn canceledSkippable(io: std.Io, p: *zstd.parallel.Decompressor, in: []const u8, out: []u8) !void {
+    try testing.expectError(error.Canceled, p.decompress(io, in, out, .{}));
+}
+
+test "zstd parallel decode: a run of skippable frames is canceled between frames" {
+    const gpa = testing.allocator;
+    // 16 KiB of empty skippable frames, past the serial cutoff: no frame
+    // starts a job, so only the frame loop's own point sees the cancel.
+    var in: [2048 * 8]u8 = undefined;
+    for (0..2048) |i| {
+        std.mem.writeInt(u32, in[i * 8 ..][0..4], 0x184d2a50, .little);
+        std.mem.writeInt(u32, in[i * 8 + 4 ..][0..4], 0, .little);
+    }
+    var out: [16]u8 = undefined;
+    var p = try zstd.parallel.Decompressor.init(gpa, .{});
+    defer p.deinit();
+    const sim = try shakedown.Sim.init(gpa, .{ .faults = &.{.{ .at = .{ .nth = .{ .call = .checkCancel, .n = 1 } }, .fault = .cancel }} });
+    defer sim.deinit();
+    switch (sim.run(canceledSkippable, .{ sim.io(), &p, &in, &out })) {
+        .finished => {},
+        .failed => |err| return err,
+        else => return error.UnfinishedCancellation,
+    }
+    try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.checkCancel));
+}

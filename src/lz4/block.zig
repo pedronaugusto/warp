@@ -11,6 +11,7 @@
 //! it is refused, never depends on the spare output.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Diagnostic = @import("Diagnostic.zig");
 const copy = @import("../match/copy.zig");
 const chainless = copy.chainless;
@@ -34,8 +35,8 @@ pub const Error = error{
 };
 
 pub const Result = struct {
-    /// Where the output now ends: `start` plus the bytes written.
-    op: usize,
+    /// What this call wrote: `out` from `start` to where the output ends.
+    written: []u8,
     /// The whole block was decoded (always, unless `partial` stopped it at a
     /// full output).
     finished: bool,
@@ -58,11 +59,12 @@ pub noinline fn decode(in: []const u8, out: []u8, start: usize, options: Options
     var d: Decoder = .{ .in = in, .out = out, .op = start, .history = options.history, .options = options };
     while (true) {
         d.fast();
-        switch (try d.careful()) {
-            .more => {},
-            .done => return .{ .op = d.op, .finished = true },
-            .full => return .{ .op = d.op, .finished = false },
-        }
+        const next = try d.careful();
+        if (next == .more) continue;
+        // The output cursor only moves forward, inside `out`.
+        aegis.assert.invariant(start <= d.op, "start <= d.op");
+        aegis.assert.invariant(d.op <= d.out.len, "d.op <= d.out.len");
+        return .{ .written = d.out[start..d.op], .finished = next == .done };
     }
 }
 
@@ -117,6 +119,8 @@ const Decoder = struct {
                     if (offset >= 8) {
                         // Three stores, each from bytes already written.
                         const from = at - offset;
+                        // Behind `at`, which the guard keeps 64 short of the end.
+                        aegis.assert.invariant(from + 18 <= out.len, "from + 18 <= out.len");
                         out[at..][0..8].* = out[from..][0..8].*;
                         out[at + 8 ..][0..8].* = out[from + 8 ..][0..8].*;
                         out[at + 16 ..][0..2].* = out[from + 16 ..][0..2].*;
@@ -127,53 +131,63 @@ const Decoder = struct {
                 }
             }
             // Any other sequence: long literals or match, a short period,
-            // the fast region's end or the history.
+            // the fast region's end or the history. Every sequence before
+            // it ended inside the fast region.
+            aegis.assert.invariant(op <= out_end, "op <= out_end");
             ip += 1;
             var lit: usize = token >> 4;
             if (lit != 15) {
+                // One past a token at or before `in_end`.
+                aegis.assert.invariant(ip + 16 <= in.len, "ip + 16 <= in.len");
                 out[op..][0..16].* = in[ip..][0..16].*;
             } else {
-                lit += extra(in, &ip, in_end) orelse {
+                lit += extra(in[0..in_end], &ip) orelse {
                     ip = seq_ip;
                     return;
                 };
+                // `extra` reads no further than the input it is given.
+                aegis.assert.invariant(ip <= in_end, "ip <= in_end");
                 if (lit > in_end - ip or lit > out_end - op) {
                     ip = seq_ip;
                     return;
                 }
                 var i: usize = 0;
-                while (i < lit) : (i += 32) out[op + i ..][0..32].* = in[ip + i ..][0..32].*;
+                while (i < lit) : (i += 32) {
+                    // Inside the literals, which the guard keeps in the fast region.
+                    aegis.assert.invariant(ip + i <= in_end, "ip + i <= in_end");
+                    aegis.assert.invariant(op + i <= out_end, "op + i <= out_end");
+                    out[op + i ..][0..32].* = in[ip + i ..][0..32].*;
+                }
             }
             ip += lit;
-            op += lit;
+            const at = op + lit;
             const offset: usize = read16(in.ptr + ip);
             ip += 2;
             const code: usize = token & 15;
-            if (!d.longMatch(&ip, &op, seq_ip, lit, offset, code)) return;
+            if (!d.longMatch(&ip, &op, at, seq_ip, offset, code)) return;
         }
     }
 
     /// The fast loop's other matches: long, short-period, near the end of
-    /// the fast region or into the history. False, with the sequence undone,
-    /// where the careful loop is to take it.
-    inline fn longMatch(d: *Decoder, ip: *usize, op: *usize, seq_ip: usize, lit: usize, offset: usize, code: usize) bool {
+    /// the fast region or into the history. False, with `ip` back at the
+    /// sequence's start, where the careful loop is to take it; true, with
+    /// `op` past the match, where it is taken.
+    inline fn longMatch(d: *Decoder, ip: *usize, op: *usize, at: usize, seq_ip: usize, offset: usize, code: usize) bool {
         const in = d.in;
         const out = d.out;
         var len = code + min_match;
         if (code == 15) {
-            len += extra(in, ip, in.len - 16) orelse {
+            len += extra(in[0 .. in.len - 16], ip) orelse {
                 ip.* = seq_ip;
-                op.* -= lit;
                 return false;
             };
         }
-        if (offset == 0 or offset > op.* or op.* + len > out.len - 64) {
+        if (offset == 0 or offset > at or at + len > out.len - 64) {
             ip.* = seq_ip;
-            op.* -= lit;
             return false;
         }
-        copyMatch(out, op.*, offset, len);
-        op.* += len;
+        copyMatch(out, at, offset, len);
+        op.* = at + len;
         return true;
     }
 
@@ -181,66 +195,74 @@ const Decoder = struct {
     fn careful(d: *Decoder) Error!Next {
         const in = d.in;
         const out = d.out;
+        // The loops leave both cursors inside their buffers.
+        aegis.assert.invariant(d.ip <= in.len, "d.ip <= in.len");
+        aegis.assert.invariant(d.op <= out.len, "d.op <= out.len");
         const seq_ip = d.ip;
-        if (seq_ip >= in.len) return d.fail(seq_ip, .truncated, error.Truncated);
-        const token = in[d.ip];
-        var ip = d.ip + 1;
+        // What is left of the input, cut as the sequence is read.
+        var rest = in[seq_ip..];
+        if (rest.len == 0) return d.fail(seq_ip, .truncated, error.Truncated);
+        const token = rest[0];
+        rest = rest[1..];
         var lit: usize = token >> 4;
-        if (lit == 15) lit = try d.long(seq_ip, &ip, lit);
-        if (lit > in.len - ip) return d.fail(seq_ip, .truncated, error.Truncated);
-        if (lit > out.len - d.op) {
+        if (lit == 15) lit = try d.long(seq_ip, &rest, lit);
+        if (lit > rest.len) return d.fail(seq_ip, .truncated, error.Truncated);
+        // What is left of the output, cut as it is written.
+        var room = out[d.op..];
+        if (lit > room.len) {
             if (!d.options.partial) return error.OutputTooSmall;
-            const n = out.len - d.op;
-            @memcpy(out[d.op..][0..n], in[ip..][0..n]);
-            d.op += n;
+            @memcpy(room, rest[0..room.len]);
+            d.op = out.len;
             return .full;
         }
-        @memcpy(out[d.op..][0..lit], in[ip..][0..lit]);
-        d.op += lit;
-        ip += lit;
-        d.ip = ip;
+        @memcpy(room[0..lit], rest[0..lit]);
+        room = room[lit..];
+        d.op = out.len - room.len;
+        rest = rest[lit..];
+        d.ip = in.len - rest.len;
         // The last sequence ends the block after its literals.
-        if (ip == in.len) return .done;
-        if (in.len - ip < 2) return d.fail(seq_ip, .truncated, error.Truncated);
-        const offset: usize = std.mem.readInt(u16, in[ip..][0..2], .little);
-        ip += 2;
+        if (rest.len == 0) return .done;
+        if (rest.len < 2) return d.fail(seq_ip, .truncated, error.Truncated);
+        const offset: usize = std.mem.readInt(u16, rest[0..2], .little);
+        rest = rest[2..];
         var len: usize = token & 15;
-        if (len == 15) len = try d.long(seq_ip, &ip, len);
+        if (len == 15) len = try d.long(seq_ip, &rest, len);
         len = std.math.add(usize, len, min_match) catch return d.fail(seq_ip, .length_overflow, error.InvalidStream);
         if (offset == 0) return d.fail(seq_ip, .zero_offset, error.InvalidStream);
-        if (offset > d.op + d.history.len) return d.fail(seq_ip, .offset_too_far, error.InvalidStream);
-        var n = len;
-        if (len > out.len - d.op) {
-            if (!d.options.partial) return error.OutputTooSmall;
-            n = out.len - d.op;
-        }
+        // How far before the output the match starts: 0 where it starts in it.
+        const back = if (offset > d.op) offset - d.op else 0;
+        if (back > d.history.len) return d.fail(seq_ip, .offset_too_far, error.InvalidStream);
+        if (len > room.len and !d.options.partial) return error.OutputTooSmall;
+        const target = room[0..@min(len, room.len)];
+        const n = target.len;
         if (offset > d.op) {
             // The match starts in the history and may run on into the output.
-            const back = offset - d.op;
-            const from_history = @min(n, back);
-            const at = d.history.len - back;
-            @memcpy(out[d.op..][0..from_history], d.history[at..][0..from_history]);
-            for (out[d.op + from_history ..][0 .. n - from_history], 0..) |*byte, i| byte.* = out[i];
-        } else for (out[d.op..][0..n], d.op - offset..) |*byte, from| byte.* = out[from];
+            const history = d.history[d.history.len - back ..];
+            const from_history = @min(target.len, history.len);
+            @memcpy(target[0..from_history], history[0..from_history]);
+            const tail = target[from_history..];
+            for (tail, out[0..tail.len]) |*byte, b| byte.* = b;
+        } else for (target, d.op - offset..) |*byte, from| byte.* = out[from];
         d.op += n;
-        d.ip = ip;
+        d.ip = in.len - rest.len;
         return if (n < len) .full else .more;
     }
 
-    /// A length's bytes after its token field's 15, added to `base`.
-    fn long(d: *Decoder, seq_ip: usize, ip: *usize, base: usize) Error!usize {
+    /// A length's bytes after its token field's 15, added to `base`, cut
+    /// from `rest`.
+    fn long(d: *Decoder, seq_ip: usize, rest: *[]const u8, base: usize) Error!usize {
         var total = base;
         while (true) {
-            if (ip.* >= d.in.len) return d.fail(seq_ip, .truncated, error.Truncated);
-            const byte = d.in[ip.*];
-            ip.* += 1;
+            if (rest.len == 0) return d.fail(seq_ip, .truncated, error.Truncated);
+            const byte = rest.*[0];
+            rest.* = rest.*[1..];
             total = std.math.add(usize, total, byte) catch return d.fail(seq_ip, .length_overflow, error.InvalidStream);
             if (byte != 255) return total;
         }
     }
 
     fn fail(d: *Decoder, at: usize, reason: Diagnostic.Reason, err: Error) Error {
-        if (d.options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(d.options.in_base + at), .reason = reason };
+        if (d.options.diagnostic) |diag| diag.* = .{ .offset = .fromRaw(d.options.in_base +| at), .reason = reason };
         return err;
     }
 };
@@ -251,12 +273,13 @@ inline fn read16(p: [*]const u8) u16 {
 }
 
 /// A length's bytes after its token field's 15, read while `ip` stays
-/// below `limit`; null where it would not, or where the sum would not fit
-/// a `usize` (the careful loop then refuses it).
-inline fn extra(in: []const u8, ip: *usize, limit: usize) ?usize {
+/// inside `in` (the input cut where the fast loop stops); null where it
+/// would not, or where the sum would not fit a `usize` (the careful loop
+/// then refuses it).
+inline fn extra(in: []const u8, ip: *usize) ?usize {
     var total: usize = 0;
     while (true) {
-        if (ip.* >= limit) return null;
+        if (ip.* >= in.len) return null;
         const byte = in[ip.*];
         ip.* += 1;
         total = std.math.add(usize, total, byte) catch return null;
@@ -271,19 +294,19 @@ test "a block's literals, an overlapping match and its last literals" {
     var out: [64]u8 = undefined;
     const r = try decode(&block, &out, 0, .{});
     try std.testing.expect(r.finished);
-    try std.testing.expectEqualStrings("abcabcabcabcxyzzy", out[0..r.op]);
+    try std.testing.expectEqualStrings("abcabcabcabcxyzzy", r.written);
     var exact: [17]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 17), (try decode(&block, &exact, 0, .{})).op);
+    try std.testing.expectEqual(@as(usize, 17), (try decode(&block, &exact, 0, .{})).written.len);
     var short: [16]u8 = undefined;
     try std.testing.expectError(error.OutputTooSmall, decode(&block, &short, 0, .{}));
     const partial = try decode(&block, &short, 0, .{ .partial = true });
     try std.testing.expect(!partial.finished);
-    try std.testing.expectEqualStrings("abcabcabcabcxyzz", short[0..partial.op]);
+    try std.testing.expectEqualStrings("abcabcabcabcxyzz", partial.written);
     // Every prefix is cut inside a sequence, but the one that ends after
     // the first literals: a block whose last sequence is "abc".
     for (0..block.len) |n| {
         if (n == 4) {
-            try std.testing.expectEqualStrings("abc", out[0..(try decode(block[0..n], &out, 0, .{})).op]);
+            try std.testing.expectEqualStrings("abc", (try decode(block[0..n], &out, 0, .{})).written);
         } else try std.testing.expectError(error.Truncated, decode(block[0..n], &out, 0, .{}));
     }
 }
@@ -298,7 +321,7 @@ test "an offset of zero and one before the history are refused, one into the his
     try std.testing.expectError(error.InvalidStream, decode(&far, &out, 0, .{ .diagnostic = &diagnostic }));
     try std.testing.expectEqual(Diagnostic.Reason.offset_too_far, diagnostic.reason);
     const r = try decode(&far, &out, 0, .{ .history = "xy" });
-    try std.testing.expectEqualStrings("ayaya", out[0..r.op]);
+    try std.testing.expectEqualStrings("ayaya", r.written);
 }
 
 test "every period from one to fifteen repeats as a byte loop would" {

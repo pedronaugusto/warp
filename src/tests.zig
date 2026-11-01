@@ -32,6 +32,7 @@ test {
     _ = @import("testing/speculative_test.zig");
     _ = @import("testing/zstd_parallel_test.zig");
     _ = @import("testing/index_test.zig");
+    _ = @import("testing/buffer_test.zig");
     _ = @import("testing/api_test.zig");
     _ = @import("lz4.zig");
     _ = @import("testing/lz4_test.zig");
@@ -44,10 +45,14 @@ test {
     _ = @import("testing/bzip2_test.zig");
     _ = @import("lzma.zig");
     _ = @import("xz.zig");
+    _ = @import("Bcj2.zig");
     _ = @import("snappy.zig");
     _ = @import("testing/snappy_test.zig");
     _ = @import("testing/zstd_fse_test.zig");
+    _ = @import("testing/zstd_huffman_test.zig");
     _ = @import("testing/snappy_stream_test.zig");
     _ = @import("testing/lzma_test.zig");
     _ = @import("testing/lzma_encode_test.zig");
+    _ = @import("testing/xz_filter_test.zig");
+    _ = @import("testing/bcj2_test.zig");
 }

@@ -111,9 +111,14 @@ pub fn parse(in: []const u8, diagnostic: ?*Diagnostic, base: u64) FrameError!Fra
     if (flg >> 6 != 1) return fail(diagnostic, base, .bad_version, error.InvalidStream);
     if (flg & 2 != 0 or bd & 0x8F != 0) return fail(diagnostic, base, .reserved_bits, error.InvalidStream);
     const size_id: u3 = @truncate(bd >> 4);
-    if (size_id < 4) return fail(diagnostic, base, .bad_block_size, error.InvalidStream);
     var h: Header = .{
-        .block_size = @fromBackingInt(@intCast(size_id)),
+        .block_size = switch (size_id) {
+            4 => .@"64KiB",
+            5 => .@"256KiB",
+            6 => .@"1MiB",
+            7 => .@"4MiB",
+            else => return fail(diagnostic, base, .bad_block_size, error.InvalidStream),
+        },
         .independent = flg & (1 << 5) != 0,
         .block_checksum = flg & (1 << 4) != 0,
         .content_checksum = flg & (1 << 2) != 0,
