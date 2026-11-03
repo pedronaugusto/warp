@@ -261,6 +261,28 @@ test "liblzma's .xz streams decode in pieces of any size, the first stream to it
     try testing.expectEqual(81, count);
 }
 
+test "the resumable .xz decoder given more room than its window decodes the stream whole" {
+    const gpa = testing.allocator;
+    // 64 KiB of a small alphabet, matches in a 4 KiB dictionary: a run
+    // may write no more than the window holds, however much room `out` has.
+    const in = try gpa.alloc(u8, 64 << 10);
+    defer gpa.free(in);
+    var prng: std.Random.DefaultPrng = .init(0xfeddcc1);
+    for (in) |*b| b.* = "abcd"[prng.random().uintLessThan(u8, 4)];
+    var options: xz.Compressor.Options = .{ .lzma = .preset(0, false) };
+    options.lzma.dictionary = 4096;
+    var c: xz.Compressor = try .init(gpa, options);
+    defer c.deinit();
+    const stream = try gpa.alloc(u8, xz.Compressor.bound(options, in.len));
+    defer gpa.free(stream);
+    const n = try c.compress(in, stream);
+    const out = try gpa.alloc(u8, in.len + 1);
+    defer gpa.free(out);
+    const got = try streamedXz(gpa, .all, stream[0..n], out, 0, 0);
+    try testing.expectEqual(n, got.in_len);
+    try testing.expectEqualSlices(u8, in, out[0..got.out_len]);
+}
+
 test "liblzma's verdicts on .xz streams are the resumable decoder's too" {
     const gpa = testing.allocator;
     const out = try gpa.alloc(u8, 64 << 20);

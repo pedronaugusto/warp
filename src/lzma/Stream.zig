@@ -192,7 +192,8 @@ pub fn decode(s: *Stream, in: []const u8, out: []u8) Error!Step {
         .lzma => {
             const status = try s.run(in, &ip, out, &op) orelse return .{ .in_len = ip, .out_len = op, .status = .need_input };
             switch (status) {
-                .output_full => return .{ .in_len = ip, .out_len = op, .status = .output_full },
+                // A run fills at most the window; `out` may hold more.
+                .output_full => if (op == out.len) return .{ .in_len = ip, .out_len = op, .status = .output_full },
                 .end => {
                     switch (s.format) {
                         .lzma1 => s.go(.lzma, .end),
@@ -241,7 +242,9 @@ fn run(s: *Stream, in: []const u8, ip: *usize, out: []u8, op: *usize) Error!?eng
         d.in = s.stage[0 .. s.held + n];
     } else d.in = in[ip.*..][0..@min(in.len - ip.*, cap)];
     const base = s.offset + ip.* - s.held;
-    s.ring.limit = out.len - op.*;
+    // A run writes at most the window, which holds what it wrote until
+    // it is copied out.
+    s.ring.limit = @min(out.len - op.*, s.ring.buf.len);
     const before = s.ring.total;
     const result = engine.run(&s.coder, &d, &s.ring, base);
     const produced: usize = @intCast(s.ring.total - before);
