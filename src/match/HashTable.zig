@@ -31,7 +31,7 @@ pub fn HashTableFor(comptime window: u32) type {
         }
 
         pub fn reset(ht: *HashTable, first: isize, bits: u5) void {
-            aegis.assert.pre(first >= -@as(isize, window), "first >= -@as(isize, window)");
+            aegis.assert.invariant(first >= -@as(isize, window), "first >= -@as(isize, window)");
             ht.bits = bits;
             @memset(ht.table[0 .. @as(usize, 1) << bits], .{ none, none });
             ht.base = if (first < 0) -@as(isize, window) else 0;

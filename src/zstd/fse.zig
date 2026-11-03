@@ -290,7 +290,7 @@ pub const max_table_log = 12;
 /// `max`: small inputs get small tables, never too small to hold every
 /// symbol.
 pub fn optimalLog(max: u4, total: usize, max_symbol: u8, minus: u4) u4 {
-    aegis.assert.pre(total > 1, "total > 1");
+    aegis.assert.invariant(total > 1, "total > 1");
     const max_bits_src: i32 = @as(i32, std.math.log2_int(usize, total - 1)) - minus;
     var log: i32 = max;
     const min_bits = minLog(total, max_symbol);
@@ -516,7 +516,7 @@ pub fn EncodeTable(comptime table_log: u4, comptime max_symbol: u8) type {
 
         pub fn build(t: *Self, norm: []const i16, log: u4) void {
             aegis.assert.invariant(log <= table_log, "log <= table_log");
-            aegis.assert.pre(norm.len <= @as(usize, max_symbol) + 1, "norm.len <= @as(usize, max_symbol) + 1");
+            aegis.assert.invariant(norm.len <= @as(usize, max_symbol) + 1, "norm.len <= @as(usize, max_symbol) + 1");
             const size: u32 = @as(u32, 1) << log;
             t.log = log;
             t.symbols = @intCast(norm.len - 1);
