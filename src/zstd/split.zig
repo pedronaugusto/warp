@@ -20,7 +20,7 @@ const Fingerprint = struct {
 
 /// The size of the first block to cut from `block` (128 KiB).
 pub fn split(block: []const u8, level: u3) usize {
-    aegis.assert.pre(block.len == 128 << 10, "block.len == 128 << 10");
+    aegis.assert.invariant(block.len == 128 << 10, "block.len == 128 << 10");
     if (level == 0) return fromBorders(block);
     return byChunks(block, level - 1);
 }

@@ -347,8 +347,8 @@ fn compressImpl(s: *Arena, all: []const u8, command_buf: []u32, literal_buf: []u
 pub fn compress(s: *Arena, input: []const u8, is_last: bool, command_buf: []u32, literal_buf: []u8, table: []i32, w: *Writer) void {
     const start = w.pos;
     const table_bits: u6 = @intCast(std.math.log2_int(usize, table.len));
-    aegis.assert.pre(table_bits >= 8, "table_bits >= 8");
-    aegis.assert.pre(table_bits <= 17, "table_bits <= 17");
+    aegis.assert.invariant(table_bits >= 8, "table_bits >= 8");
+    aegis.assert.invariant(table_bits <= 17, "table_bits <= 17");
     if (table_bits <= 15) {
         compressImpl(s, input, command_buf, literal_buf, table, table_bits, 4, w);
     } else compressImpl(s, input, command_buf, literal_buf, table, table_bits, 6, w);
