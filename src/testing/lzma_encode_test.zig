@@ -74,16 +74,32 @@ fn eachInput(gpa: std.mem.Allocator, f: anytype) !void {
     }
 }
 
-test "warp's LZMA, LZMA2 and .lzma streams of short inputs decode to them at every preset" {
+/// The short inputs through every format at presets `first` to `last`, so
+/// that each test of the three takes a part of the presets' work.
+fn shortAtPresets(first: usize, last: usize) !void {
     try eachInput(testing.allocator, struct {
-        fn run(_: @This(), gpa: std.mem.Allocator, in: []const u8) !void {
+        first: usize,
+        last: usize,
+        fn run(s: @This(), gpa: std.mem.Allocator, in: []const u8) !void {
             if (in.len > 64 << 10) return;
-            for (presets, 0..) |o, i| {
+            for (presets[s.first .. s.last + 1], s.first..) |o, i| {
                 errdefer std.debug.print("preset {d}\n", .{i});
                 try roundTrip(gpa, o, in, true);
             }
         }
-    }{});
+    }{ .first = first, .last = last });
+}
+
+test "warp's LZMA, LZMA2 and .lzma streams of short inputs decode to them at presets 0-5" {
+    try shortAtPresets(0, 5);
+}
+
+test "warp's LZMA, LZMA2 and .lzma streams of short inputs decode to them at presets 6-9" {
+    try shortAtPresets(6, 9);
+}
+
+test "warp's LZMA, LZMA2 and .lzma streams of short inputs decode to them at presets 3e, 6e and 9e" {
+    try shortAtPresets(10, 12);
 }
 
 test "warp's LZMA2 streams of long inputs decode to them at presets 0, 3, 6 and 9e" {
