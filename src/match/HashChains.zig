@@ -308,7 +308,7 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// costs a tenth of the speed.
         inline fn windowMask(hc: *const HashChains, comptime full_window: bool) usize {
             if (full_window) {
-                std.debug.assert(hc.prev.len == window);
+                aegis.assert.invariant(hc.prev.len == window, "hc.prev.len == window");
                 return window - 1;
             }
             return hc.prev.len - 1;

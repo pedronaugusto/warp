@@ -26,7 +26,7 @@ pub fn maxEntries(alphabet: usize) usize {
 }
 
 inline fn entry(len: u32, value: u32) Entry {
-    std.debug.assert(len <= max_length);
+    aegis.assert.invariant(len <= max_length, "len <= max_length");
     aegis.assert.invariant(value < 1 << 12, "value < 1 << 12");
     return (@as(Entry, @as(u12, @intCast(value))) << 4) | @as(u4, @intCast(len));
 }

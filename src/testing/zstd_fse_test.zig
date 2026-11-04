@@ -58,6 +58,7 @@ fn readsWhole(_: void, case: *shakedown.Case) !void {
     const in = try description(case);
     const max_symbol = shakedown.gen.int(case.source, u8);
     case.note("{d} bytes, max symbol {d}", .{ in.len, max_symbol });
+    // glint-ignore: Z026 -- the property is about the counts readCounts accepts; refusing an input is allowed
     if (fse.readCounts(max_symbol, in)) |counts| {
         try testing.expect(counts.len <= in.len);
         try testing.expect(counts.max_symbol <= max_symbol);

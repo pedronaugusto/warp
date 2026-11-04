@@ -2,6 +2,7 @@
 //! the format's end-of-block rules, and the match counter.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const min_match = 4;
 /// The last bytes of a block are literals.
@@ -78,7 +79,7 @@ pub const Out = struct {
     /// literals and the output a match and the last sequence, 8 bytes and
     /// more, so both stay inside their buffers.
     pub inline fn literalsBefore(o: *Out, src: []const u8, anchor: usize, ip: usize) usize {
-        std.debug.assert(ip + 7 < src.len);
+        aegis.assert.invariant(ip + 7 < src.len, "ip + 7 < src.len");
         const len = ip - anchor;
         const token = o.pos;
         o.pos += 1;
@@ -86,7 +87,7 @@ pub const Out = struct {
             o.buf[token] = run_mask << 4;
             o.lengthBytes(len - run_mask);
         } else o.buf[token] = @intCast(len << 4);
-        std.debug.assert(o.pos + len + 8 <= o.buf.len);
+        aegis.assert.invariant(o.pos + len + 8 <= o.buf.len, "o.pos + len + 8 <= o.buf.len");
         const to = o.buf[o.pos..].ptr;
         const from = src[anchor..].ptr;
         var i: usize = 0;

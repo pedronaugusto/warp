@@ -126,6 +126,7 @@ pub const State = struct {
 
     /// The one place the phase changes: along a declared edge.
     fn go(st: *State, comptime from: Phase, comptime on: Event) void {
+        aegis.assert.invariant(st.phase == from, "the phase is the edge's from");
         st.phase = comptime Machine.after(from, on);
     }
 };

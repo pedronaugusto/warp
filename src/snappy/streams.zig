@@ -73,8 +73,7 @@ pub fn readBody(h: frame.Header, body: []const u8, body_at: u64, snappy: bool, o
                 (block.header(body[frame.checksum_len..]) catch return fail(options, body_at + frame.checksum_len, .bad_length, error.InvalidStream)).len
             else
                 h.len - frame.checksum_len;
-            const max = options.max_block_size.raw();
-            if ((snappy and len > frame.max_snappy_block_size) or len > max) return fail(options, body_at - frame.header_len, .block_too_large, error.InvalidStream);
+            if ((snappy and len > frame.max_snappy_block_size) or options.max_block_size.compare(.fromRaw(len)) == .lt) return fail(options, body_at - frame.header_len, .block_too_large, error.InvalidStream);
             return .{ .data = .{ .compressed = compressed, .body = body, .len = len } };
         },
         frame.Type.identifier => {
@@ -119,8 +118,7 @@ pub const DecompressError = Error || error{InvalidOptions};
 
 /// Decode the whole stream `in` into `out`; the output's length.
 pub fn decompress(in: []const u8, out: []u8, options: Options) DecompressError!usize {
-    const max = options.max_block_size.raw();
-    if (max > frame.max_block_size) return error.InvalidOptions;
+    if (options.max_block_size.compare(.fromRaw(frame.max_block_size)) == .gt) return error.InvalidOptions;
     var at: usize = 0;
     var op: usize = 0;
     var first = !options.from_chunk;

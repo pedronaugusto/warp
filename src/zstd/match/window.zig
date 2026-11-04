@@ -113,7 +113,7 @@ pub const Bytes = struct {
     }
 
     pub inline fn ptr(b: Bytes, i: usize) [*]const u8 {
-        return @ptrFromInt(b.base +% i); // aegis: no-danger: callers pass only indices whose byte lies in w.in
+        return @ptrFromInt(b.base +% i); // aegis: no-danger(A019): callers pass only indices whose byte lies in w.in
     }
 
     pub inline fn byte(b: Bytes, i: usize) u8 {

@@ -208,7 +208,7 @@ pub const Writer = struct {
 
         /// A frame's input length, at least a byte.
         fn frameLen(o: Options) usize {
-            return @max(1, o.frame_len.raw());
+            return if (o.frame_len.eql(.fromRaw(0))) 1 else o.frame_len.raw();
         }
     };
     pub const WriteError = error{ TooManyFrames, Finished, OutputFailed };
@@ -266,7 +266,7 @@ pub const Writer = struct {
             w.failure = error.TooManyFrames;
             return error.WriteFailed;
         }
-        const n = w.compressor.compress(w.input[0..w.have], w.encoded, .{ .checksum = w.frame_checksum }) catch unreachable; // aegis: no-danger: encoded is Compressor.bound(frameLen) bytes (initBuffer), and have is at most frameLen
+        const n = w.compressor.compress(w.input[0..w.have], w.encoded, .{ .checksum = w.frame_checksum }) catch unreachable; // aegis: no-danger(A013): encoded is Compressor.bound(frameLen) bytes (initBuffer), and have is at most frameLen
 
         try w.output.writeAll(w.encoded[0..n]);
         w.entries[w.count] = .{ .compressed = @intCast(n), .decompressed = @intCast(w.have), .checksum = @truncate(std.hash.XxHash64.hash(0, w.input[0..w.have])) };

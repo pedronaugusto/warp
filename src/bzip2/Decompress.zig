@@ -194,7 +194,7 @@ pub const Reader = struct {
     failure: ?Error = null,
 
     pub fn init(input: *Io.Reader, buffer: []align(4) u8, options: Options) Reader {
-        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..4096], .seek = 0, .end = 0 }, .input = input, .state = Decompress.init(@alignCast(buffer[4096..]), options) }; // aegis: no-danger: 4096 bytes into a buffer aligned to 4
+        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..4096], .seek = 0, .end = 0 }, .input = input, .state = Decompress.init(@alignCast(buffer[4096..]), options) }; // aegis: no-danger(A019): 4096 bytes into a buffer aligned to 4
     }
 
     /// The error behind an `error.ReadFailed`, when it was the stream's.

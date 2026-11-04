@@ -27,7 +27,7 @@ pub const Decoder = struct {
     }
 
     pub fn block(d: *Decoder, io: std.Io) (engine.Error || std.Io.Cancelable)!engine.Status {
-        std.debug.assert(d.state.phase == .header);
+        aegis.assert.invariant(d.state.phase == .header, "d.state.phase == .header");
         _ = try engine.decode(&d.tables, &d.stream, engine.no_more, &d.state);
         if (d.state.phase == .stored) {
             const len = d.state.stored_left;
@@ -63,7 +63,7 @@ pub const Decoder = struct {
             if (lit.entry & huffman.end_flag != 0) return;
             if (lit.entry & huffman.literal_flag != 0) {
                 if (d.written == d.tokens.len) return error.OutputTooSmall;
-                d.tokens[d.written] = @as(u8, @truncate(lit.entry >> 16)); // aegis: no-danger: the low byte of the value is the literal; the high bit is its tag
+                d.tokens[d.written] = @as(u8, @truncate(lit.entry >> 16)); // aegis: no-danger(A009): the low byte of the value is the literal; the high bit is its tag
                 d.written += 1;
                 continue;
             }
@@ -122,7 +122,7 @@ pub const Decoder = struct {
             const missing = back - d.written;
             d.required = @max(d.required, missing);
             count = @min(len, missing);
-            for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // aegis: no-danger: callers refuse back > max_distance, so missing <= max_distance and i < missing: a marker in 256 .. 255 + max_distance
+            for (0..count) |i| d.tokens[d.written + i] = @intCast(256 + engine.max_distance - missing + i); // aegis: no-danger(A009, A010): callers refuse back > max_distance, so missing <= max_distance and i < missing: a marker in 256 .. 255 + max_distance
 
             if (count == len) {
                 d.written += len;

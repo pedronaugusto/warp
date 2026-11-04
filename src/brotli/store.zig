@@ -115,7 +115,7 @@ fn moveToFrontTransform(v_in: []const u32, v_out: []u32) void {
     if (v_in.len == 0) return;
     var max_value = v_in[0];
     for (v_in[1..]) |v| max_value = @max(max_value, v);
-    std.debug.assert(max_value < 256);
+    aegis.assert.invariant(max_value < 256, "max_value < 256");
     var mtf: [256]u8 = undefined;
     for (0..max_value + 1) |i| mtf[i] = @intCast(i);
     const size = max_value + 1;

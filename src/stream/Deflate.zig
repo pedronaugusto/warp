@@ -93,7 +93,26 @@ pub const Options = struct {
     gzip: gzip.Header = .{},
 };
 
-const Closing = struct { mode: Mode, step: enum { buffered, parse, mark, done } };
+/// A flush or finish under way: the input still buffered is parsed, then
+/// the rest to the mode's end, then the mark written.
+const Closing = struct {
+    mode: Mode,
+    step: Stage = .buffered,
+
+    const Stage = enum { buffered, parse, mark, done };
+    const Event = enum { pumped, parsed, marked };
+    const Machine = aegis.state.Machine(Stage, Event, .{ .initial = .buffered, .terminal = &.{.done}, .edges = &.{
+        .{ .from = .buffered, .on = .pumped, .to = .parse },
+        .{ .from = .parse, .on = .parsed, .to = .mark },
+        .{ .from = .mark, .on = .marked, .to = .done },
+    } });
+
+    /// The one place the step changes: along a declared edge.
+    fn go(c: *Closing, comptime from: Stage, comptime on: Event) void {
+        aegis.assert.invariant(c.step == from, "the step is the edge's from");
+        c.step = comptime Machine.after(from, on);
+    }
+};
 const Mode = enum { partial, sync, full, block, finish };
 const Change = struct { level: u4, strategy: Strategy };
 
@@ -188,8 +207,8 @@ pub const Step = struct { in_len: usize, out_len: usize };
 /// Take input and write what output is ready. Never fails; takes no input
 /// while output it has ready does not fit in `out`.
 pub fn write(d: *Deflate, in: []const u8, out: []u8) Step {
-    std.debug.assert(!d.finished);
-    std.debug.assert(d.closing == null);
+    aegis.assert.invariant(!d.finished, "!d.finished");
+    aegis.assert.invariant(d.closing == null, "d.closing == null");
     var step: Step = .{ .in_len = 0, .out_len = d.drain(out) };
     while (d.pending_start == d.pending_end) {
         if (d.pump(.more) == .block) {
@@ -221,7 +240,7 @@ pub const Drain = struct { out_len: usize, done: bool };
 /// Make every byte taken so far decodable from the output, as `mode`
 /// says. Call until `done`.
 pub fn flush(d: *Deflate, mode: Flush, out: []u8) Drain {
-    std.debug.assert(!d.finished);
+    aegis.assert.invariant(!d.finished, "!d.finished");
     return d.close(switch (mode) {
         .partial => .partial,
         .sync => .sync,
@@ -258,8 +277,8 @@ pub fn reset(d: *Deflate, keep: Keep) void {
 /// ending a block there as `flush(.block, ...)` does, then change them
 /// (zlib's `deflateParams`). Call until `done`.
 pub fn setLevel(d: *Deflate, level: u4, strategy: Strategy, out: []u8) Drain {
-    std.debug.assert(!d.finished);
-    std.debug.assert(level < 10 or d.engine.sizes.nodes != 0);
+    aegis.assert.invariant(!d.finished, "!d.finished");
+    aegis.assert.invariant(level < 10 or d.engine.sizes.nodes != 0, "level < 10 or d.engine.sizes.nodes != 0");
     if (d.closing == null) d.change = .{ .level = level, .strategy = strategy };
     return d.close(.block, out);
 }
@@ -348,7 +367,7 @@ fn writer(d: *Deflate) bits.Writer {
 }
 
 fn keepWriter(d: *Deflate, w: *const bits.Writer) void {
-    std.debug.assert(!w.overflow);
+    aegis.assert.invariant(!w.overflow, "!w.overflow");
     d.pending_end = w.at;
     d.bitbuf = w.bitbuf;
     d.bitcount = w.count;
@@ -410,23 +429,23 @@ fn slide(d: *Deflate) bool {
 /// mode writes; one step at a time while the output drains.
 fn close(d: *Deflate, mode: Mode, out: []u8) Drain {
     var out_len = d.drain(out);
-    if (d.closing == null) d.closing = .{ .mode = mode, .step = .buffered };
+    if (d.closing == null) d.closing = .{ .mode = mode };
     const c = &d.closing.?;
-    std.debug.assert(c.mode == mode);
+    aegis.assert.invariant(c.mode == mode, "c.mode == mode");
     while (d.pending_start == d.pending_end) {
         switch (c.step) {
             // Output backpressure may leave accepted input unparsed.
             // Finish the same ordinary parse that write would perform
             // before the tail gains knowledge of the flush or input end.
             .buffered => if (d.pump(.more) == .done) {
-                c.step = .parse;
+                c.go(.buffered, .pumped);
             },
             .parse => if (d.pump(if (mode == .finish) .final else .flush) == .done) {
-                c.step = .mark;
+                c.go(.parse, .parsed);
             },
             .mark => {
                 d.mark(mode);
-                c.step = .done;
+                c.go(.mark, .marked);
             },
             .done => {
                 d.closing = null;

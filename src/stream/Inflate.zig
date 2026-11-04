@@ -216,7 +216,7 @@ pub const ResumeError = error{InvalidCheckpoint};
 
 /// A DEFLATE stream's (`format = .deflate`).
 pub fn checkpoint(z: *const Inflate) CheckpointError!Checkpoint {
-    std.debug.assert(z.options.format == .deflate);
+    aegis.assert.invariant(z.options.format == .deflate, "z.options.format == .deflate");
     if (!z.at_boundary or z.failed != null) return error.NotAtBoundary;
     var point: Checkpoint = .{
         .in_offset = z.in_total,

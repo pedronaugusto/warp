@@ -12,7 +12,7 @@ const aegis = @import("aegis");
 /// off the path from `lit`, where reassociation would put it back.
 pub inline fn chainless(x: usize) usize {
     return switch (@import("builtin").cpu.arch) {
-        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // aegis: boundary: an empty template; the value passes through its register
+        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // aegis: boundary(A019): an empty template; the value passes through its register
             : [out] "=r" (-> usize),
             : [in] "0" (x),
         ),
@@ -65,12 +65,12 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
                 store16(op + i + step, pattern);
             }
         },
-        else => unreachable, // aegis: no-danger: offsets of 8 and more returned above, and 0 is refused at the top
+        else => unreachable, // aegis: no-danger(A013): offsets of 8 and more returned above, and 0 is refused at the top
     }
 }
 
 inline fn store16(p: [*]u8, v: @Vector(16, u8)) void {
-    @as(*align(1) @Vector(16, u8), @ptrCast(p)).* = v; // aegis: no-danger: an unaligned store of 16 bytes the caller has bounded
+    @as(*align(1) @Vector(16, u8), @ptrCast(p)).* = v; // aegis: no-danger(A019): an unaligned store of 16 bytes the caller has bounded
 }
 
 fn periodMask(comptime period: usize) @Vector(16, i32) {

@@ -65,6 +65,7 @@ test "zstd seekable: every missing footer byte, altered sizes and checksum failu
     const encoded = try encode(gpa, "frame with its checksum in the seek table", true, 1);
     defer gpa.free(encoded);
     for (0..encoded.len) |len| {
+        // glint-ignore: Z026 -- a truncated table refused is the answer wanted; one accepted fails the test below
         if (zstd.seekable.Index.init(gpa, encoded[0..len])) |value| {
             var index = value;
             index.deinit();

@@ -7,6 +7,7 @@
 const Compressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Serial = @import("../Compressor.zig");
@@ -67,7 +68,8 @@ pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
     }
     // Each worker's tables for a block, or `max_input` where shorter.
     var one = o;
-    one.max_input = .fromRaw(if (o.max_input) |m| @min(block, m.raw()) else block);
+    const whole: aegis.units.Bytes(usize) = .fromRaw(block);
+    one.max_input = if (o.max_input) |m| (if (m.compare(whole) == .lt) m else whole) else whole;
     for (workers) |*w| {
         var encoder: Serial = try .init(gpa, one);
         errdefer encoder.deinit();

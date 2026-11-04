@@ -80,7 +80,7 @@ fn chooseContextMap(quality: u4, bigram: *const [9]u32) StaticContexts {
     e[3] = 0;
     for (0..3) |i| e[3] += estimateEntropy(bigram[3 * i ..][0..3]);
     const total = monogram[0] + monogram[1] + monogram[2];
-    std.debug.assert(total != 0);
+    aegis.assert.invariant(total != 0, "total != 0");
     e[0] = 1.0 / @as(f64, @floatFromInt(total));
     e[1] *= e[0];
     e[2] *= e[0];

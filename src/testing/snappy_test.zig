@@ -130,7 +130,7 @@ test "mutated and constructed blocks get google's verdict as Snappy and S2's as 
             const n = try ours;
             try testing.expectEqual(want_len, n);
             try testing.expectEqual(crc, std.hash.Crc32.hash(out[0..n]));
-        } else if (ours) |_| return error.AcceptedWhatTheReferenceRefused else |_| {}
+        } else if (ours) |_| return error.AcceptedWhatTheReferenceRefused else |_| {} // glint-ignore: Z026 -- both refusing agree
     }
     try testing.expect(count > 1500);
 }
@@ -319,7 +319,7 @@ fn blocksAgree(_: void, case: *shakedown.Case) !void {
         if (want) |n| {
             try testing.expectEqual(n, len.?);
             try testing.expectEqualSlices(u8, plain_out[0..n], out[0..try ours]);
-        } else if (ours) |_| {
+        } else if (ours) |_| { // glint-ignore: Z026 -- both decoders refusing agree; the other outcomes are compared above
             return error.DecodedWhatThePlainDecoderRefused;
         } else |_| {}
     }

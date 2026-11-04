@@ -28,8 +28,10 @@ pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 /// `max_block_size`: one decoded block, and one chunk staged. A maximum
 /// past the formats' 4 MiB, which `init` refuses, is sized as 4 MiB.
 pub fn memory(max_block_size: aegis.units.Bytes(usize)) usize {
-    const b = @min(max_block_size.raw(), frame.max_block_size);
-    return b + @as(usize, @intCast(frame.maxChunk(b)));
+    const most: aegis.units.Bytes(usize) = .fromRaw(frame.max_block_size);
+    const block = if (max_block_size.compare(most) == .gt) most else max_block_size;
+    const chunk: aegis.units.Bytes(usize) = .fromRaw(@intCast(frame.maxChunk(block.raw())));
+    return (block.add(chunk) catch aegis.assert.never("4 MiB and its largest chunk fit a usize")).raw();
 }
 
 pub const InitError = error{
@@ -80,8 +82,8 @@ failure: ?Error = null,
 /// A decoder in `buffer`, refused when shorter than
 /// `memory(options.max_block_size)`.
 pub fn init(buffer: []u8, options: Options) InitError!Decompress {
+    if (options.max_block_size.compare(.fromRaw(frame.max_block_size)) == .gt) return error.InvalidOptions;
     const b = options.max_block_size.raw();
-    if (b > frame.max_block_size) return error.InvalidOptions;
     if (buffer.len < memory(options.max_block_size)) return error.BufferTooSmall;
     return .{ .options = options, .window = buffer[0..b], .stage = buffer[b..memory(options.max_block_size)], .first = !options.from_chunk };
 }
@@ -163,6 +165,7 @@ pub fn finish(s: *Decompress) Error!void {
 
 /// The one place the phase changes: along a declared edge.
 fn go(s: *Decompress, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
     s.phase = comptime Machine.after(from, on);
 }
 

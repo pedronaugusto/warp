@@ -39,9 +39,9 @@ pub const Entropy = struct {
     ll: LlTable,
     of: OfTable,
     ml: MlTable,
-    ll_repeat: Repeat = .none,
-    of_repeat: Repeat = .none,
-    ml_repeat: Repeat = .none,
+    ll_repeat: Repeat = .none, // aegis: no-danger(A017): which table the next block may reuse, set from what each block built: data, no lifecycle
+    of_repeat: Repeat = .none, // aegis: no-danger(A017): which table the next block may reuse, set from what each block built: data, no lifecycle
+    ml_repeat: Repeat = .none, // aegis: no-danger(A017): which table the next block may reuse, set from what each block built: data, no lifecycle
 
     pub fn reset(e: *Entropy) void {
         e.huf_repeat = .none;

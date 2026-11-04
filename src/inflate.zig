@@ -325,6 +325,7 @@ pub const State = struct {
 
     /// The one place the phase changes: along a declared edge.
     pub fn go(state: *State, comptime from: Phase, comptime on: Event) void {
+        aegis.assert.invariant(state.phase == from, "the phase is the edge's from");
         state.phase = comptime Machine.after(from, on);
     }
 
@@ -585,7 +586,7 @@ const FastExit = enum { stop, end, bad_symbol, far };
 pub fn fast(comptime rounds: usize, s: *Stream, output: anytype, litlen: []const u32, lbits: u5, dist: []const u32, dbits: u5) Error!bool {
     aegis.assert.invariant(s.virtual == 0, "s.virtual == 0");
     aegis.assert.invariant(s.ip + fast_input <= s.in.len, "s.ip + fast_input <= s.in.len");
-    std.debug.assert(output.position(s) + margin <= output.capacity());
+    aegis.assert.invariant(output.position(s) + margin <= output.capacity(), "output.position(s) + margin <= output.capacity()");
     var r: Fast = .{
         .in = s.in,
         .ip = s.ip,

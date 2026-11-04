@@ -45,8 +45,8 @@ pub const Compressor = struct {
     gpa: std.mem.Allocator,
 
     pub fn memory(options: Options) usize {
-        std.debug.assert(chunkLen(options) > 0);
-        std.debug.assert(options.concurrency > 0);
+        aegis.assert.invariant(chunkLen(options) > 0, "chunkLen(options) > 0");
+        aegis.assert.invariant(options.concurrency > 0, "options.concurrency > 0");
         const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, chunkLen(options));
         return stride(options, sizes) * options.concurrency + 32768;
     }
@@ -220,7 +220,7 @@ fn run(worker: *Worker, options: Options) void {
         writer.add(65535, 16);
     }
     writer.alignToByte();
-    std.debug.assert(!writer.overflow);
+    aegis.assert.invariant(!writer.overflow, "!writer.overflow");
     worker.out_len = writer.at;
     worker.check = switch (options.container) {
         .raw => 0,
@@ -252,7 +252,7 @@ pub const Decompressor = struct {
     pub const DecodeError = Inflate.DecodeError || Io.Cancelable || error{ OutputTooSmall, InvalidIndex, Truncated };
 
     pub fn memory(options: Decompressor.Options) usize {
-        std.debug.assert(options.concurrency > 0);
+        aegis.assert.invariant(options.concurrency > 0, "options.concurrency > 0");
         const records = std.mem.alignForward(usize, @as(usize, @sizeOf(DecodeWorker)) * options.concurrency, 64);
         return records + if (options.speculative) |spec| Speculative.memory(options.concurrency, spec) else 0;
     }

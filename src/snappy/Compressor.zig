@@ -49,9 +49,9 @@ pub const Level = enum {
 
 pub const Options = struct {
     /// The elements written: Snappy's, or S2's.
-    format: block.Format = .snappy,
+    format: block.Format = .snappy, // aegis: no-danger(A017): configuration, fixed at init
     /// The parser; null for the format's default.
-    level: ?Level = null,
+    level: ?Level = null, // aegis: no-danger(A017): configuration, fixed at init
     /// An S2 dictionary every block may copy from (S2's parsers and
     /// format), indexed once at `init`; its content must outlive the
     /// compressor.
@@ -264,8 +264,7 @@ pub fn blockSize(options: Options, stream: Stream) usize {
 
 pub fn validStream(options: Options, stream: Stream) bool {
     const b = blockSize(options, stream);
-    const padding = stream.padding.raw();
-    return options.dictionary == null and b >= frame.min_block_size and b <= frame.maxBlock(options.format) and padding <= frame.max_block_size;
+    return options.dictionary == null and b >= frame.min_block_size and b <= frame.maxBlock(options.format) and stream.padding.compare(.fromRaw(frame.max_block_size)) != .gt;
 }
 
 /// The longest stream of `len` bytes, with its index apart; maxInt(usize)
@@ -276,9 +275,8 @@ pub fn streamBound(options: Options, len: usize, stream: Stream) usize {
     const b = blockSize(options, stream);
     const blocks = std.math.divCeil(usize, len, b) catch unreachable; // unreachable: a valid stream's block is at least 4 KiB
     const index = if (stream.index == .none) 0 else Index.bound(blocks + 1);
-    const padding = stream.padding.raw();
     const chunks = std.math.mul(usize, blocks, chunkBound(b)) catch return std.math.maxInt(usize);
-    const ends = frame.identifier_len + padding + frame.header_len + index;
+    const ends = (stream.padding.add(.fromRaw(frame.identifier_len + frame.header_len + index)) catch return std.math.maxInt(usize)).raw();
     return std.math.add(usize, chunks, ends) catch std.math.maxInt(usize);
 }
 
@@ -308,8 +306,7 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8, stream: Stream) Strea
 /// The stream's end after its chunks (`out[0..len]`, `total` bytes of
 /// input): the index and padding as S2's writer's `Close` writes them.
 pub fn finish(out: []u8, len: usize, total: u64, block_size: usize, stream: Stream) StreamResult {
-    const padding = stream.padding.raw();
-    const padded = padding > 1;
+    const padded = stream.padding.compare(.fromRaw(1)) == .gt;
     var index_len: usize = 0;
     if (stream.index != .none) {
         var chunks: Index.Chunks = .{ .stream = out[0..len] };
@@ -320,7 +317,7 @@ pub fn finish(out: []u8, len: usize, total: u64, block_size: usize, stream: Stre
     var op = len;
     if (padded) {
         const counted = len + if (stream.index == .append) index_len else 0;
-        const pad: usize = @intCast(frame.paddingLen(counted, padding));
+        const pad: usize = @intCast(frame.paddingLen(counted, stream.padding.raw()));
         if (pad > 0) {
             @memmove(out[len + pad ..][0..index_len], out[len..][0..index_len]);
             frame.writeHeader(out[len..][0..frame.header_len], frame.Type.padding, pad - frame.header_len);

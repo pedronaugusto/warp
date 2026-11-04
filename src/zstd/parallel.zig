@@ -37,7 +37,7 @@ fn config(options: Options) error{InvalidOptions}!Config {
     const p = Encoder.resolve(encoder, null);
     const job_log = @max(20, @as(u6, p.window_log) + 2);
     const max_job_log: u6 = if (@bitSizeOf(usize) == 32) 29 else 30;
-    const job: usize = if (options.job_len) |n| n.raw() else (@as(u32, 1) << @intCast(@min(job_log, max_job_log)));
+    const job_len: aegis.units.Bytes(u32) = options.job_len orelse .fromRaw(@as(u32, 1) << @intCast(@min(job_log, max_job_log)));
     const default_overlap: u4 = switch (p.strategy) {
         .btultra2 => 9,
         .btultra, .btopt => 8,
@@ -46,9 +46,14 @@ fn config(options: Options) error{InvalidOptions}!Config {
     };
     const log = if (options.overlap_log == 0) default_overlap else options.overlap_log;
     const overlap: usize = if (log == 1) 0 else @as(usize, 1) << (p.window_log -| (9 - log));
-    if (job == 0 or job > @as(usize, 1) << max_job_log or @as(u64, job) + overlap > std.math.maxInt(u32) - 3) return error.InvalidOptions;
+    if (job_len.eql(.fromRaw(0)) or job_len.compare(.fromRaw(@as(u32, 1) << max_job_log)) == .gt) return error.InvalidOptions;
+    const span = aegis.units.Bytes(u64).fromRaw(job_len.raw()).add(.fromRaw(overlap)) catch return error.InvalidOptions;
+    if (span.compare(.fromRaw(std.math.maxInt(u32) - 3)) == .gt) return error.InvalidOptions;
+    const job: usize = job_len.raw();
     const blocks = std.math.divCeil(usize, job, @min(8 << 10, @as(usize, 1) << p.window_log)) catch unreachable; // unreachable: the block size is nonzero
-    return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = @max(job + 591 * blocks, Encoder.bound(job)) };
+    const coded = aegis.units.Bytes(usize).fromRaw(job).add(.fromRaw(591 * blocks)) catch return error.InvalidOptions;
+    const bound: aegis.units.Bytes(usize) = .fromRaw(Encoder.bound(job));
+    return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = (if (coded.compare(bound) == .lt) bound else coded).raw() };
 }
 
 const Worker = struct {
@@ -61,11 +66,11 @@ const Worker = struct {
     result: usize = 0,
 
     fn frame(w: *Worker, options: Encoder.Frame) void {
-        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // aegis: no-danger: output is config's output_len, at least Encoder.bound(job_len), and bytes are at most job_len
+        w.result = w.encoder.compress(w.bytes, w.output, options) catch unreachable; // aegis: no-danger(A013): output is config's output_len, at least Encoder.bound(job_len), and bytes are at most job_len
     }
 
     fn run(w: *Worker, params: Encoder.Params) void {
-        w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // aegis: no-danger: output is config's output_len, at least job_len + 591 per block: the raw bytes and 197 partition headers of 3
+        w.result = w.encoder.job(params, w.bytes, w.prefix, w.first, w.output) catch unreachable; // aegis: no-danger(A013): output is config's output_len, at least job_len + 591 per block: the raw bytes and 197 partition headers of 3
 
     }
 };
@@ -270,17 +275,25 @@ pub const Compressor = struct {
         try p.trailer(out, &hash);
     }
 
+    /// A seekable frame's input length: at least a byte, at most the configured job.
+    fn seekableFrame(p: *const Compressor, frame_size: aegis.units.Bytes(u32)) error{InvalidOptions}!aegis.units.Bytes(usize) {
+        const frame_bytes: aegis.units.Bytes(usize) = .fromRaw(frame_size.raw());
+        if (frame_bytes.eql(.fromRaw(0)) or frame_bytes.compare(.fromRaw(p.cfg.job_len)) == .gt) return error.InvalidOptions;
+        return frame_bytes;
+    }
+
     /// Write independent frames and their seek table, reusing these workers.
     /// `frame_size` is at most the configured job length; `records` holds every
     /// frame (including one empty frame for empty input). Returns their count.
     pub fn writeSeekable(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer, records: []seekable.Record, frame_size: aegis.units.Bytes(u32), checksum: bool) (Error || error{TooManyFrames})!usize {
-        const frame_len: usize = frame_size.raw();
-        if (frame_len == 0 or frame_len > p.cfg.job_len) return error.InvalidOptions;
+        const frame_bytes = try p.seekableFrame(frame_size);
+        const frame_len = frame_bytes.raw();
         const total = @max(1, std.math.divCeil(usize, in.len, frame_len) catch unreachable); // unreachable: frame_len is nonzero
         if (total > records.len or total > (std.math.maxInt(u32) - 9) / 12) return error.TooManyFrames;
         var group: Io.Group = .init;
         defer group.cancel(io);
-        var at: usize = 0;
+        const whole: aegis.units.Bytes(usize) = .fromRaw(in.len);
+        var at: aegis.units.Bytes(usize) = .fromRaw(0);
         var count: usize = 0;
         var frame_options = p.options.frame;
         frame_options.format = .standard;
@@ -288,10 +301,11 @@ pub const Compressor = struct {
         while (count < total) {
             const batch = @min(p.workers.len, total - count);
             for (p.workers[0..batch]) |*w| {
-                const n = @min(in.len - at, frame_len);
-                w.bytes = in[at..][0..n];
+                const left = whole.sub(at) catch aegis.assert.never("the frames cut lie within the input");
+                const n = if (left.compare(frame_bytes) == .lt) left else frame_bytes;
+                w.bytes = in[at.raw()..][0..n.raw()];
                 if (p.workers.len == 1) w.frame(frame_options) else group.async(io, Worker.frame, .{ w, frame_options });
-                at += n;
+                at = at.add(n) catch aegis.assert.never("the frames cut lie within the input");
             }
             try group.await(io);
             for (p.workers[0..batch], records[count..][0..batch]) |*w, *record| {
@@ -307,8 +321,10 @@ pub const Compressor = struct {
     /// Stream independent frames and a seek table into `out`, using bounded
     /// worker input buffers. Returns the number of records written.
     pub fn writeSeekableReader(p: *Compressor, io: Io, in: *Io.Reader, out: *Io.Writer, records: []seekable.Record, frame_size: aegis.units.Bytes(u32), checksum: bool) (Error || error{ TooManyFrames, ReadFailed })!usize {
-        const frame_len: usize = frame_size.raw();
-        if (frame_len == 0 or frame_len > p.cfg.job_len) return error.InvalidOptions;
+        const frame_bytes = try p.seekableFrame(frame_size);
+        const frame_len = frame_bytes.raw();
+        // A batch is one frame per worker: the pool, not the input, bounds it.
+        const workers = p.workers;
         var group: Io.Group = .init;
         defer group.cancel(io);
         var count: usize = 0;
@@ -318,19 +334,19 @@ pub const Compressor = struct {
         frame_options.content_size = true;
         while (!eof) {
             var batch: usize = 0;
-            while (batch < p.workers.len) {
-                const w = &p.workers[batch];
+            while (batch < workers.len) {
+                const w = &workers[batch];
                 const n = try in.readSliceShort(w.input[0..frame_len]);
-                eof = n < frame_len;
+                eof = frame_bytes.compare(.fromRaw(n)) == .gt;
                 if (n == 0 and count + batch != 0) break;
                 if (count + batch >= records.len or count + batch >= (std.math.maxInt(u32) - 9) / 12) return error.TooManyFrames;
                 w.bytes = w.input[0..n];
-                if (p.workers.len == 1) w.frame(frame_options) else group.async(io, Worker.frame, .{ w, frame_options });
+                if (workers.len == 1) w.frame(frame_options) else group.async(io, Worker.frame, .{ w, frame_options });
                 batch += 1;
                 if (eof) break;
             }
             try group.await(io);
-            for (p.workers[0..batch], records[count..][0..batch]) |*w, *record| {
+            for (workers[0..batch], records[count..][0..batch]) |*w, *record| {
                 try out.writeAll(w.output[0..w.result]);
                 record.* = .{ .compressed = @intCast(w.result), .decompressed = @intCast(w.bytes.len), .checksum = if (checksum) @truncate(std.hash.XxHash64.hash(0, w.bytes)) else 0 };
             }
