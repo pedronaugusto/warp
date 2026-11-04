@@ -499,3 +499,21 @@ test "xz parallel decode: streams of no blocks are canceled between streams" {
     }
     try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.checkCancel));
 }
+
+test "an .xz compressor refuses a check xz reserves, and its blocks end with the check init took" {
+    const gpa = testing.allocator;
+    const reserved: xz.Check = @fromBackingInt(@intCast(0x02));
+    try testing.expectError(error.InvalidOptions, xz.Compressor.init(gpa, .{ .lzma = .preset(0, false), .check = reserved }));
+
+    const options: xz.Compressor.Options = .{ .lzma = .preset(0, false), .check = .crc32 };
+    var c: xz.Compressor = try .init(gpa, options);
+    defer c.deinit();
+    const in = "a block whose check init chose";
+    const out = try gpa.alloc(u8, xz.Compressor.bound(options, in.len));
+    defer gpa.free(out);
+    const before = try c.block(in, out);
+    c.options.check = reserved;
+    const after = try c.block(in, out);
+    try testing.expectEqual(before, after);
+    try testing.expectEqual(std.hash.Crc32.hash(in), std.mem.readInt(u32, out[after - 4 ..][0..4], .little));
+}

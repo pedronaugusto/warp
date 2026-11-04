@@ -40,12 +40,31 @@ pub const Hasher = union(enum) {
     crc64: Crc64Xz,
     sha256: Sha256,
 
+    /// The check a stream naming `c` is read with: an id xz reserves is
+    /// skipped, as liblzma skips it.
     pub fn init(c: Check) Hasher {
+        return writer(c) orelse .none;
+    }
+
+    /// The check an encoder writes for `c`; null for an id xz reserves,
+    /// which no encoder writes.
+    pub fn writer(c: Check) ?Hasher {
         return switch (c) {
+            .none => .none,
             .crc32 => .{ .crc32 = .init },
             .crc64 => .{ .crc64 = .init },
             .sha256 => .{ .sha256 = .init(.{}) },
-            else => .none,
+            _ => null,
+        };
+    }
+
+    /// How many bytes `final` writes.
+    pub fn len(h: Hasher) usize {
+        return switch (h) {
+            .none => 0,
+            .crc32 => 4,
+            .crc64 => 8,
+            .sha256 => 32,
         };
     }
 

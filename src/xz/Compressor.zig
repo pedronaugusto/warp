@@ -18,7 +18,6 @@ const format = @import("format.zig");
 const filter_ = @import("filter.zig");
 const Lzma = @import("../lzma/Compressor.zig");
 const Crc32 = @import("../checksum/crc32.zig").Crc32;
-const Crc64Xz = @import("../checksum/crc64xz.zig").Crc64Xz;
 
 pub const Check = format.Check;
 pub const Filter = filter_.Filter;
@@ -40,10 +39,7 @@ pub const Options = struct {
     pub fn valid(o: Options) bool {
         if (!o.lzma.valid() or o.filters.len > 3) return false;
         if (o.block_size) |b| if (b == 0) return false;
-        return switch (o.check) {
-            .none, .crc32, .crc64, .sha256 => true,
-            _ => false,
-        };
+        return format.Hasher.writer(o.check) != null;
     }
 
     /// The largest block `compress` makes of an input of `len` bytes.
@@ -66,13 +62,17 @@ pub const Error = Allocator.Error || error{
 /// Private: LZMA2's encoder.
 lzma: Lzma,
 options: Options,
+/// Private: the check each block ends with, made from `options.check` at
+/// `init`, so a block writes only a check `init` accepted.
+hasher: format.Hasher,
 /// Private: a block's input with the filters applied.
 scratch: []u8 = &.{},
 gpa: Allocator,
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    var c: Compressor = .{ .lzma = try .init(gpa, options.lzma, options.tablesInput()), .options = options, .gpa = gpa };
+    const hasher = format.Hasher.writer(options.check) orelse return error.InvalidOptions;
+    var c: Compressor = .{ .lzma = try .init(gpa, options.lzma, options.tablesInput()), .options = options, .hasher = hasher, .gpa = gpa };
     errdefer c.lzma.deinit();
     if (options.filters.len != 0) if (options.max_input) |m| {
         c.scratch = try gpa.alloc(u8, options.blockLen(m.raw()));
@@ -143,22 +143,14 @@ pub fn block(c: *Compressor, in: []const u8, out: []u8) Error!usize {
     format.writeBlockHeader(out, spec);
     var pos = header + len;
     const padding = (4 - len % 4) % 4;
-    const check = o.check.size();
+    const check = c.hasher.len();
     if (out.len - pos < padding + check) return error.OutputTooSmall;
     @memset(out[pos..][0..padding], 0);
     pos += padding;
-    writeCheck(o.check, in, out[pos..][0..check]);
+    var h = c.hasher;
+    h.update(in);
+    h.final(out[pos..][0..check]);
     return pos + check;
-}
-
-fn writeCheck(check: Check, in: []const u8, out: []u8) void {
-    switch (check) {
-        .none => {},
-        .crc32 => std.mem.writeInt(u32, out[0..4], Crc32.hash(in), .little),
-        .crc64 => std.mem.writeInt(u64, out[0..8], Crc64Xz.hash(in), .little),
-        .sha256 => std.crypto.hash.sha2.Sha256.hash(in, out[0..32], .{}),
-        _ => unreachable,
-    }
 }
 
 /// The index of the blocks at `out[first..end]`, read back from their
