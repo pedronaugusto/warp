@@ -54,7 +54,8 @@ pub fn memory(max_block_size: aegis.units.Bytes(usize)) usize {
 /// The longest block the window holds: no block is longer than a legacy
 /// one, so a larger maximum needs no more.
 fn windowBlock(max_block_size: aegis.units.Bytes(usize)) usize {
-    return @min(max_block_size.raw(), frame.legacy_block_len);
+    const legacy: aegis.units.Bytes(usize) = .fromRaw(frame.legacy_block_len);
+    return (if (max_block_size.compare(legacy) == .gt) legacy else max_block_size).raw();
 }
 
 pub const InitError = error{
@@ -269,6 +270,7 @@ pub fn finish(s: *Decompress) Error!void {
 
 /// The one place the phase changes: along a declared edge.
 fn go(s: *Decompress, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
     s.phase = comptime Machine.after(from, on);
 }
 

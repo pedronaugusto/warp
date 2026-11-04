@@ -269,7 +269,7 @@ const Decoder = struct {
 
 /// The little-endian offset at `p`, in one load.
 inline fn read16(p: [*]const u8) u16 {
-    return std.mem.littleToNative(u16, @as(*align(1) const u16, @ptrCast(p)).*); // aegis: no-danger: an unaligned read of two bytes the caller has bounded
+    return std.mem.littleToNative(u16, @as(*align(1) const u16, @ptrCast(p)).*); // aegis: no-danger(A019): an unaligned read of two bytes the caller has bounded
 }
 
 /// A length's bytes after its token field's 15, read while `ip` stays

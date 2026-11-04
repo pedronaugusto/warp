@@ -4,6 +4,7 @@
 const Compressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const seq = @import("sequence.zig");
 const fast = @import("fast.zig");
 const hc = @import("hc.zig");
@@ -151,8 +152,8 @@ pub fn deinit(c: *Compressor) void {
 /// Change the level for the next call; at most `Options.max_level`'s band.
 pub fn setLevel(c: *Compressor, level: i32) void {
     const l = @min(level, max_level);
-    std.debug.assert(band(l) == .fast or c.chains != null);
-    std.debug.assert(band(l) != .optimal or c.top_level >= 10);
+    aegis.assert.invariant(band(l) == .fast or c.chains != null, "band(l) == .fast or c.chains != null");
+    aegis.assert.invariant(band(l) != .optimal or c.top_level >= 10, "band(l) != .optimal or c.top_level >= 10");
     c.level = l;
 }
 

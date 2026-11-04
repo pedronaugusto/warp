@@ -56,7 +56,7 @@ pub fn deinit(b: *Bgzf) void {
 pub const WriteError = Io.Writer.Error;
 
 pub fn write(b: *Bgzf, in: []const u8, out: *Io.Writer) WriteError!void {
-    std.debug.assert(!b.finished);
+    aegis.assert.invariant(!b.finished, "!b.finished");
     var at: usize = 0;
     while (at < in.len) {
         const n = @min(in.len - at, b.input.len - b.filled);
@@ -84,7 +84,7 @@ pub fn finish(b: *Bgzf, out: *Io.Writer) WriteError!void {
 /// offset. Flush before recording a position that must be on disk.
 pub fn virtualOffset(b: *const Bgzf) u64 {
     aegis.assert.invariant(b.compressed_offset < 1 << 48, "b.compressed_offset < 1 << 48");
-    std.debug.assert(b.filled < 65536);
+    aegis.assert.invariant(b.filled < 65536, "b.filled < 65536");
     return (b.compressed_offset << 16) | @as(u64, @intCast(b.filled));
 }
 
@@ -92,12 +92,12 @@ fn emit(b: *Bgzf, out: *Io.Writer) WriteError!void {
     var extra = [_]u8{ 'B', 'C', 2, 0, 0, 0 };
     const frame: Compressor.Frame = .{ .container = .gzip, .gzip = .{ .extra = &extra } };
     var take = b.filled;
-    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65536
+    var n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger(A013): output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65536
     if (n > 65536) {
         // 65,280 bytes fit even as stored blocks. Keep the rest for the
         // next member; this is determined by bytes, never write chunking.
         take = @min(take, 65280);
-        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger: output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65280
+        n = b.compressor.compress(b.input[0..take], b.output, frame) catch unreachable; // aegis: no-danger(A013): output is Compressor.bound(65536, this frame) bytes (memory), and take is at most 65280
 
     }
     aegis.assert.invariant(n <= 65536, "n <= 65536");

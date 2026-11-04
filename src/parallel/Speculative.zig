@@ -71,11 +71,11 @@ const Worker = struct {
 };
 
 pub fn memory(concurrency: u16, options: Options) usize {
-    std.debug.assert(concurrency > 0);
-    std.debug.assert(options.chunkLen() > 0);
-    std.debug.assert(options.searchLen() > 0);
-    std.debug.assert(options.work_limit > 0);
-    std.debug.assert(options.max_blocks > 0);
+    aegis.assert.invariant(concurrency > 0, "concurrency > 0");
+    aegis.assert.invariant(options.chunkLen() > 0, "options.chunkLen() > 0");
+    aegis.assert.invariant(options.searchLen() > 0, "options.searchLen() > 0");
+    aegis.assert.invariant(options.work_limit > 0, "options.work_limit > 0");
+    aegis.assert.invariant(options.max_blocks > 0, "options.max_blocks > 0");
     return std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64) +
         (std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64) +
             std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64)) * concurrency;
@@ -205,7 +205,7 @@ fn setBit(s: *engine.Stream, bit: usize) void {
     s.bitsleft = 0;
     s.virtual = 0;
     if (bit % 8 != 0) {
-        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger: bit is a decoded block's end inside in, so ip = bit / 8 is the byte holding its 1-7 pending bits
+        s.bitbuf = s.in[s.ip] >> @as(u3, @intCast(bit % 8)); // aegis: no-danger(A009): bit is a decoded block's end inside in, so ip = bit / 8 is the byte holding its 1-7 pending bits
 
         s.bitsleft = @intCast(8 - bit % 8); // safe: 1-7 pending bits
         s.ip += 1;

@@ -231,6 +231,7 @@ fn streamAgrees(_: void, case: *shakedown.Case) !void {
     const out = try case.gpa.alloc(u8, 1 << 20);
     var d: deflate64.Decompressor = .init;
     const whole = d.inflate(input, out, .{ .partial = true });
+    // glint-ignore: Z026 -- a refused stream is compared below, where whole is matched again
     if (whole) |res| {
         if (!res.finished) return; // past the scratch output: not compared
     } else |_| {}

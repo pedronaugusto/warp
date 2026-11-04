@@ -92,7 +92,7 @@ pub fn buildLengths(freqs: []const u32, max_len: u4, lens: []u8) void {
             lens[@as(u16, @truncate(keys[i]))] = @intCast(len);
         }
     }
-    std.debug.assert(i == 0);
+    aegis.assert.invariant(i == 0, "i == 0");
 }
 
 /// The canonical codeword of each symbol (RFC 1951 3.2.2), bit-reversed:

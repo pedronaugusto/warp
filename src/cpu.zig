@@ -183,7 +183,7 @@ fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
     var ebx: u32 = undefined;
     var ecx: u32 = undefined;
     var edx: u32 = undefined;
-    asm volatile ("cpuid" // aegis: boundary: CPUID writes the four registers bound to its outputs and nothing else
+    asm volatile ("cpuid" // aegis: boundary(A019): CPUID writes the four registers bound to its outputs and nothing else
         : [eax] "={eax}" (eax),
           [ebx] "={ebx}" (ebx),
           [ecx] "={ecx}" (ecx),
@@ -195,7 +195,7 @@ fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
 }
 
 fn xgetbv() u32 {
-    return asm volatile ("xgetbv" // aegis: boundary: XGETBV reads ECX and writes EAX and EDX, which it declares
+    return asm volatile ("xgetbv" // aegis: boundary(A019): XGETBV reads ECX and writes EAX and EDX, which it declares
         : [eax] "={eax}" (-> u32),
         : [ecx] "{ecx}" (@as(u32, 0)),
         : .{ .edx = true });

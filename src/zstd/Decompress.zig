@@ -150,6 +150,7 @@ pub fn finish(s: *Decompress) Error!void {
 
 /// The one place the phase changes: along a declared edge.
 fn go(s: *Decompress, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
     s.phase = comptime Machine.after(from, on);
 }
 

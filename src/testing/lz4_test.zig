@@ -232,6 +232,7 @@ test "mutated blocks and frames get lz4's verdict, where the format lets the two
             try testing.expectEqual(len, n);
             try testing.expectEqual(crc, std.hash.Crc32.hash(out[0..n]));
         } else {
+            // glint-ignore: Z026 -- both refusing agree; nothing to compare
             if (ours) |_| {
                 // Decoded where lz4 refused: only a block the encoder's end
                 // rules forbid, which the format lets a decoder take.
@@ -468,8 +469,10 @@ fn blockAgrees(_: void, case: *shakedown.Case) !void {
     }
     // Partial: a prefix of what a larger output gets.
     const p = try case.gpa.alloc(u8, room);
+    // glint-ignore: Z026 -- a block warp refuses is not compared: the property is about blocks warp decodes
     if (lz4.decompressBlock(input, p, .{ .history = history, .partial = true })) |r| {
         const big = try case.gpa.alloc(u8, 1 << 20);
+        // glint-ignore: Z026 -- a block the reference refuses is not compared: the property is about blocks both decode
         if (reference(input, big, history[history.len -| 65535..])) |n| {
             try testing.expect(r.out_len <= n);
             try testing.expectEqualSlices(u8, big[0..r.out_len], p[0..r.out_len]);

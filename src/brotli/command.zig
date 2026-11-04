@@ -5,6 +5,7 @@
 //! codes, and histograms over the three alphabets.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const short_distance_codes = 16;
 pub const literal_symbols = 256;
@@ -24,7 +25,7 @@ pub const copy_base = [24]u32{ 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 3
 pub const copy_extra = [24]u32{ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 24 };
 
 pub inline fn log2Floor(n: usize) u32 {
-    std.debug.assert(n != 0);
+    aegis.assert.invariant(n != 0, "n != 0");
     return @intCast(std.math.log2_int(usize, n));
 }
 

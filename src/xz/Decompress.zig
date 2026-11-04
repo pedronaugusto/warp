@@ -163,6 +163,7 @@ pub fn refuseWindow(z: *Decompress) Error {
 }
 
 fn go(z: *Decompress, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(z.phase == from, "the phase is the edge's from");
     z.phase = comptime Machine.after(from, on);
 }
 

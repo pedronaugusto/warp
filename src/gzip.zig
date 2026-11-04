@@ -105,8 +105,8 @@ pub fn parseHeader(in: []const u8) ParseError!Parsed {
 
 /// Write `header`.
 pub fn writeHeader(w: *Io.Writer, header: Header) Io.Writer.Error!void {
-    if (header.extra) |extra| std.debug.assert(extra.len <= std.math.maxInt(u16));
-    for ([_]?[]const u8{ header.name, header.comment }) |field| if (field) |text| std.debug.assert(std.mem.findScalar(u8, text, 0) == null);
+    if (header.extra) |extra| aegis.assert.invariant(extra.len <= std.math.maxInt(u16), "extra.len <= std.math.maxInt(u16)");
+    for ([_]?[]const u8{ header.name, header.comment }) |field| if (field) |text| aegis.assert.invariant(std.mem.findScalar(u8, text, 0) == null, "std.mem.findScalar(u8, text, 0) == null");
     var fixed: [10]u8 = undefined;
     fixedPart(&fixed, header, header.xfl orelse 0);
     var crc: checksum.Crc32 = .init;
@@ -299,7 +299,7 @@ pub const Parser = struct {
     /// Take the edge from `from` on `on`, then pass the parts the flags
     /// leave out.
     fn next(p: *Parser, comptime from: Part, comptime on: Event) void {
-        p.enter(comptime Machine.after(from, on));
+        p.enter(from, on);
         p.skipAbsent();
     }
 
@@ -316,15 +316,16 @@ pub const Parser = struct {
                         else => flag_hcrc,
                     };
                     if (flags & flag != 0) return;
-                    p.enter(comptime Machine.after(part, .absent));
+                    p.enter(part, .absent);
                 },
             }
         }
     }
 
-    /// The one place a part starts: `to` is a declared edge's end.
-    fn enter(p: *Parser, to: Part) void {
-        p.part = to;
+    /// The one place a part starts: along a declared edge from the current part.
+    fn enter(p: *Parser, comptime from: Part, comptime on: Event) void {
+        aegis.assert.invariant(p.part == from, "the part is the edge's from");
+        p.part = comptime Machine.after(from, on);
         p.at = 0;
     }
 

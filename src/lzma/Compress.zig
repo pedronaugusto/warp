@@ -181,6 +181,7 @@ pub fn reset(s: *Compress) void {
 }
 
 fn go(s: *Compress, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
     s.phase = comptime Machine.after(from, on);
 }
 
@@ -278,7 +279,7 @@ fn produceChunk(s: *Compress, f: anytype) bool {
         s.in_chunk = true;
     }
     if (s.chunks.code(s.coder, f) == .need_input) return false;
-    const n = s.chunks.end(s.coder, f, s.output) catch unreachable; // aegis: no-danger: output is output_len (128 KiB): a chunk's header, its 64 KiB and what may be stored
+    const n = s.chunks.end(s.coder, f, s.output) catch unreachable; // aegis: no-danger(A013): output is output_len (128 KiB): a chunk's header, its 64 KiB and what may be stored
 
     s.queue(n);
     s.in_chunk = false;
@@ -339,7 +340,7 @@ fn slide(s: *Compress) void {
     switch (s.finder) {
         inline else => |*f| {
             const from = (f.read_pos - f.read_ahead) -| keep(s.options);
-            std.debug.assert(from != 0);
+            aegis.assert.invariant(from != 0, "from != 0");
             @memmove(s.window[0 .. s.filled - from], s.window[from..s.filled]);
             s.filled -= from;
             f.read_pos -= from;

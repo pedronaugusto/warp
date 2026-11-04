@@ -144,7 +144,7 @@ pub const Kind = enum { single, double };
 
 /// A decoding table, indexed by the next `log` bits of a stream.
 pub const Table = struct {
-    kind: Kind, // aegis: no-danger: the layout of the cells, set where they are built; no transitions
+    kind: Kind, // aegis: no-danger(A017): the layout of the cells, set where they are built; no transitions
     log: u4,
     cells: extern union {
         /// symbol | length << 8
@@ -499,7 +499,7 @@ pub const EncodeTable = struct {
             var nodes: [2 * max_symbols + 2]Node = undefined;
             nodes[0] = .{ .count = 1 << 31, .parent = 0, .symbol = 0, .bits = 0 };
             const n = sortLeaves(counts, nodes[1..]);
-            std.debug.assert(n >= 2);
+            aegis.assert.invariant(n >= 2, "n >= 2");
             // Internal nodes from `start`, merged from the two queues.
             const start = max_symbols + 1;
             var low_s: usize = n;

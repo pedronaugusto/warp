@@ -145,6 +145,7 @@ pub fn reset(s: *Compress) void {
 }
 
 fn go(s: *Compress, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
     s.phase = comptime Machine.after(from, on);
 }
 

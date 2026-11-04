@@ -161,6 +161,17 @@ const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .stream_header, 
     .{ .from = .end, .on = .read, .to = .done },
 } });
 
+/// Which tree group a compressed meta-block's header reads: literal, then
+/// insert-and-copy, then distance trees; `done` until the next meta-block.
+const Group = enum { literal, command, distance, done };
+const GroupEvent = enum { read, restart };
+const Groups = aegis.state.Machine(Group, GroupEvent, .{ .initial = .literal, .terminal = &.{}, .edges = &.{
+    .{ .from = .literal, .on = .read, .to = .command },
+    .{ .from = .command, .on = .read, .to = .distance },
+    .{ .from = .distance, .on = .read, .to = .done },
+    .{ .from = .done, .on = .restart, .to = .literal },
+} });
+
 /// What a prefix code's description is being read for; its event when it
 /// is read.
 const Target = enum { block_type, block_count, map_code, tree };
@@ -223,7 +234,7 @@ pub const State = struct {
     num_literal_trees: u32 = 1,
     num_distance_trees: u32 = 1,
     map: struct { distance: bool = false, size: u32 = 0, trees: u9 = 0, rlemax: u5 = 0, index: u32 = 0 } = .{},
-    group: u2 = 0,
+    group: Group = .literal,
     tree: u32 = 0,
     group_used: u32 = 0,
     code: Code = .{},
@@ -251,7 +262,14 @@ pub const State = struct {
 
     /// The one place the phase changes: along a declared edge.
     fn go(s: *State, comptime from: Phase, comptime on: Event) void {
+        aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
         s.phase = comptime Machine.after(from, on);
+    }
+
+    /// The one place the tree group changes: along a declared edge.
+    fn goGroup(s: *State, comptime from: Group, comptime on: GroupEvent) void {
+        aegis.assert.invariant(s.group == from, "the tree group is the edge's from");
+        s.group = comptime Groups.after(from, on);
     }
 
     /// The meta-block read in `from` has ended.
@@ -453,16 +471,19 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
         },
         .tree_groups => {
             const n = switch (s.group) {
-                0 => s.num_literal_trees,
-                1 => s.num_types[1],
-                2 => s.num_distance_trees,
-                3 => unreachable,
+                .literal => s.num_literal_trees,
+                .command => s.num_types[1],
+                .distance => s.num_distance_trees,
+                .done => unreachable,
             };
             if (s.tree == n) {
-                s.group +%= 1;
+                switch (s.group) {
+                    inline .literal, .command, .distance => |group| s.goGroup(group, .read),
+                    .done => unreachable,
+                }
                 s.tree = 0;
                 s.group_used = 0;
-                if (s.group == 3) {
+                if (s.group == .done) {
                     startBody(s, t);
                     s.go(.tree_groups, .read);
                 }
@@ -471,10 +492,10 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
             const groups = groupTrees(t, s.group);
             groups[s.tree] = s.group_used;
             switch (s.group) {
-                0 => startCode(s, .tree_groups, .tree, 256, 256),
-                1 => startCode(s, .tree_groups, .tree, 704, 704),
-                2 => startCode(s, .tree_groups, .tree, s.distance_max, s.distance_limit),
-                3 => unreachable,
+                .literal => startCode(s, .tree_groups, .tree, 256, 256),
+                .command => startCode(s, .tree_groups, .tree, 704, 704),
+                .distance => startCode(s, .tree_groups, .tree, s.distance_max, s.distance_limit),
+                .done => unreachable,
             }
         },
         .prefix_code => try prefixCode(careful, s, t, r, at),
@@ -603,7 +624,8 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
     s.category = 0;
     s.num_types = .{ 1, 1, 1 };
     s.blocks.counts = @splat(1 << 24);
-    s.group = 0;
+    if (s.group == .done) s.goGroup(.done, .restart);
+    aegis.assert.invariant(s.group == .literal, "a meta-block reads its tree groups from the first");
     s.tree = 0;
     s.group_used = 0;
     s.go(.metablock_header, .compressed);
@@ -730,10 +752,10 @@ fn codeTable(s: *const State, t: *Tables) []Entry {
         .block_count => &t.block_counts[s.category],
         .map_code => &t.map_code,
         .tree => switch (s.group) {
-            0 => t.literal[s.group_used..],
-            1 => t.command[s.group_used..],
-            2 => t.distance[s.group_used..],
-            3 => unreachable,
+            .literal => t.literal[s.group_used..],
+            .command => t.command[s.group_used..],
+            .distance => t.distance[s.group_used..],
+            .done => unreachable,
         },
     };
 }
@@ -1009,7 +1031,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 push = symbol != 0;
             } else {
                 const range = t.distance_ranges[symbol];
-                f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger: a fast fill (careful = false) has no error path; its loads are stated by fill's invariants
+                f.br.fill(false, range.extra) catch unreachable; // aegis: no-danger(A013): a fast fill (careful = false) has no error path; its loads are stated by fill's invariants
                 // `extra` is 5 bits: at most 31 of them.
                 d = range.offset +% (@as(u32, @as(u31, @intCast(f.br.peek(range.extra)))) << npostfix);
                 f.br.drop(range.extra);
@@ -1216,12 +1238,12 @@ fn endMetablock(s: *State, comptime from: Phase, at: u64) StepError!?Status {
 }
 
 /// Where each tree of a group starts.
-fn groupTrees(t: *Tables, group: u2) []u32 {
+fn groupTrees(t: *Tables, group: Group) []u32 {
     return switch (group) {
-        0 => &t.literal_trees,
-        1 => &t.command_trees,
-        2 => &t.distance_trees,
-        3 => unreachable,
+        .literal => &t.literal_trees,
+        .command => &t.command_trees,
+        .distance => &t.distance_trees,
+        .done => unreachable,
     };
 }
 

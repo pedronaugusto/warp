@@ -8,6 +8,7 @@
 //! bytes however it arrives.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const match = @import("match.zig");
 const block = @import("deflate/block.zig");
 const parse_ = @import("deflate/parse.zig");
@@ -224,7 +225,7 @@ pub fn EngineFor(comptime window: u32) type {
                     s.optimalSizes(block_max, longest, lookahead - 1);
                     s.literals = @max(s.literals, longest);
                     // The other levels' sequences lie over the nodes too.
-                    std.debug.assert(s.nodes >= sequences);
+                    aegis.assert.invariant(s.nodes >= sequences, "s.nodes >= sequences");
                 }
                 return s;
             }
@@ -320,7 +321,7 @@ pub fn EngineFor(comptime window: u32) type {
                 };
                 // A block's sequences are made from its path, over the nodes'
                 // memory (see `optimal.emitPath`); the other parsers' fit too.
-                e.b.seqs = @as([*]block.Sequence, @ptrCast(nodes.ptr))[0..nodes.len]; // aegis: no-danger: two u32 and two u32-aligned u16 pairs, 8 bytes each
+                e.b.seqs = @as([*]block.Sequence, @ptrCast(nodes.ptr))[0..nodes.len]; // aegis: no-danger(A019): two u32 and two u32-aligned u16 pairs, 8 bytes each
             } else e.b.seqs = try a.alloc(block.Sequence, sizes.sequences);
             e.b.lits = try a.alloc(u8, sizes.literals);
             return e;
@@ -360,7 +361,7 @@ pub fn EngineFor(comptime window: u32) type {
 
         /// The level and strategy from the next block on.
         pub fn setLevel(e: *Self, level_in: u4, strategy: Strategy) void {
-            std.debug.assert(finder(level_in, strategy) != .trees or e.sizes.nodes != 0);
+            aegis.assert.invariant(finder(level_in, strategy) != .trees or e.sizes.nodes != 0, "finder(level_in, strategy) != .trees or e.sizes.nodes != 0");
             const level = level_in;
             e.level = levels[@min(level, 12)];
             e.strategy = strategy;
@@ -374,7 +375,7 @@ pub fn EngineFor(comptime window: u32) type {
 
         /// More cost-model iterations, without changing the level's search.
         pub fn setPasses(e: *Self, passes: u32) void {
-            std.debug.assert(passes > 0);
+            aegis.assert.invariant(passes > 0, "passes > 0");
             if (e.level.parser != .optimal) return;
             e.level.optimal.passes = passes;
             e.level.optimal.min_improvement = 0;

@@ -7,6 +7,7 @@
 const Compress = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Compressor = @import("Compressor.zig");
 const frame = @import("frame.zig");
@@ -201,8 +202,7 @@ pub fn finish(s: *Compress, out: []u8) Error!Drain {
 /// staged before the index.
 fn end(s: *Compress) void {
     const stream = s.options.stream;
-    const padding = stream.padding.raw();
-    const padded = padding > 1;
+    const padded = stream.padding.compare(.fromRaw(1)) == .gt;
     var index_len: usize = 0;
     var at: usize = 0;
     if (stream.index != .none) {
@@ -213,7 +213,7 @@ fn end(s: *Compress) void {
         at = frame.header_len;
     }
     const appended = if (stream.index == .append) index_len else 0;
-    const pad: usize = if (padded) @intCast(frame.paddingLen(s.written + appended, padding)) else 0;
+    const pad: usize = if (padded) @intCast(frame.paddingLen(s.written + appended, stream.padding.raw())) else 0;
     if (pad > 0) {
         frame.writeHeader(s.output[0..frame.header_len], frame.Type.padding, pad - frame.header_len);
         s.zeros = pad - frame.header_len;
@@ -231,8 +231,8 @@ fn end(s: *Compress) void {
 
 /// The index kept apart (`index = .apart`), once `finish` is done.
 pub fn index(s: *const Compress) []const u8 {
-    std.debug.assert(s.phase == .done);
-    std.debug.assert(s.options.stream.index == .apart);
+    aegis.assert.invariant(s.phase == .done, "s.phase == .done");
+    aegis.assert.invariant(s.options.stream.index == .apart, "s.options.stream.index == .apart");
     return s.output[s.index_at[0]..s.index_at[1]];
 }
 

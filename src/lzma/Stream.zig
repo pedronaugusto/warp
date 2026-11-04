@@ -98,6 +98,7 @@ pub fn init(window: []u8, dict: u64, format: Format) Stream {
 
 /// The one place the phase changes: along a declared edge.
 fn go(s: *Stream, comptime from: Phase, comptime on: Event) void {
+    aegis.assert.invariant(s.phase == from, "the phase is the edge's from");
     s.phase = comptime Machine.after(from, on);
 }
 

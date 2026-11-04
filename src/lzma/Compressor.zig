@@ -237,7 +237,7 @@ pub fn lzma2(coder: *encode.Coder, f: anytype, props: Properties, out: []u8) Err
     var o: usize = 0;
     while (f.read_pos - f.read_ahead < f.buf.len) {
         chunks.begin(coder, out[o..]);
-        std.debug.assert(chunks.code(coder, f) == .done);
+        aegis.assert.invariant(chunks.code(coder, f) == .done, "chunks.code(coder, f) == .done");
         o += try chunks.end(coder, f, out[o..]);
     }
     if (o == out.len) return error.OutputTooSmall;

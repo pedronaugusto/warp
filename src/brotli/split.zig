@@ -6,6 +6,7 @@
 //! 256 for the context maps.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const command = @import("command.zig");
 const context = @import("context.zig");
@@ -403,7 +404,7 @@ fn Splitter(comptime T: type, comptime H: type) type {
                     block_lengths[block_idx] += 1;
                     if (i + 1 == length or block_ids[i] != block_ids[i + 1]) block_idx += 1;
                 }
-                std.debug.assert(block_idx == num_blocks);
+                aegis.assert.invariant(block_idx == num_blocks, "block_idx == num_blocks");
             }
             // Clusters within batches first.
             var num_clusters: usize = 0;

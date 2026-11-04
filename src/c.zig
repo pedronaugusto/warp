@@ -71,7 +71,7 @@ const State = struct {
 
 fn state(z: *Stream, direction: @TypeOf(@as(State, undefined).direction)) ?*State {
     const pointer = z.state orelse return null;
-    const s: *State = @ptrCast(@alignCast(pointer)); // aegis: boundary: the C caller's opaque state, which only initialization assigns; its magic is checked next
+    const s: *State = @ptrCast(@alignCast(pointer)); // aegis: boundary(A019): the C caller's opaque state, which only initialization assigns; its magic is checked next
     if (s.magic != signature or s.direction != direction) return null;
     return s;
 }
@@ -81,12 +81,12 @@ fn create(z: *Stream, bytes: usize) ?*State {
     const n = std.mem.alignForward(usize, @sizeOf(State), 64) + bytes + 63;
     if (n > std.math.maxInt(c_uint)) return null;
     const original: [*]u8 = if (z.zalloc) |allocate|
-        @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: boundary: zlib's contract: zalloc returns at least n writable bytes or null
+        @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: boundary(A019): zlib's contract: zalloc returns at least n writable bytes or null
     else
         std.heap.page_allocator.rawAlloc(n, .@"64", @returnAddress()) orelse return null;
     const address = std.mem.alignForward(usize, @intFromPtr(original), 64);
-    const s: *State = @ptrFromInt(address); // aegis: no-danger: the aligned address and State's size lie within the allocation
-    const engine: [*]align(64) u8 = @ptrFromInt(address + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger: n reserves `bytes` after State's padded size, past the aligned address
+    const s: *State = @ptrFromInt(address); // aegis: no-danger(A019): the aligned address and State's size lie within the allocation
+    const engine: [*]align(64) u8 = @ptrFromInt(address + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger(A019): n reserves `bytes` after State's padded size, past the aligned address
     s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode, .engine = engine[0..bytes] };
     z.state = s;
     z.total_in = 0;
@@ -130,12 +130,12 @@ fn level(value: c_int) ?u4 {
 
 /// The caller's input, as zlib's contract gives it: `avail_in` bytes at `next_in`.
 fn input(z: *const Stream) []const u8 {
-    return if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in]; // aegis: boundary: zlib's contract: next_in holds avail_in readable bytes
+    return if (z.avail_in == 0) &.{} else z.next_in[0..z.avail_in]; // aegis: boundary(A009): zlib's contract: next_in holds avail_in readable bytes
 }
 
 /// The caller's output, as zlib's contract gives it: `avail_out` bytes at `next_out`.
 fn output(z: *const Stream) []u8 {
-    return z.next_out[0..z.avail_out]; // aegis: boundary: zlib's contract: next_out holds avail_out writable bytes
+    return z.next_out[0..z.avail_out]; // aegis: boundary(A009): zlib's contract: next_out holds avail_out writable bytes
 }
 
 /// Moves the stream past what a step took from `input(z)` and wrote to `output(z)`.
@@ -480,7 +480,7 @@ pub export fn inflateMark(stream: ?*Stream) c_long {
     return switch (engine.phase) {
         .stored => -65536 + @as(c_long, engine.stored_left),
         .codes => if (engine.copy_left != 0)
-            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // aegis: no-danger: copy_left counts down from copy_length, a DEFLATE match's at most 258
+            (@as(c_long, engine.copy_bits) << 16) + @as(c_long, @intCast(engine.copy_length - engine.copy_left)) // aegis: no-danger(A010): copy_left counts down from copy_length, a DEFLATE match's at most 258
         else
             0,
         else => -65536,
@@ -598,7 +598,7 @@ fn emitHeader(s: *State, h: *const Header, out: []u8) usize {
     const fields = [_][]const u8{
         &fixed,
         if (h.extra != null) &extra_len else none,
-        if (h.extra != null) h.extra[0..h.extra_len] else none, // aegis: boundary: zlib's contract: extra holds extra_len bytes
+        if (h.extra != null) h.extra[0..h.extra_len] else none, // aegis: boundary(A009): zlib's contract: extra holds extra_len bytes
 
         if (h.name != null) h.name[0 .. s.name_length + 1] else none,
         if (h.comment != null) h.comment[0 .. s.comment_length + 1] else none,
@@ -770,7 +770,7 @@ fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State 
 fn moved(slice: anytype, old: *const State, fresh: *State) @TypeOf(slice) {
     if (slice.len == 0) return slice;
     const offset = @intFromPtr(slice.ptr) - @intFromPtr(old);
-    const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // aegis: no-danger: the identical copied layout preserves the slice's alignment and length
+    const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // aegis: no-danger(A019): the identical copied layout preserves the slice's alignment and length
     return pointer[0..slice.len];
 }
 

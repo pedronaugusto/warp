@@ -70,7 +70,7 @@ pub const Chains = struct {
     prefix_idx: u32,
     low_limit: u32,
     next_to_update: u32,
-    end_idx: u32, // aegis: no-danger: four positions on one axis, each compared with and subtracted from the others
+    end_idx: u32, // aegis: no-danger(A016): four positions on lz4's one virtual axis, each compared with and subtracted from the others: one kind, not distinct identities
     /// The tables hold LZ4MID's two hashes, not the chains'.
     mid: bool = false,
     /// The optimal parser's costs, when the levels reach it.
@@ -912,7 +912,7 @@ const View = struct {
     begin: usize = 0,
     prefix_idx: u32,
     hist: []const u8,
-    dict_idx: u32,
+    dict_idx: u32, // aegis: no-danger(A016): the prefix's and the dictionary's starts on lz4's one virtual axis, subtracted from each other: one kind, not distinct identities
 };
 
 /// Sequences written as lz4hc writes them, with its room checks.
