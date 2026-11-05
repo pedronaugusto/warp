@@ -85,7 +85,7 @@ pub const Frame = struct {
         if (in.len > f.block_max) return f.fail(error.InvalidStream, 0, .block_too_large);
         var lits: Literals = undefined;
         const lit_len = try f.literals(in, op, &lits);
-        return f.sequences(false, in, lit_len, op, &lits);
+        return f.sequences(false, in, lit_len, op, &lits, {});
     }
 
     /// Decode a prefix through the same sequence decoder; literals are
@@ -95,8 +95,8 @@ pub const Frame = struct {
         if (in.len > f.block_max) return f.fail(error.InvalidStream, 0, .block_too_large);
         var cursor: LiteralCursor = undefined;
         const section = try f.literalCursor(in, &cursor, null);
-        var lits: Literals = .{ .bytes = &.{}, .len = section.len, .in_out = null, .limit = f.out.len, .cursor = &cursor };
-        return f.sequences(true, in, section.bytes, op, &lits);
+        var lits: Literals = .{ .bytes = &.{}, .len = section.len, .in_out = null, .limit = f.out.len };
+        return f.sequences(true, in, section.bytes, op, &lits, &cursor);
     }
 
     const LiteralSection = struct { bytes: usize, len: usize };
@@ -125,7 +125,7 @@ pub const Frame = struct {
             } else cursor.* = .{ .rle = in[header] };
             return .{ .bytes = header + (if (kind == 0) len else 1), .len = len };
         }
-        if (kind == 3 and f.entropy.huffman == null) return f.fail(error.InvalidStream, 0, .treeless_first);
+        const from = try f.tableSource(kind);
         if (in.len < 5) return f.fail(error.InvalidStream, 0, .bad_literals_header);
         const h = std.mem.readInt(u32, in[0..4], .little);
         const header: usize = if (size_format < 2) 3 else if (size_format == 2) 4 else 5;
@@ -143,12 +143,16 @@ pub const Frame = struct {
         if (len > f.block_max or (!single and len < 6) or header + csize > in.len) return f.fail(error.InvalidStream, 0, .bad_literals_header);
         if (metadata) |m| m.* = .{ .bytes = header, .len = len };
         var src = in[header..][0..csize];
-        if (kind == 2) {
-            try f.huffmanTable(src, header, false);
-            if (f.tables.weights.len >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
-            src = src[f.tables.weights.len..];
-        }
-        cursor.* = .{ .huffman = huffman.Symbols.init(f.entropy.huffman.?, src, len, single) catch return f.fail(error.InvalidStream, header, .literals_size) };
+        const table = switch (from) {
+            .block => table: {
+                const table = try f.huffmanTable(src, header, false);
+                if (f.tables.weights.len >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
+                src = src[f.tables.weights.len..];
+                break :table table;
+            },
+            .last => |table| table,
+        };
+        cursor.* = .{ .huffman = huffman.Symbols.init(table, src, len, single) catch return f.fail(error.InvalidStream, header, .literals_size) };
         return .{ .bytes = header + csize, .len = len };
     }
 
@@ -163,7 +167,6 @@ pub const Frame = struct {
         /// Where the literals start in `out`, when they are there: the
         /// output may not overtake the next one unread.
         in_out: ?usize,
-        cursor: ?*LiteralCursor = null,
         /// The end of the output this block may write. Where its literals
         /// are not in the input and the output has room for a whole block
         /// and its literals, the reference decoder puts them after the
@@ -216,7 +219,7 @@ pub const Frame = struct {
                 return header + 1;
             },
             2, 3 => {
-                if (kind == 3 and f.entropy.huffman == null) return f.fail(error.InvalidStream, 0, .treeless_first);
+                const from = try f.tableSource(kind);
                 if (in.len < 5) return f.fail(error.InvalidStream, 0, .bad_literals_header);
                 const h = std.mem.readInt(u32, in[0..4], .little);
                 var header: usize = undefined;
@@ -246,13 +249,14 @@ pub const Frame = struct {
                 if (expected < len) return f.fail(error.OutputTooSmall, 0, .bad_literals_header);
                 const src = in[header..][0..csize];
                 const dst = f.literalStorage(len, op, lits);
-                if (kind == 2) {
-                    try f.huffmanTable(src, header, !single and huffman.chooseDouble(@intCast(len), @intCast(csize)));
-                    const used = f.tables.weights.len;
-                    if (used >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
-                    try f.huffmanDecode(src[used..], dst, single, header);
-                } else {
-                    try f.huffmanDecode(src, dst, single, header);
+                switch (from) {
+                    .block => {
+                        const table = try f.huffmanTable(src, header, !single and huffman.chooseDouble(@intCast(len), @intCast(csize)));
+                        const used = f.tables.weights.len;
+                        if (used >= src.len) return f.fail(error.InvalidStream, header, .bad_huffman_weights);
+                        try f.huffmanDecode(table, src[used..], dst, single, header);
+                    },
+                    .last => |table| try f.huffmanDecode(table, src, dst, single, header),
                 }
                 return header + csize;
             },
@@ -293,14 +297,23 @@ pub const Frame = struct {
         return f.out[at..];
     }
 
-    fn huffmanTable(f: *Frame, src: []const u8, at: usize, double: bool) Error!void {
+    /// Where a compressed block's literals table comes from: the block
+    /// (kind 2), or the last block's (treeless, kind 3), refused before one.
+    fn tableSource(f: *Frame, kind: u2) Error!union(enum) { block, last: *const huffman.Table } {
+        if (kind == 2) return .block;
+        return .{ .last = f.entropy.huffman orelse return f.fail(error.InvalidStream, 0, .treeless_first) };
+    }
+
+    /// The block's literals table, read from `src`; later treeless blocks
+    /// reuse it.
+    fn huffmanTable(f: *Frame, src: []const u8, at: usize, double: bool) Error!*const huffman.Table {
         f.tables.weights = aegis.input.Untrusted([]const u8).init(src).parse({}, huffman.readWeights) catch return f.fail(error.InvalidStream, at, .bad_huffman_weights);
         if (double) f.tables.huffman.buildDouble(&f.tables.weights) else f.tables.huffman.buildSingle(&f.tables.weights);
         f.entropy.huffman = &f.tables.huffman;
+        return &f.tables.huffman;
     }
 
-    fn huffmanDecode(f: *Frame, src: []const u8, dst: []u8, single: bool, at: usize) Error!void {
-        const table = f.entropy.huffman.?;
+    fn huffmanDecode(f: *Frame, table: *const huffman.Table, src: []const u8, dst: []u8, single: bool, at: usize) Error!void {
         if (single) {
             huffman.decode1(table, src, dst) catch return f.fail(error.InvalidStream, at, .literals_size);
         } else {
@@ -360,7 +373,8 @@ pub const Frame = struct {
         return .{ .count = (@as(u17, first - 0x80) << 8) | in[1], .bytes = 2 };
     }
 
-    fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals) Error!usize {
+    /// A partial decode reads its literals through `cursor`.
+    fn sequences(f: *Frame, comptime partial: bool, in: []const u8, lit_len: usize, op_start: usize, lits: *Literals, cursor: if (partial) *LiteralCursor else void) Error!usize {
         const header = try f.sequenceHeader(in, lit_len);
         const ip = header.at;
         const count = header.count;
@@ -380,19 +394,19 @@ pub const Frame = struct {
             // output may not overtake the next unread one; elsewhere the
             // block's limit is fixed.
             if (partial) {
-                try f.execute(true, false, header.stream, count, &op, &lp, lits, ip);
+                try f.execute(true, false, header.stream, count, &op, &lp, lits, cursor, ip);
                 if (f.stopped) return op - op_start;
             } else if (lits.in_out != null and lits.limit == f.out.len) {
-                try f.execute(false, true, header.stream, count, &op, &lp, lits, ip);
+                try f.execute(false, true, header.stream, count, &op, &lp, lits, {}, ip);
             } else {
-                try f.execute(false, false, header.stream, count, &op, &lp, lits, ip);
+                try f.execute(false, false, header.stream, count, &op, &lp, lits, {}, ip);
             }
         }
         // The literals after the last sequence.
         const last = lits.len - lp;
         if (partial) {
             const n = @min(last, lits.limit - op);
-            try f.readLiterals(lits.cursor.?, f.out[op..][0..n], at);
+            try f.readLiterals(cursor, f.out[op..][0..n], at);
             f.stopped = n < last;
             op += n;
         } else {
@@ -556,7 +570,7 @@ pub const Frame = struct {
 
     /// Out of line: inlined into the frame loop, the sequence loop loses
     /// registers to it and runs 7-9% slower (measured on large frames).
-    noinline fn execute(f: *Frame, comptime partial: bool, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, at: usize) Error!void {
+    noinline fn execute(f: *Frame, comptime partial: bool, comptime behind_literals: bool, stream: []const u8, count: usize, op: *usize, lp: *usize, lits: *const Literals, cursor: if (partial) *LiteralCursor else void, at: usize) Error!void {
         var r = bits.Reader.init(stream) catch return f.fail(error.InvalidStream, at, .bitstream_left);
         var ll_state = readState(LlState, &r, f.entropy.ll.log);
         var of_state = readState(OfState, &r, f.entropy.of.log);
@@ -607,7 +621,7 @@ pub const Frame = struct {
             // ---- execute ----
             if (partial) {
                 aegis.assert.invariant(l <= lits.len, "l <= lits.len");
-                try f.executePrefix(&o, lits.cursor.?, lits.len - l, ll, ml, offset, at);
+                try f.executePrefix(&o, cursor, lits.len - l, ll, ml, offset, at);
                 if (f.stopped) {
                     op.* = o;
                     return;
