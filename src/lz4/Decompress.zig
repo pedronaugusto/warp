@@ -195,7 +195,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             if (s.have != s.wanted) return .{ .in_len = ip, .out_len = op, .status = .need_input };
             try s.readLegacyBlock(s.stage[0..s.have]);
         },
-        .header, .block_header, .checksum, .legacy_header => {
+        inline .header, .block_header, .checksum, .legacy_header => |phase| {
             // A legacy frame ends where the input does, or at a frame.
             if (s.phase == .legacy_header and s.have == 0 and ip == in.len)
                 return .{ .in_len = ip, .out_len = op, .status = .need_input };
@@ -205,7 +205,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             ip += n;
             s.offset +|= n;
             if (s.have != s.wanted) return .{ .in_len = ip, .out_len = op, .status = .need_input };
-            switch (s.phase) {
+            switch (phase) {
                 .header => {
                     if (try s.readHeader()) |status| return .{ .in_len = ip, .out_len = op, .status = status };
                 },
@@ -240,7 +240,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
                     }
                     return .{ .in_len = ip, .out_len = op, .status = status };
                 },
-                else => unreachable,
+                else => @compileError("the units gathered whole are a header, a block header, a checksum and a legacy header"),
             }
         },
     };

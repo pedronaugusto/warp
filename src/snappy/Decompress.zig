@@ -208,7 +208,9 @@ fn readBody(s: *Decompress, body: []const u8) Error!void {
             s.snappy = format == .snappy;
             s.next(.body, .read, frame.header_len);
         },
-        .skipped => unreachable,
+        // A skippable chunk is skipped at its header (readHeader); one read
+        // whole holds nothing either.
+        .skipped => s.next(.body, .read, frame.header_len),
         .data => |data| {
             // A block wholly inside the output dropped is read past.
             if (s.dropping > 0 and s.dropping >= data.len) {

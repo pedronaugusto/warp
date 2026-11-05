@@ -117,7 +117,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             s.skip -= @intCast(n);
             if (s.skip == 0) s.next(.skip, .read, if (s.options.format == .standard) 5 else 1) else return .{ .in_len = ip, .out_len = op, .status = .need_input };
         },
-        .header, .block_header, .payload, .checksum => {
+        inline .header, .block_header, .payload, .checksum => |phase| {
             // A unit is gathered up to what it wants, no further.
             aegis.assert.invariant(s.have <= s.wanted, "s.have <= s.wanted");
             const n = @min(in.len - ip, s.wanted - s.have);
@@ -126,7 +126,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
             ip += n;
             s.offset += n;
             if (s.have != s.wanted) return .{ .in_len = ip, .out_len = op, .status = .need_input };
-            switch (s.phase) {
+            switch (phase) {
                 .header => try s.readHeader(),
                 .block_header => try s.readBlockHeader(),
                 .payload => try s.readBlock(),
@@ -134,7 +134,7 @@ pub fn decode(s: *Decompress, in: []const u8, out: []u8) Error!Step {
                     if (s.options.verify_checksum and std.mem.readInt(u32, s.buffer[0..4], .little) != @as(u32, @truncate(s.hash.final()))) return s.fail(error.ChecksumMismatch, s.offset - 4, .checksum);
                     s.go(.checksum, .read);
                 },
-                else => unreachable,
+                else => @compileError("the units gathered whole are a header, a block header, a payload and a checksum"),
             }
         },
     };
