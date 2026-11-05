@@ -11,6 +11,7 @@
 //! a call is out of its reach, as a cleared table's is for lz4.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const seq = @import("sequence.zig");
 
 const hash_log = 15;
@@ -76,14 +77,17 @@ pub const Chains = struct {
     /// The optimal parser's costs, when the levels reach it.
     costs: ?*[opt_num + trailing_literals]Cost,
 
-    pub fn memory(optimal: bool) usize {
-        const costs: usize = @sizeOf([opt_num + trailing_literals]Cost);
-        return @sizeOf(Chains) + if (optimal) costs else 0;
+    /// The chains and, for the optimal parser, its costs, as parts of one
+    /// block (`aegis.parts`), which the compressor nests in its own.
+    pub const Parts = struct { chains: *align(64) Chains, costs: ?*[opt_num + trailing_literals]Cost };
+
+    pub fn counts(optimal: bool) aegis.parts.Counts(Parts) {
+        return .{ .costs = optimal };
     }
 
-    /// Chains from `a`, which has `memory(optimal)` bytes for them.
-    pub fn create(a: std.mem.Allocator, optimal: bool) std.mem.Allocator.Error!*Chains {
-        const c = try a.alignedCreate(Chains, .@"64");
+    /// The chains over their parts, placed for `counts(optimal)`, emptied.
+    pub fn fromParts(p: Parts) *Chains {
+        const c = p.chains;
         c.hash = @splat(0);
         c.chain = @splat(0xFFFF);
         c.prefix_idx = window_gap;
@@ -91,7 +95,7 @@ pub const Chains = struct {
         c.next_to_update = window_gap;
         c.end_idx = window_gap;
         c.mid = false;
-        c.costs = if (optimal) try a.create([opt_num + trailing_literals]Cost) else null;
+        c.costs = p.costs;
 
         return c;
     }

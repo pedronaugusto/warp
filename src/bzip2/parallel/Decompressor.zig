@@ -54,9 +54,6 @@ pub const Error = Native.Error || Io.Cancelable;
 const block_magic: u64 = 0x3141_5926_5359;
 const magic_bits = 48;
 
-/// The largest block's BWT vector, padded to a cache line.
-const tt_bytes = std.mem.alignForward(usize, Native.memory, 64);
-
 const Worker = struct {
     group: Io.Group = .init,
     tt: []u32,
@@ -114,23 +111,38 @@ state: engine.State = .{},
 owned: []align(64) u8 = &.{},
 gpa: std.mem.Allocator = undefined,
 
+/// The workers' records, the caller's thread's BWT vector, and each
+/// worker's vector and output, one block.
+const Parts = struct { workers: []align(64) Worker, tt: []align(64) u32, buffers: aegis.parts.Repeat(WorkerParts) };
+const WorkerParts = struct { tt: []align(64) u32, out: []align(64) u8 };
+const Block = aegis.parts.Block(Parts);
+
+fn valid(options: Options) bool {
+    return options.concurrency != 0 and options.blockOut() != 0;
+}
+
+/// The parts for valid `options`.
+fn plan(options: Options) Block.Plan {
+    return Block.plan(.{
+        .workers = options.concurrency,
+        .tt = engine.block_max,
+        .buffers = .{ .len = options.concurrency, .each = .{ .tt = engine.block_max, .out = options.blockOut() } },
+    });
+}
+
 /// The workers' records, the BWT vectors (the caller's thread's and one a
-/// worker) and the workers' outputs.
+/// worker) and the workers' outputs; maxInt(usize) for options
+/// `initBuffer` refuses.
 pub fn memory(options: Options) usize {
-    if (options.concurrency == 0 or options.blockOut() == 0) return std.math.maxInt(usize);
-    const k: usize = options.concurrency;
-    const head = std.mem.alignForward(usize, @sizeOf(Worker) * k, 64);
-    const stride = tt_bytes + std.mem.alignForward(usize, options.blockOut(), 64);
-    return head +| tt_bytes +| k *| stride;
+    if (!valid(options)) return std.math.maxInt(usize);
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
-    if (options.concurrency == 0 or options.blockOut() == 0) return error.InvalidOptions;
-    const size = memory(options);
-    if (size == std.math.maxInt(usize)) return error.OutOfMemory;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
-    d.owned = buffer;
+    if (!valid(options)) return error.InvalidOptions;
+    const held = try plan(options).alloc(gpa);
+    var d = assemble(held, options);
+    d.owned = held.bytes();
     d.gpa = gpa;
     return d;
 }
@@ -138,20 +150,19 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
 /// Aligned storage, refused when the options are not valid or it is
 /// shorter than `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Decompressor {
-    if (options.concurrency == 0 or options.blockOut() == 0) return error.InvalidOptions;
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
-    var fba: std.heap.FixedBufferAllocator = .init(buffer);
-    return carve(fba.allocator(), options) catch error.BufferTooSmall;
+    if (!valid(options)) return error.InvalidOptions;
+    return assemble(try plan(options).fit(buffer), options);
 }
 
-fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Decompressor {
-    const workers = try a.alignedAlloc(Worker, .@"64", options.concurrency);
-    const tt = try a.alignedAlloc(u32, .@"64", engine.block_max);
-    for (workers) |*w| w.* = .{
-        .tt = try a.alignedAlloc(u32, .@"64", engine.block_max),
-        .out = try a.alignedAlloc(u8, .@"64", options.blockOut()),
-    };
-    return .{ .options = options, .workers = workers, .tt = tt };
+/// The one core of `init` and `initBuffer`: valid options, and a block
+/// holds its parts.
+fn assemble(held: Block, options: Options) Decompressor {
+    const p = held.parts();
+    for (p.workers, 0..) |*w, i| {
+        const b = p.buffers.at(i);
+        w.* = .{ .tt = b.tt, .out = b.out };
+    }
+    return .{ .options = options, .workers = p.workers, .tt = p.tt };
 }
 
 pub fn deinit(d: *Decompressor) void {

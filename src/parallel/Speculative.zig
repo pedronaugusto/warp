@@ -70,31 +70,38 @@ const Worker = struct {
     canceled: bool = false,
 };
 
-pub fn memory(concurrency: u16, options: Options) usize {
+/// The workers' records and each worker's tokens and blocks, as parts of one
+/// block (`aegis.parts`), which the parallel decompressor nests in its own.
+pub const Parts = struct { workers: []align(64) Worker, buffers: aegis.parts.Repeat(WorkerParts) };
+const WorkerParts = struct { tokens: []align(64) u16, blocks: []align(64) Block };
+const Memory = aegis.parts.Block(Parts);
+
+/// The parts for `concurrency` workers.
+pub fn counts(concurrency: u16, options: Options) aegis.parts.Counts(Parts) {
     aegis.assert.invariant(concurrency > 0, "concurrency > 0");
     aegis.assert.invariant(options.chunkLen() > 0, "options.chunkLen() > 0");
     aegis.assert.invariant(options.searchLen() > 0, "options.searchLen() > 0");
     aegis.assert.invariant(options.work_limit > 0, "options.work_limit > 0");
     aegis.assert.invariant(options.max_blocks > 0, "options.max_blocks > 0");
-    return std.mem.alignForward(usize, @as(usize, @sizeOf(Worker)) * concurrency, 64) +
-        (std.mem.alignForward(usize, options.chunkLen() * @sizeOf(u16), 64) +
-            std.mem.alignForward(usize, @as(usize, options.max_blocks) * @sizeOf(Block), 64)) * concurrency;
+    return .{ .workers = concurrency, .buffers = .{ .len = concurrency, .each = .{ .tokens = options.chunkLen(), .blocks = options.max_blocks } } };
+}
+
+pub fn memory(concurrency: u16, options: Options) usize {
+    return Memory.plan(counts(concurrency, options)).size().raw();
 }
 
 /// Refused when `buffer` is shorter than `memory(concurrency, options)`.
 pub fn initBuffer(buffer: []align(64) u8, concurrency: u16, options: Options) error{BufferTooSmall}!Speculative {
-    if (buffer.len < memory(concurrency, options)) return error.BufferTooSmall;
-    var fba: std.heap.FixedBufferAllocator = .init(buffer);
-    return carve(fba.allocator(), concurrency, options) catch error.BufferTooSmall;
+    return fromParts((try Memory.plan(counts(concurrency, options)).fit(buffer)).parts(), options);
 }
 
-fn carve(a: std.mem.Allocator, concurrency: u16, options: Options) std.mem.Allocator.Error!Speculative {
-    const workers = try a.alignedAlloc(Worker, .@"64", concurrency);
-    for (workers) |*w| w.* = .{
-        .tokens = try a.alignedAlloc(u16, .@"64", options.chunkLen()),
-        .blocks = try a.alignedAlloc(Block, .@"64", options.max_blocks),
-    };
-    return .{ .workers = workers, .options = options };
+/// The workers over their parts, placed for `counts(concurrency, options)`.
+pub fn fromParts(p: Parts, options: Options) Speculative {
+    for (p.workers, 0..) |*w, i| {
+        const b = p.buffers.at(i);
+        w.* = .{ .tokens = b.tokens, .blocks = b.blocks };
+    }
+    return .{ .workers = p.workers, .options = options };
 }
 
 pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options: Native.Options) (Native.InflateError || Io.Cancelable)!Native.Result {

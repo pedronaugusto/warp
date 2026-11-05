@@ -230,27 +230,39 @@ pub fn EngineFor(comptime window: u32) type {
                 return s;
             }
 
-            fn chainsMemory(s: Sizes) usize {
-                return if (s.chains) HashChains.memory(s.hash4_bits, s.hash3_bits, s.window) else 0;
+            /// The engine's parts for these sizes.
+            pub fn counts(s: Sizes) aegis.parts.Counts(Parts) {
+                return .{
+                    .finders = .{
+                        .chains = if (s.chains) HashChains.counts(s.hash4_bits, s.hash3_bits, s.window) else null,
+                        .table = if (s.table) HashTable.counts(s.ht_bits) else null,
+                        .trees = if (s.trees) BinaryTrees.counts(s.tree_bits, s.tree_bits, s.window) else null,
+                    },
+                    .optimal = if (s.nodes != 0) .{ .nodes = s.nodes, .cache = s.cache } else null,
+                    .seqs = s.sequences,
+                    .lits = s.literals,
+                };
             }
+        };
 
-            fn tableMemory(s: Sizes) usize {
-                return if (s.table) HashTable.memory(s.ht_bits) else 0;
-            }
+        /// The engine's tables, as parts of one block (`aegis.parts`), which
+        /// the compressors nest in theirs.
+        pub const Parts = struct {
+            finders: Finders,
+            /// The near-optimal parser's state, nodes and matches; its
+            /// blocks' sequences lie over the nodes.
+            optimal: ?struct { state: *optimal.State, nodes: []optimal.Node, cache: []optimal.Match },
+            /// The other parsers' sequences.
+            seqs: []block.Sequence,
+            lits: []u8,
+        };
 
-            fn treesMemory(s: Sizes) usize {
-                return if (s.trees) BinaryTrees.memory(s.tree_bits, s.tree_bits, s.window) else 0;
-            }
-
-            /// The matchfinders share one region: one of them is in use at a time.
-            fn finderMemory(s: Sizes) usize {
-                return std.mem.alignForward(usize, @max(s.chainsMemory(), s.tableMemory(), s.treesMemory()), 64);
-            }
-
-            pub fn memory(s: Sizes) usize {
-                const state: usize = if (s.nodes != 0) @sizeOf(optimal.State) else 0;
-                return s.finderMemory() + state + s.sequences * @sizeOf(block.Sequence) + s.cache * @sizeOf(optimal.Match) + s.nodes * @sizeOf(optimal.Node) + s.literals;
-            }
+        /// The matchfinders overlap: one of them is in use at a time.
+        const Finders = struct {
+            pub const arrangement: aegis.parts.Arrangement = .overlap;
+            chains: ?HashChains.Parts,
+            table: ?HashTable.Parts,
+            trees: ?BinaryTrees.Parts,
         };
 
         sizes: Sizes,
@@ -270,60 +282,31 @@ pub fn EngineFor(comptime window: u32) type {
         /// last few wait for the input's first bytes, which their hashes read.
         primed: isize = 0,
 
-        /// Lay the tables out in `buffer`; refused when it is shorter than
-        /// `sizes.memory()`.
-        pub fn init(buffer: []align(64) u8, sizes: Sizes) error{BufferTooSmall}!Self {
-            if (buffer.len < sizes.memory()) return error.BufferTooSmall;
-            const finders = buffer[0..sizes.finderMemory()];
-            return carve(finders, buffer[finders.len..], sizes) catch error.BufferTooSmall;
-        }
-
-        fn carve(finders: []u8, rest: []u8, sizes: Sizes) std.mem.Allocator.Error!Self {
-            var e: Self = .{ .sizes = sizes, .hc = undefined, .ht = undefined, .bt = undefined, .opt = undefined, .b = .{ .seqs = &.{} } };
-            // The matchfinders overlap: one is in use at a time.
-            if (sizes.chains) {
-                var fba: std.heap.FixedBufferAllocator = .init(finders);
-                const a = fba.allocator();
-                e.hc = .{
-                    .prev = try a.alloc(Pos, sizes.window),
-                    .hash4 = try a.alloc(Pos, @as(usize, 1) << sizes.hash4_bits),
-                    .hash3 = try a.alloc(Pos, @as(usize, 1) << sizes.hash3_bits),
-                };
+        /// The engine over its parts, placed for `sizes.counts()`.
+        pub fn fromParts(p: Parts, sizes: Sizes) Self {
+            var e: Self = .{ .sizes = sizes, .hc = undefined, .ht = undefined, .bt = undefined, .opt = undefined, .b = .{ .seqs = p.seqs, .lits = p.lits } };
+            if (p.finders.chains) |c| e.hc = .fromParts(c);
+            if (p.finders.table) |t| {
+                e.ht = .fromParts(t);
+                e.ht.window = @intCast(sizes.window);
             }
-            if (sizes.table) {
-                var fba: std.heap.FixedBufferAllocator = .init(finders);
-                e.ht = .{
-                    .table = try fba.allocator().alloc([2]Pos, @as(usize, 1) << sizes.ht_bits),
-                    .window = @intCast(sizes.window),
-                };
+            if (p.finders.trees) |t| {
+                e.bt = .fromParts(t);
+                e.bt.window = @intCast(sizes.window);
             }
-            if (sizes.trees) {
-                var fba: std.heap.FixedBufferAllocator = .init(finders);
-                const a = fba.allocator();
-                e.bt = .{
-                    .hash3 = try a.alloc([2]Pos, @as(usize, 1) << sizes.tree_bits),
-                    .hash4 = try a.alloc(Pos, @as(usize, 1) << sizes.tree_bits),
-                    .child = try a.alloc(Pos, 2 * sizes.window),
-                    .window = @intCast(sizes.window),
-                };
-            }
-            var fba: std.heap.FixedBufferAllocator = .init(rest);
-            const a = fba.allocator();
-            if (sizes.nodes != 0) {
-                e.opt = try a.create(optimal.State);
-                const nodes = try a.alloc(optimal.Node, sizes.nodes);
+            if (p.optimal) |o| {
+                e.opt = o.state;
                 e.opt.* = .{
-                    .nodes = nodes,
-                    .cache = try a.alloc(optimal.Match, sizes.cache),
+                    .nodes = o.nodes,
+                    .cache = o.cache,
                     .cache_limit = sizes.cacheLimit(),
                     .block_max = sizes.block_max,
                     .scan = sizes.scan,
                 };
                 // A block's sequences are made from its path, over the nodes'
                 // memory (see `optimal.emitPath`); the other parsers' fit too.
-                e.b.seqs = @as([*]block.Sequence, @ptrCast(nodes.ptr))[0..nodes.len]; // aegis: no-danger(A019): two u32 and two u32-aligned u16 pairs, 8 bytes each
-            } else e.b.seqs = try a.alloc(block.Sequence, sizes.sequences);
-            e.b.lits = try a.alloc(u8, sizes.literals);
+                e.b.seqs = @as([*]block.Sequence, @ptrCast(o.nodes.ptr))[0..o.nodes.len]; // aegis: no-danger(A019): two u32 and two u32-aligned u16 pairs, 8 bytes each
+            }
             return e;
         }
 

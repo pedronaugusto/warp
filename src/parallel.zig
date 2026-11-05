@@ -44,11 +44,30 @@ pub const Compressor = struct {
     owned: []align(64) u8,
     gpa: std.mem.Allocator,
 
-    pub fn memory(options: Options) usize {
+    /// The workers' records, each worker's engine, dictionary, chunk and
+    /// output, and the history, one block.
+    const Parts = struct { workers: []align(64) Worker, buffers: aegis.parts.Repeat(WorkerParts), history: []u8 };
+    const WorkerParts = struct { engine: deflate.Engine.Parts, dictionary: []u8, input: []align(64) u8, output: []align(64) u8 };
+    const Block = aegis.parts.Block(Parts);
+
+    fn sizes(options: Options) deflate.Engine.Sizes {
+        return .of(options.level, options.strategy, chunkLen(options));
+    }
+
+    fn plan(options: Options) Block.Plan {
         aegis.assert.invariant(chunkLen(options) > 0, "chunkLen(options) > 0");
         aegis.assert.invariant(options.concurrency > 0, "options.concurrency > 0");
-        const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, chunkLen(options));
-        return stride(options, sizes) * options.concurrency + 32768;
+        const each: aegis.parts.Counts(WorkerParts) = .{
+            .engine = sizes(options).counts(),
+            .dictionary = 32768,
+            .input = chunkLen(options),
+            .output = FrameCompressor.bound(chunkLen(options), .{ .container = .raw }) + 8,
+        };
+        return Block.plan(.{ .workers = options.concurrency, .buffers = .{ .len = options.concurrency, .each = each }, .history = 32768 });
+    }
+
+    pub fn memory(options: Options) usize {
+        return plan(options).size().raw();
     }
 
     /// The chunk length, as the engine's lengths are kept.
@@ -56,17 +75,10 @@ pub const Compressor = struct {
         return options.chunk_len.raw();
     }
 
-    fn stride(options: Options, sizes: deflate.Engine.Sizes) usize {
-        return std.mem.alignForward(usize, @sizeOf(Worker), 64) +
-            std.mem.alignForward(usize, sizes.memory(), 64) + 32768 +
-            std.mem.alignForward(usize, chunkLen(options), 64) +
-            std.mem.alignForward(usize, FrameCompressor.bound(chunkLen(options), .{ .container = .raw }) + 8, 64);
-    }
-
     pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compressor {
-        const owned = try gpa.alignedAlloc(u8, .@"64", memory(options));
-        var p = initBuffer(owned, options) catch unreachable; // unreachable: owned is memory(options) bytes
-        p.owned = owned;
+        const block = try plan(options).alloc(gpa);
+        var p = assemble(block, options);
+        p.owned = block.bytes();
         p.gpa = gpa;
         return p;
     }
@@ -74,24 +86,17 @@ pub const Compressor = struct {
     /// Caller memory, aligned to 64 bytes, refused when shorter than
     /// `memory(options)`; deinit frees nothing.
     pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
-        if (buffer.len < memory(options)) return error.BufferTooSmall;
-        var fba: std.heap.FixedBufferAllocator = .init(buffer);
-        return carve(fba.allocator(), options) catch error.BufferTooSmall;
+        return assemble(try plan(options).fit(buffer), options);
     }
 
-    fn carve(a: std.mem.Allocator, options: Options) error{ OutOfMemory, BufferTooSmall }!Compressor {
-        const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, chunkLen(options));
-        // Worker records are kept contiguously at the front; every region
-        // after them starts at a 64-byte boundary.
-        const records = try a.alignedAlloc(Worker, .@"64", options.concurrency);
-        for (records) |*worker| {
-            const engine_buffer = try a.alignedAlloc(u8, .@"64", std.mem.alignForward(usize, sizes.memory(), 64));
-            const dictionary = try a.alloc(u8, 32768);
-            const input = try a.alignedAlloc(u8, .@"64", chunkLen(options));
-            const output = try a.alignedAlloc(u8, .@"64", std.mem.alignForward(usize, FrameCompressor.bound(chunkLen(options), .{ .container = .raw }) + 8, 64));
-            worker.* = .{ .engine = try .init(engine_buffer, sizes), .input = input, .dictionary = dictionary, .output = output };
+    /// The one core of `init` and `initBuffer`: a block holds its parts.
+    fn assemble(block: Block, options: Options) Compressor {
+        const p = block.parts();
+        for (p.workers, 0..) |*worker, i| {
+            const b = p.buffers.at(i);
+            worker.* = .{ .engine = .fromParts(b.engine, sizes(options)), .input = b.input, .dictionary = b.dictionary, .output = b.output };
         }
-        return .{ .options = options, .workers = records, .history = try a.alloc(u8, 32768), .owned = &.{}, .gpa = undefined };
+        return .{ .options = options, .workers = p.workers, .history = p.history, .owned = &.{}, .gpa = undefined };
     }
 
     pub fn deinit(p: *Compressor) void {
@@ -251,16 +256,27 @@ pub const Decompressor = struct {
     };
     pub const DecodeError = Inflate.DecodeError || Io.Cancelable || error{ OutputTooSmall, InvalidIndex, Truncated };
 
-    pub fn memory(options: Decompressor.Options) usize {
+    /// The workers' records and, with a speculative search, its options and
+    /// parts, one block.
+    const Parts = struct { workers: []align(64) DecodeWorker, speculative: ?struct { options: aegis.parts.Given(Speculative.Options), parts: Speculative.Parts } };
+    const Block = aegis.parts.Block(Parts);
+
+    fn plan(options: Decompressor.Options) Block.Plan {
         aegis.assert.invariant(options.concurrency > 0, "options.concurrency > 0");
-        const records = std.mem.alignForward(usize, @as(usize, @sizeOf(DecodeWorker)) * options.concurrency, 64);
-        return records + if (options.speculative) |spec| Speculative.memory(options.concurrency, spec) else 0;
+        return Block.plan(.{
+            .workers = options.concurrency,
+            .speculative = if (options.speculative) |spec| .{ .options = spec, .parts = Speculative.counts(options.concurrency, spec) } else null,
+        });
+    }
+
+    pub fn memory(options: Decompressor.Options) usize {
+        return plan(options).size().raw();
     }
 
     pub fn init(gpa: std.mem.Allocator, options: Decompressor.Options) std.mem.Allocator.Error!Decompressor {
-        const owned = try gpa.alignedAlloc(u8, .@"64", memory(options));
-        var p = initBuffer(owned, options) catch unreachable; // unreachable: owned is memory(options) bytes
-        p.owned = owned;
+        const block = try plan(options).alloc(gpa);
+        var p = assemble(block);
+        p.owned = block.bytes();
         p.gpa = gpa;
         return p;
     }
@@ -268,16 +284,14 @@ pub const Decompressor = struct {
     /// Caller memory, aligned to 64 bytes, refused when shorter than
     /// `memory(options)`; deinit frees nothing.
     pub fn initBuffer(buffer: []align(64) u8, options: Decompressor.Options) error{BufferTooSmall}!Decompressor {
-        if (buffer.len < memory(options)) return error.BufferTooSmall;
-        var fba: std.heap.FixedBufferAllocator = .init(buffer);
-        const a = fba.allocator();
-        const workers = a.alignedAlloc(DecodeWorker, .@"64", options.concurrency) catch return error.BufferTooSmall;
-        var speculative: ?Speculative = null;
-        if (options.speculative) |spec| {
-            const markers = a.alignedAlloc(u8, .@"64", Speculative.memory(options.concurrency, spec)) catch return error.BufferTooSmall;
-            speculative = try Speculative.initBuffer(markers, options.concurrency, spec);
-        }
-        return .{ .workers = workers, .gpa = undefined, .speculative = speculative };
+        return assemble(try plan(options).fit(buffer));
+    }
+
+    /// The one core of `init` and `initBuffer`: a block holds its parts.
+    fn assemble(block: Block) Decompressor {
+        const p = block.parts();
+        const speculative: ?Speculative = if (p.speculative) |s| .fromParts(s.parts, s.options.value) else null;
+        return .{ .workers = p.workers, .gpa = undefined, .speculative = speculative };
     }
 
     pub fn deinit(p: *Decompressor) void {

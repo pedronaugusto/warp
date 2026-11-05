@@ -27,6 +27,17 @@ pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall
     return .{ .encoder = try Encoder.initBuffer(buffer, options) };
 }
 
+/// The encoder's parts, which a type holding a compressor nests in its own
+/// block (`aegis.parts`).
+pub const Parts = Encoder.Parts;
+pub const counts = Encoder.counts;
+
+/// A compressor over its parts, placed for `counts(options)`; `deinit`
+/// frees nothing.
+pub fn fromParts(p: Parts, options: Options) Compressor {
+    return .{ .encoder = .fromParts(p, options) };
+}
+
 pub fn deinit(c: *Compressor) void {
     c.encoder.deinit();
     c.* = undefined;

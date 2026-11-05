@@ -68,11 +68,20 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// dictionary back.
         reach: u32 = window,
 
-        /// The memory for tables of at most `hash4_bits` and `hash3_bits`, over a
-        /// window of `span` bytes (at most `window`).
-        pub fn memory(hash4_bits: u5, hash3_bits: u5, span: usize) usize {
-            const two: usize = if (pairs) 1 << hash2_bits else 0;
-            return (two + (@as(usize, 1) << hash4_bits) + (@as(usize, 1) << hash3_bits) + span) * @sizeOf(Pos);
+        /// The tables, as parts of one block (`aegis.parts`), which the
+        /// engines that search with them nest in theirs.
+        /// The hashed tables start on a cache line.
+        pub const Parts = struct { hash2: if (pairs) []Pos else void, hash4: []align(64) Pos, hash3: []Pos, prev: []Pos };
+
+        /// Tables of at most `hash4_bits` and `hash3_bits`, over a window of
+        /// `span` bytes (at most `window`).
+        pub fn counts(hash4_bits: u5, hash3_bits: u5, span: usize) aegis.parts.Counts(Parts) {
+            return .{ .hash2 = if (pairs) @as(usize, 1) << hash2_bits else {}, .hash4 = @as(usize, 1) << hash4_bits, .hash3 = @as(usize, 1) << hash3_bits, .prev = span };
+        }
+
+        /// The tables over their parts, placed.
+        pub fn fromParts(p: Parts) HashChains {
+            return .{ .hash2 = p.hash2, .hash4 = p.hash4, .hash3 = p.hash3, .prev = p.prev };
         }
 
         /// Start over for a stream that begins at `first` (negative with a

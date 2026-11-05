@@ -6,6 +6,7 @@
 //! CPU.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const decode = @import("gdeflate/decode.zig");
 const lanes = @import("gdeflate/lanes.zig");
@@ -175,15 +176,22 @@ pub const Compressor = struct {
         return .of(options.level, .default, tile_size);
     }
 
+    /// The engine's tables, one block.
+    const Block = aegis.parts.Block(Engine.Parts);
+
+    fn plan(options: Options) Block.Plan {
+        return Block.plan(sizes(options).counts());
+    }
+
     /// The bytes `initBuffer` needs for `options`.
     pub fn memory(options: Options) usize {
-        return sizes(options).memory();
+        return plan(options).size().raw();
     }
 
     pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
-        const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-        var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
-        c.owned = buffer;
+        const block = try plan(options).alloc(gpa);
+        var c = assemble(block, options);
+        c.owned = block.bytes();
         c.gpa = gpa;
         return c;
     }
@@ -191,7 +199,12 @@ pub const Compressor = struct {
     /// A compressor in caller memory, refused when shorter than
     /// `memory(options)`; `deinit` then frees nothing.
     pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
-        return .{ .engine = try .init(buffer, sizes(options)), .level = options.level, .owned = &.{}, .gpa = undefined };
+        return assemble(try plan(options).fit(buffer), options);
+    }
+
+    /// The one core of `init` and `initBuffer`: a block holds its parts.
+    fn assemble(block: Block, options: Options) Compressor {
+        return .{ .engine = .fromParts(block.parts(), sizes(options)), .level = options.level, .owned = &.{}, .gpa = undefined };
     }
 
     pub fn deinit(c: *Compressor) void {

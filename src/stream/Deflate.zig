@@ -116,6 +116,10 @@ const Closing = struct {
 const Mode = enum { partial, sync, full, block, finish };
 const Change = struct { level: u4, strategy: Strategy };
 
+/// The engine's tables, the window and the pending output, one block.
+const Parts = struct { engine: deflate.Engine.Parts, window: []u8, pending: []u8 };
+const Block = aegis.parts.Block(Parts);
+
 /// The engine's sizes, the window's and the pending buffer's.
 const Layout = struct {
     sizes: deflate.Engine.Sizes,
@@ -142,8 +146,8 @@ const Layout = struct {
         };
     }
 
-    fn memory(l: Layout) usize {
-        return std.mem.alignForward(usize, l.sizes.memory(), 64) + l.window + l.pending;
+    fn plan(l: Layout) Block.Plan {
+        return Block.plan(.{ .engine = l.sizes.counts(), .window = l.window, .pending = l.pending });
     }
 };
 
@@ -165,14 +169,15 @@ pub const InitError = error{
 /// it refuses.
 pub fn memory(options: Options) usize {
     if (!validOptions(options)) return std.math.maxInt(usize);
-    return Layout.of(options).memory();
+    return Layout.of(options).plan().size().raw();
 }
 
 pub fn init(gpa: Allocator, options: Options) (Allocator.Error || error{InvalidOptions})!Deflate {
     if (!validOptions(options)) return error.InvalidOptions;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
-    d.owned = buffer;
+    const layout = Layout.of(options);
+    const held = try layout.plan().alloc(gpa);
+    var d = assemble(held, layout, options);
+    d.owned = held.bytes();
     d.gpa = gpa;
     return d;
 }
@@ -182,15 +187,13 @@ pub fn init(gpa: Allocator, options: Options) (Allocator.Error || error{InvalidO
 pub fn initBuffer(buffer: []align(64) u8, options: Options) InitError!Deflate {
     if (!validOptions(options)) return error.InvalidOptions;
     const layout = Layout.of(options);
-    if (buffer.len < layout.memory()) return error.BufferTooSmall;
-    const engine_len = std.mem.alignForward(usize, layout.sizes.memory(), 64);
-    var d: Deflate = .{
-        .engine = try .init(buffer[0..engine_len], layout.sizes),
+    return assemble(try layout.plan().fit(buffer), layout, options);
+}
 
-        .options = options,
-        .window = buffer[engine_len..][0..layout.window],
-        .pending = buffer[engine_len + layout.window ..][0..layout.pending],
-    };
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(held: Block, layout: Layout, options: Options) Deflate {
+    const p = held.parts();
+    var d: Deflate = .{ .engine = .fromParts(p.engine, layout.sizes), .options = options, .window = p.window, .pending = p.pending };
     d.engine.b.stored_max = layout.stored_max;
     d.begin(.nothing);
     return d;

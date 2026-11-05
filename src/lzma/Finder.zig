@@ -13,6 +13,7 @@
 //! once the input is finishing).
 
 const std = @import("std");
+const aegis = @import("aegis");
 const match = @import("../match.zig");
 const encode = @import("encode.zig");
 
@@ -63,14 +64,26 @@ pub const Sizes = struct {
         };
     }
 
-    /// The tables' bytes.
-    pub fn memory(s: Sizes, kind: Kind) usize {
-        return switch (kind) {
-            .bt4 => Trees.memory(s.hash3_bits, s.hash4_bits, s.slots),
-            .hc4 => Chains4.memory(s.hash4_bits, s.hash3_bits, s.slots),
-            .hc3 => Chains3.memory(s.hash4_bits, s.hash3_bits, s.slots),
-        };
+    /// The tables of a finder of `kind`, as parts; every other kind's
+    /// counted zero (see `TableParts`).
+    pub fn counts(s: Sizes, kind: Kind) aegis.parts.Counts(TableParts) {
+        var c = std.mem.zeroes(aegis.parts.Counts(TableParts));
+        switch (kind) {
+            .bt4 => c.bt4 = Trees.counts(s.hash3_bits, s.hash4_bits, s.slots),
+            .hc4 => c.hc4 = Chains4.counts(s.hash4_bits, s.hash3_bits, s.slots),
+            .hc3 => c.hc3 = Chains3.counts(s.hash4_bits, s.hash3_bits, s.slots),
+        }
+        return c;
     }
+};
+
+/// A finder's tables, as parts of one block (`aegis.parts`), which the
+/// encoders nest in theirs: one kind's in use, the others empty.
+pub const TableParts = struct {
+    pub const arrangement: aegis.parts.Arrangement = .overlap;
+    hc3: Chains3.Parts,
+    hc4: Chains4.Parts,
+    bt4: Trees.Parts,
 };
 
 pub fn Finder(comptime kind: Kind) type {
@@ -98,37 +111,12 @@ pub fn Finder(comptime kind: Kind) type {
         depth: u32,
         dictionary: u32,
 
-        /// Tables in `memory` (at least `sizes.memory(kind)` bytes, aligned
-        /// to 4).
-        pub fn init(memory: []align(4) u8, sizes: Sizes, dictionary: u32, nice_len: u32, depth: u32) Self {
-            const all: []Pos = std.mem.bytesAsSlice(Pos, memory);
-            var at: usize = 0;
-            const take = struct {
-                fn f(from: []Pos, a: *usize, n: usize) []Pos {
-                    defer a.* += n;
-                    return from[a.*..][0..n];
-                }
-            }.f;
-            var tables: Tables = undefined;
+        /// The finder over its tables, placed for `sizes.counts(kind)`.
+        pub fn fromParts(p: TableParts, sizes: Sizes, dictionary: u32, nice_len: u32, depth: u32) Self {
+            var tables: Tables = .fromParts(@field(p, @tagName(kind)));
             switch (kind) {
-                .bt4 => {
-                    tables = .{
-                        .hash2 = take(all, &at, 1 << Trees.hash2_bits),
-                        .hash3 = std.mem.bytesAsSlice([2]Pos, std.mem.sliceAsBytes(take(all, &at, (@as(usize, 1) << sizes.hash3_bits) * 2))),
-                        .hash4 = take(all, &at, @as(usize, 1) << sizes.hash4_bits),
-                        .child = take(all, &at, sizes.slots * 2),
-                    };
-                    tables.window = @intCast(@min(dictionary, sizes.slots) + 1);
-                },
-                .hc4, .hc3 => {
-                    tables = .{
-                        .hash2 = take(all, &at, 1 << Tables.hash2_bits),
-                        .hash4 = take(all, &at, @as(usize, 1) << sizes.hash4_bits),
-                        .hash3 = take(all, &at, @as(usize, 1) << sizes.hash3_bits),
-                        .prev = take(all, &at, sizes.slots),
-                    };
-                    tables.reach = @intCast(@min(dictionary, sizes.slots) + 1);
-                },
+                .bt4 => tables.window = @intCast(@min(dictionary, sizes.slots) + 1),
+                .hc4, .hc3 => tables.reach = @intCast(@min(dictionary, sizes.slots) + 1),
             }
             return .{ .tables = tables, .sizes = sizes, .nice_len = nice_len, .depth = depth, .dictionary = dictionary };
         }
@@ -214,9 +202,9 @@ test "each finder reaches a match exactly the dictionary back, as liblzma's does
     @memcpy(in[2 * dictionary + 2000 ..][0..200], in[2 * dictionary + 500 ..][0..200]);
     inline for (.{ Kind.hc3, Kind.hc4, Kind.bt4 }) |kind| {
         const sizes: Sizes = .of(kind, dictionary, null);
-        const memory = try std.testing.allocator.alignedAlloc(u8, .@"4", sizes.memory(kind));
-        defer std.testing.allocator.free(memory);
-        var f: Finder(kind) = .init(memory, sizes, dictionary, 64, 48);
+        const held = try aegis.parts.Block(TableParts).plan(sizes.counts(kind)).alloc(std.testing.allocator);
+        defer std.testing.allocator.free(held.bytes());
+        var f: Finder(kind) = .fromParts(held.parts(), sizes, dictionary, 64, 48);
         f.reset();
         f.buf = &in;
         var out: [encode.match_len_max + 1]encode.Pair = undefined;

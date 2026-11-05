@@ -150,20 +150,31 @@ options: Options,
 owned: []align(64) u8 = &.{},
 gpa: Allocator = undefined,
 
+/// The coder and the finder's tables, as parts of one block
+/// (`aegis.parts`), which the streaming encoder nests in its own.
+pub const Parts = struct { coder: *encode.Coder, tables: finders.TableParts };
+const Block = aegis.parts.Block(Parts);
+
+fn sizes(options: Options, max_input: ?aegis.units.Bytes(usize)) finders.Sizes {
+    return .of(options.match_finder, options.dictionary, if (max_input) |m| m.raw() else null);
+}
+
+/// The parts for `options` over inputs of at most `max_input` bytes.
+pub fn counts(options: Options, max_input: ?aegis.units.Bytes(usize)) aegis.parts.Counts(Parts) {
+    return .{ .tables = sizes(options, max_input).counts(options.match_finder) };
+}
+
 /// The bytes `initBuffer` needs for `options` over inputs of at most
 /// `max_input` bytes (null: any).
 pub fn memory(options: Options, max_input: ?aegis.units.Bytes(usize)) usize {
-    const sizes = finders.Sizes.of(options.match_finder, options.dictionary, if (max_input) |m| m.raw() else null);
-    return coder_bytes + sizes.memory(options.match_finder);
+    return Block.plan(counts(options, max_input)).size().raw();
 }
-
-const coder_bytes = std.mem.alignForward(usize, @sizeOf(encode.Coder), 64);
 
 pub fn init(gpa: Allocator, options: Options, max_input: ?aegis.units.Bytes(usize)) InitError!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options, max_input));
-    var c = initBuffer(buffer, options, max_input) catch unreachable; // unreachable: the options were checked, and buffer is memory(options, max_input) bytes
-    c.owned = buffer;
+    const held = try Block.plan(counts(options, max_input)).alloc(gpa);
+    var c = fromParts(held.parts(), options, max_input);
+    c.owned = held.bytes();
     c.gpa = gpa;
     return c;
 }
@@ -174,19 +185,19 @@ pub fn init(gpa: Allocator, options: Options, max_input: ?aegis.units.Bytes(usiz
 /// tables sized for `max_input` allow.
 pub fn initBuffer(buffer: []align(64) u8, options: Options, max_input: ?aegis.units.Bytes(usize)) error{ InvalidOptions, BufferTooSmall }!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    const kind = options.match_finder;
-    const sizes = finders.Sizes.of(kind, options.dictionary, if (max_input) |m| m.raw() else null);
-    if (buffer.len < coder_bytes + sizes.memory(kind)) return error.BufferTooSmall;
+    const held = try Block.plan(counts(options, max_input)).fit(buffer);
+    return fromParts(held.parts(), options, max_input);
+}
 
-    const coder = std.mem.bytesAsValue(encode.Coder, buffer[0..@sizeOf(encode.Coder)]);
-    coder.* = .{};
-    const tables: []align(64) u8 = buffer[coder_bytes..];
-    const nice = options.niceLen();
-    const depth = options.searchDepth();
-    const f: Finders = switch (kind) {
-        inline else => |k| @unionInit(Finders, @tagName(k), .init(tables, sizes, options.dictionary, nice, depth)),
+/// The one core of `init` and `initBuffer`, and of an encoder that nests
+/// these parts: valid options, parts placed for `counts(options, max_input)`.
+pub fn fromParts(p: Parts, options: Options, max_input: ?aegis.units.Bytes(usize)) Compressor {
+    p.coder.* = .{};
+    const s = sizes(options, max_input);
+    const f: Finders = switch (options.match_finder) {
+        inline else => |k| @unionInit(Finders, @tagName(k), .fromParts(p.tables, s, options.dictionary, options.niceLen(), options.searchDepth())),
     };
-    return .{ .coder = coder, .finder = f, .options = options };
+    return .{ .coder = p.coder, .finder = f, .options = options };
 }
 
 pub fn deinit(c: *Compressor) void {

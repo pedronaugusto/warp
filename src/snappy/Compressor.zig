@@ -116,9 +116,8 @@ pub fn memory(options: Options) usize {
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    const mem = try gpa.alignedAlloc(u8, .@"16", memory(options));
-    var c: Compressor = .{ .options = options, .memory_ = mem, .gpa = gpa };
-    c.indexDictionary();
+    var c = fromParts((try Block.plan(counts(options)).alloc(gpa)).parts(), options);
+    c.gpa = gpa;
     return c;
 }
 
@@ -147,9 +146,23 @@ fn dictTables(c: *Compressor, comptime T: type) []T {
 /// shorter than `memory(options)`.
 pub fn initBuffer(buffer: []align(16) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    return fromParts((try Block.plan(counts(options)).fit(buffer)).parts(), options);
+}
 
-    var c: Compressor = .{ .options = options, .memory_ = buffer[0..memory(options)], .gpa = null };
+/// The parser's and its dictionary's tables, as a part of one block
+/// (`aegis.parts`), which the streaming compressor nests in its own.
+pub const Parts = struct { tables: []align(16) u8 };
+const Block = aegis.parts.Block(Parts);
+
+/// The parts for valid `options`.
+pub fn counts(options: Options) aegis.parts.Counts(Parts) {
+    return .{ .tables = memory(options) };
+}
+
+/// A compressor over its parts, placed for `counts(options)` of valid
+/// `options`; `deinit` frees nothing.
+pub fn fromParts(p: Parts, options: Options) Compressor {
+    var c: Compressor = .{ .options = options, .memory_ = p.tables, .gpa = null };
     c.indexDictionary();
     return c;
 }

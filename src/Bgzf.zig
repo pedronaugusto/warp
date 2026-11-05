@@ -18,14 +18,30 @@ compressed_offset: u64 = 0,
 pub const Options = struct { level: u4 = 6, passes: ?u32 = null };
 pub const eof = [_]u8{ 31, 139, 8, 4, 0, 0, 0, 0, 0, 255, 6, 0, 66, 67, 2, 0, 27, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
+/// The compressor's tables, a member's input and its output, one block.
+const Parts = struct { compressor: Compressor.Parts, input: []u8, output: []u8 };
+const Block = aegis.parts.Block(Parts);
+
+fn compressorOptions(options: Options) Compressor.Options {
+    return .{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes };
+}
+
+fn plan(options: Options) Block.Plan {
+    return Block.plan(.{
+        .compressor = Compressor.counts(compressorOptions(options)),
+        .input = 65536,
+        .output = Compressor.bound(65536, .{ .container = .gzip, .gzip = .{ .extra = "BC\x02\x00\x00\x00" } }),
+    });
+}
+
 pub fn memory(options: Options) usize {
-    return std.mem.alignForward(usize, Compressor.memory(.{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes }), 64) + 65536 + Compressor.bound(65536, .{ .container = .gzip, .gzip = .{ .extra = "BC\x02\x00\x00\x00" } });
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bgzf {
-    const owned = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var b = initBuffer(owned, options) catch unreachable; // unreachable: owned is memory(options) bytes
-    b.owned = owned;
+    const block = try plan(options).alloc(gpa);
+    var b = assemble(block, options);
+    b.owned = block.bytes();
     b.gpa = gpa;
     return b;
 }
@@ -33,18 +49,13 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bg
 /// Caller memory, aligned to 64 bytes, refused when shorter than
 /// `memory(options)`; deinit frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Bgzf {
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
-    const owned = buffer[0..memory(options)];
-    const compressor_options: Compressor.Options = .{ .level = options.level, .max_input = .literal("64KiB"), .passes = options.passes };
-    const n = std.mem.alignForward(usize, Compressor.memory(compressor_options), 64);
-    return .{
-        .compressor = try .initBuffer(owned[0..n], compressor_options),
+    return assemble(try plan(options).fit(buffer), options);
+}
 
-        .input = owned[n..][0..65536],
-        .output = owned[n + 65536 ..],
-        .owned = &.{},
-        .gpa = undefined,
-    };
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(block: Block, options: Options) Bgzf {
+    const p = block.parts();
+    return .{ .compressor = .fromParts(p.compressor, compressorOptions(options)), .input = p.input, .output = p.output, .owned = &.{}, .gpa = undefined };
 }
 
 pub fn deinit(b: *Bgzf) void {

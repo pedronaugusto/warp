@@ -9,6 +9,7 @@
 const Decompressor = @This();
 
 const std = @import("std");
+const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const decode = @import("decode.zig");
 const bits = @import("bits.zig");
@@ -20,7 +21,7 @@ tt: []u32,
 tables: decode.Tables,
 state: decode.State,
 /// Private: the memory `init` allocated; empty after `initBuffer`.
-owned: []u32,
+owned: []align(4) u8,
 /// Private: the allocator of `owned`.
 gpa: Allocator,
 
@@ -57,13 +58,17 @@ pub const Error = error{
     OutputTooSmall,
 };
 
+/// The BWT vector, one block.
+const Block = aegis.parts.Block(struct { tt: []u32 });
+const plan = Block.plan(.{ .tt = decode.block_max });
+
 /// The bytes `initBuffer` needs.
-pub const memory = decode.block_max * @sizeOf(u32);
+pub const memory = plan.size().raw();
 
 pub fn init(gpa: Allocator) Allocator.Error!Decompressor {
-    const tt = try gpa.alloc(u32, decode.block_max);
-    var d = initBuffer(std.mem.sliceAsBytes(tt)) catch unreachable; // unreachable: tt is memory bytes
-    d.owned = tt;
+    const held = try plan.alloc(gpa);
+    var d = assemble(held);
+    d.owned = held.bytes();
     d.gpa = gpa;
     return d;
 }
@@ -71,8 +76,12 @@ pub fn init(gpa: Allocator) Allocator.Error!Decompressor {
 /// A decompressor over caller memory aligned to 4, refused when shorter
 /// than `memory`.
 pub fn initBuffer(buffer: []align(4) u8) error{BufferTooSmall}!Decompressor {
-    if (buffer.len < memory) return error.BufferTooSmall;
-    return .{ .tt = std.mem.bytesAsSlice(u32, buffer[0..memory]), .tables = undefined, .state = .{}, .owned = &.{}, .gpa = undefined };
+    return assemble(try plan.fit(buffer));
+}
+
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(held: Block) Decompressor {
+    return .{ .tt = held.parts().tt, .tables = undefined, .state = .{}, .owned = &.{}, .gpa = undefined };
 }
 
 pub fn deinit(d: *Decompressor) void {

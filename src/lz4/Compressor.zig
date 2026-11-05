@@ -86,21 +86,42 @@ fn band(level: i32) enum { fast, mid, chains, optimal } {
     return if (level < 2) .fast else if (level == 2) .mid else if (level < 10) .chains else .optimal;
 }
 
+/// The fast table, the chains a top level past the fast band needs, and a
+/// dictionary's own table and chains with its bytes, as parts of one block
+/// (`aegis.parts`), which the streaming compressor nests in its own.
+pub const Parts = struct {
+    table: *align(64) fast.Table,
+    chains: ?hc.Chains.Parts,
+    dictionary: ?struct { bytes: aegis.parts.Given([]const u8), table: *align(64) fast.Table, chains: ?hc.Chains.Parts },
+};
+const Block = aegis.parts.Block(Parts);
+
+/// The highest level the compressor is sized for.
+fn topLevel(options: Options) i32 {
+    return @max(options.level, options.max_level orelse options.level);
+}
+
+/// The parts for `options`.
+pub fn counts(options: Options) aegis.parts.Counts(Parts) {
+    const top = topLevel(options);
+    const chained = band(top) != .fast;
+    return .{
+        .chains = if (chained) hc.Chains.counts(top >= 10) else null,
+        .dictionary = if (options.dictionary) |bytes| .{ .bytes = bytes, .chains = if (chained) hc.Chains.counts(false) else null } else null,
+    };
+}
+
+fn plan(options: Options) Block.Plan {
+    return Block.plan(counts(options));
+}
+
 /// The bytes `initBuffer` needs for `options`.
 pub fn memory(options: Options) usize {
-    const top = @max(options.level, options.max_level orelse options.level);
-    var total: usize = std.mem.alignForward(usize, @sizeOf(fast.Table), 64);
-    if (band(top) != .fast) total += std.mem.alignForward(usize, hc.Chains.memory(top >= 10), 64);
-    if (options.dictionary != null) {
-        total += std.mem.alignForward(usize, @sizeOf(fast.Table), 64);
-        if (band(top) != .fast) total += std.mem.alignForward(usize, hc.Chains.memory(false), 64);
-    }
-    return total;
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compressor {
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
+    var c = assemble(try plan(options).alloc(gpa), options);
     c.gpa = gpa;
     return c;
 }
@@ -108,36 +129,37 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
 /// A compressor in caller memory, refused when shorter than
 /// `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
-    var fba: std.heap.FixedBufferAllocator = .init(buffer);
-    var c = carve(fba.allocator(), options) catch return error.BufferTooSmall;
-    c.storage = buffer;
+    return assemble(try plan(options).fit(buffer), options);
+}
+
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(held: Block, options: Options) Compressor {
+    var c = fromParts(held.parts(), options);
+    c.storage = held.bytes();
     return c;
 }
 
-fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compressor {
-    const top = @max(options.level, options.max_level orelse options.level);
-    const table = try a.alignedCreate(fast.Table, .@"64");
-    table.* = .empty;
-    var chains: ?*hc.Chains = null;
-    if (band(top) != .fast) chains = try hc.Chains.create(a, top >= 10);
+/// A compressor over its parts, placed for `counts(options)`; `deinit`
+/// frees nothing.
+pub fn fromParts(p: Parts, options: Options) Compressor {
+    p.table.* = .empty;
     var attached: ?Bound = null;
-    if (options.dictionary) |bytes| {
-        const dict_table = try a.alignedCreate(fast.Table, .@"64");
-        const indexed = fast.load(dict_table, bytes);
+    if (p.dictionary) |d| {
+        const indexed = fast.load(d.table, d.bytes.value);
         var dict_chains: ?*hc.Chains = null;
-        if (band(top) != .fast) {
-            dict_chains = try hc.Chains.create(a, false);
-            dict_chains.?.load(indexed, band(options.level) == .mid);
+        if (d.chains) |parts| {
+            const chains = hc.Chains.fromParts(parts);
+            chains.load(indexed, band(options.level) == .mid);
+            dict_chains = chains;
         }
-        attached = .{ .bytes = indexed, .table = dict_table, .chains = dict_chains };
+        attached = .{ .bytes = indexed, .table = d.table, .chains = dict_chains };
     }
     return .{
-        .table = table,
-        .chains = chains,
+        .table = p.table,
+        .chains = if (p.chains) |parts| hc.Chains.fromParts(parts) else null,
         .dictionary = attached,
         .level = @min(options.level, max_level),
-        .top_level = @min(top, max_level),
+        .top_level = @min(topLevel(options), max_level),
         .favor_decompression_speed = options.favor_decompression_speed,
         .gpa = null,
         .storage = &.{},
@@ -368,12 +390,12 @@ fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: [
             }
         },
         .mid, .chains, .optimal => {
-            const chains = c.chains.?; // aegis: no-danger(A013): carve makes the chains when the top level's band is not fast, and setLevel asserts them for a level past the fast band
+            const chains = c.chains.?; // aegis: no-danger(A013): plan gives the chains when the top level's band is not fast, and setLevel asserts them for a level past the fast band
             const prefix: hc.Prefix = switch (from) {
                 .none => .none,
                 .previous => .{ .previous = c.previous[c.previous.len -| 65536..] },
                 .bytes => |bytes| .{ .bytes = bytes[bytes.len -| 65536..] },
-                .dictionary => |d| .{ .attached = .{ .bytes = d.bytes, .chains = d.chains.? } }, // aegis: no-danger(A013): carve makes a dictionary's chains with the compressor's, when the top level's band is not fast
+                .dictionary => |d| .{ .attached = .{ .bytes = d.bytes, .chains = d.chains.? } }, // aegis: no-danger(A013): plan gives a dictionary's chains with the compressor's, when the top level's band is not fast
             };
             return chains.compress(directive, level, c.favor_decompression_speed, in, out, prefix);
         },

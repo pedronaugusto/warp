@@ -58,16 +58,29 @@ fn blockLen(options: Options) usize {
     return if (options.frame.format == .legacy) frame.legacy_block_len else options.frame.block_size.bytes();
 }
 
+/// The compressor's tables, the history with a block's input, and a
+/// frame's output, one block.
+const Parts = struct { compressor: Compressor.Parts, input: []u8, output: []u8 };
+const Block = aegis.parts.Block(Parts);
+
+fn plan(options: Options) Block.Plan {
+    const b = blockLen(options);
+    return Block.plan(.{
+        .compressor = Compressor.counts(options.compressor),
+        .input = history_len + b,
+        .output = Compressor.bound(b, options.frame) + frame.max_header_len,
+    });
+}
+
 /// The bytes `initBuffer` needs.
 pub fn memory(options: Options) usize {
-    const b = blockLen(options);
-    return std.mem.alignForward(usize, Compressor.memory(options.compressor), 64) + history_len + b + Compressor.bound(b, options.frame) + frame.max_header_len;
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compress {
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
-    s.owned = buffer;
+    const held = try plan(options).alloc(gpa);
+    var s = assemble(held, options);
+    s.owned = held.bytes();
     s.gpa = gpa;
     return s;
 }
@@ -75,17 +88,13 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
 /// A compressor in caller memory, refused when shorter than
 /// `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compress {
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
-    const b = blockLen(options);
-    const c_len = std.mem.alignForward(usize, Compressor.memory(options.compressor), 64);
-    const rest = buffer[c_len..];
-    return .{
-        .options = options,
-        .compressor = try Compressor.initBuffer(buffer[0..c_len], options.compressor),
+    return assemble(try plan(options).fit(buffer), options);
+}
 
-        .input = rest[0 .. history_len + b],
-        .output = rest[history_len + b ..],
-    };
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(held: Block, options: Options) Compress {
+    const p = held.parts();
+    return .{ .options = options, .compressor = .fromParts(p.compressor, options.compressor), .input = p.input, .output = p.output };
 }
 
 pub fn deinit(s: *Compress) void {

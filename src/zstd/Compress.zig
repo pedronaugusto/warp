@@ -69,21 +69,30 @@ fn staging(p: Encoder.Params) usize {
     return @max(blockMax(p), @min(8 << 20, @as(usize, 1) << p.window_log));
 }
 
-/// Exact storage for tables, the retained history, input and pending output.
-pub fn memory(options: Options) usize {
+/// The encoder's tables, the retained history with the staged input, and a
+/// block's pending output, one block.
+const Parts = struct { encoder: Encoder.Parts, window: []u8, output: []u8 };
+const Block = aegis.parts.Block(Parts);
+
+fn plan(options: Options) Block.Plan {
     const p = Encoder.resolve(encoderOptions(options), options.pledged());
-    const block = blockMax(p);
-    const size = Encoder.memory(encoderOptions(options)) +| (@as(usize, 1) << p.window_log) +| (staging(p) + block + 3 * 197 + 22);
-    if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
-    return std.mem.alignForward(usize, size, 64);
+    return Block.plan(.{
+        .encoder = Encoder.counts(encoderOptions(options)),
+        .window = (@as(usize, 1) << p.window_log) + staging(p),
+        .output = blockMax(p) + 3 * 197 + 22,
+    });
+}
+
+/// Exact storage for tables, the retained history, input and pending
+/// output; maxInt(usize) when it does not fit the address space.
+pub fn memory(options: Options) usize {
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Compress {
-    const size = memory(options);
-    if (size == std.math.maxInt(usize)) return error.OutOfMemory;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var s = initBuffer(buffer, options) catch aegis.assert.never("buffer is memory(options) bytes");
-    s.owned = buffer;
+    const held = try plan(options).alloc(gpa);
+    var s = assemble(held, options);
+    s.owned = held.bytes();
     s.gpa = gpa;
     return s;
 }
@@ -91,14 +100,17 @@ pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Co
 /// Tables and staging in aligned caller storage, refused when shorter than
 /// `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compress {
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    return assemble(try plan(options).fit(buffer), options);
+}
+
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(held: Block, options: Options) Compress {
+    const parts = held.parts();
     const enc_options = encoderOptions(options);
-    const enc_size = Encoder.memory(enc_options);
     const p = Encoder.resolve(enc_options, options.pledged());
     const block = blockMax(p);
-    const window_size = (@as(usize, 1) << p.window_log) + staging(p);
     const s_block = @min(block, if (options.pledged()) |n| @max(1024, n) else block);
-    var s: Compress = .{ .options = options, .encoder = try Encoder.initBuffer(buffer[0..enc_size], enc_options), .params = p, .block_max = @min(block, s_block), .window = buffer[enc_size..][0..window_size], .output = buffer[enc_size + window_size ..][0 .. block + 3 * 197 + 22] };
+    var s: Compress = .{ .options = options, .encoder = .fromParts(parts.encoder, enc_options), .params = p, .block_max = @min(block, s_block), .window = parts.window, .output = parts.output };
     s.startFrame();
     return s;
 }

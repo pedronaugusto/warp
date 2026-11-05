@@ -26,8 +26,19 @@ pub fn HashTableFor(comptime window: u32) type {
         /// Private: the farthest a match reaches back.
         window: u32 = window,
 
-        pub fn memory(bits: u5) usize {
-            return (@as(usize, 1) << bits) * bucket * @sizeOf(Pos);
+        /// The table, as a part of one block (`aegis.parts`), which the
+        /// engine that searches with it nests in its own.
+        /// It starts on a cache line.
+        pub const Parts = struct { table: []align(64) [bucket]Pos };
+
+        /// A table of `bits`.
+        pub fn counts(bits: u5) aegis.parts.Counts(Parts) {
+            return .{ .table = @as(usize, 1) << bits };
+        }
+
+        /// The table over its part, placed.
+        pub fn fromParts(p: Parts) HashTable {
+            return .{ .table = p.table };
         }
 
         pub fn reset(ht: *HashTable, first: isize, bits: u5) void {

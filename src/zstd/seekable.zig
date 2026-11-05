@@ -217,35 +217,40 @@ pub const Writer = struct {
         return .{ .level = options.level, .tuning = options.tuning, .dictionary = options.dictionary, .max_input = .fromRaw(options.frameLen()) };
     }
 
-    pub fn memory(options: Options) usize {
+    /// The compressor's tables, the frame records, a frame's input and its
+    /// encoding, one block.
+    const Parts = struct { compressor: Compressor.Parts, entries: []Record, input: []u8, encoded: []u8 };
+    const Block = aegis.parts.Block(Parts);
+
+    fn plan(options: Options) Block.Plan {
         const len = options.frameLen();
-        const size = Compressor.memory(encoderOptions(options)) +| (@as(usize, options.max_frames) *| @sizeOf(Record)) +| len +| Compressor.bound(len);
-        if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
-        return std.mem.alignForward(usize, size, 64);
+        return Block.plan(.{ .compressor = Compressor.counts(encoderOptions(options)), .entries = options.max_frames, .input = len, .encoded = Compressor.bound(len) });
+    }
+
+    /// The bytes `initBuffer` needs; maxInt(usize) when they do not fit the
+    /// address space.
+    pub fn memory(options: Options) usize {
+        return plan(options).size().raw();
     }
 
     pub fn init(gpa: Allocator, output: *Io.Writer, options: Options) (Allocator.Error || error{InvalidOptions})!Writer {
         if (options.frame_len.eql(.fromRaw(0)) or options.frame_len.compare(.literal("1GiB")) == .gt or options.max_frames > (std.math.maxInt(u32) - 9) / 12) return error.InvalidOptions;
-        const size = memory(options);
-        if (size == std.math.maxInt(usize)) return error.OutOfMemory;
-        const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-        var w = initBuffer(buffer, output, options) catch aegis.assert.never("buffer is memory(options) bytes");
-        w.owned = buffer;
+        const held = try plan(options).alloc(gpa);
+        var w = assemble(held, output, options);
+        w.owned = held.bytes();
         w.gpa = gpa;
         return w;
     }
 
     /// Refused when `buffer` is shorter than `memory(options)`.
     pub fn initBuffer(buffer: []align(64) u8, output: *Io.Writer, options: Options) error{BufferTooSmall}!Writer {
-        if (buffer.len < memory(options)) return error.BufferTooSmall;
-        var fba: std.heap.FixedBufferAllocator = .init(buffer);
-        return carve(fba.allocator(), output, options) catch error.BufferTooSmall;
+        return assemble(try plan(options).fit(buffer), output, options);
     }
 
-    fn carve(a: Allocator, output: *Io.Writer, options: Options) error{ OutOfMemory, BufferTooSmall }!Writer {
-        const len = options.frameLen();
-        const compressor = try a.alignedAlloc(u8, .@"64", Compressor.memory(encoderOptions(options)));
-        return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = try .initBuffer(compressor, encoderOptions(options)), .entries = try a.alloc(Record, options.max_frames), .input = try a.alloc(u8, len), .encoded = try a.alloc(u8, Compressor.bound(len)), .checksum = options.checksum, .frame_checksum = options.frame_checksum };
+    /// The one core of `init` and `initBuffer`: a block holds its parts.
+    fn assemble(held: Block, output: *Io.Writer, options: Options) Writer {
+        const p = held.parts();
+        return .{ .interface = .{ .vtable = &.{ .drain = writeData, .flush = flushInput }, .buffer = &.{}, .end = 0 }, .output = output, .compressor = .fromParts(p.compressor, encoderOptions(options)), .entries = p.entries, .input = p.input, .encoded = p.encoded, .checksum = options.checksum, .frame_checksum = options.frame_checksum };
     }
 
     pub fn deinit(w: *Writer) void {

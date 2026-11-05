@@ -70,17 +70,35 @@ fn entriesLen(options: Options) usize {
     return if (options.stream.index == .none) 0 else Index.max_entries;
 }
 
+/// The compressor's tables, the index's entries, a block's input and the
+/// staged output, one block. Its alignment is 64, as `initBuffer` takes.
+const Parts = struct { compressor: Compressor.Parts, entries: []Index.Entry, input: []align(64) u8, output: []u8 };
+const Block = aegis.parts.Block(Parts);
+
+fn valid(options: Options) bool {
+    return options.compressor.valid() and Compressor.validStream(options.compressor, options.stream);
+}
+
+/// The parts for valid `options`.
+fn plan(options: Options) Block.Plan {
+    return Block.plan(.{
+        .compressor = Compressor.counts(options.compressor),
+        .entries = entriesLen(options),
+        .input = Compressor.blockSize(options.compressor, options.stream),
+        .output = stageLen(options),
+    });
+}
+
 /// The bytes `initBuffer` needs.
 pub fn memory(options: Options) usize {
-    const b = Compressor.blockSize(options.compressor, options.stream);
-    return std.mem.alignForward(usize, Compressor.memory(options.compressor), 64) + entriesLen(options) * @sizeOf(Index.Entry) + b + stageLen(options);
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
-    if (!options.compressor.valid() or !Compressor.validStream(options.compressor, options.stream)) return error.InvalidOptions;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
-    s.owned = buffer;
+    if (!valid(options)) return error.InvalidOptions;
+    const held = try plan(options).alloc(gpa);
+    var s = assemble(held, options);
+    s.owned = held.bytes();
     s.gpa = gpa;
     return s;
 }
@@ -88,19 +106,20 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
 /// A compressor in caller memory, refused when shorter than
 /// `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compress {
-    if (!options.compressor.valid() or !Compressor.validStream(options.compressor, options.stream)) return error.InvalidOptions;
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
-    const b = Compressor.blockSize(options.compressor, options.stream);
-    const c_len = std.mem.alignForward(usize, Compressor.memory(options.compressor), 64);
-    const e_len = entriesLen(options) * @sizeOf(Index.Entry);
-    const rest = buffer[c_len + e_len ..];
+    if (!valid(options)) return error.InvalidOptions;
+    return assemble(try plan(options).fit(buffer), options);
+}
+
+/// The one core of `init` and `initBuffer`: valid options, and a block
+/// holds its parts.
+fn assemble(held: Block, options: Options) Compress {
+    const p = held.parts();
     return .{
         .options = options,
-        .compressor = try Compressor.initBuffer(buffer[0..c_len], options.compressor),
-
-        .entries = std.mem.bytesAsSlice(Index.Entry, std.mem.alignInBytes(buffer[c_len..][0..e_len], @alignOf(Index.Entry)).?),
-        .input = rest[0..b],
-        .output = rest[b..][0..stageLen(options)],
+        .compressor = .fromParts(p.compressor, options.compressor),
+        .entries = p.entries,
+        .input = p.input,
+        .output = p.output,
     };
 }
 

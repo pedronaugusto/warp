@@ -39,25 +39,29 @@ slots: []Slot,
 owned: []align(64) u8 = &.{},
 gpa: std.mem.Allocator = undefined,
 
-/// Exact worker, entropy, literal and sequence storage.
+/// The slots, and each slot's prepared sequences and literals, one block.
+const Parts = struct { slots: []align(64) Slot, buffers: aegis.parts.Repeat(SlotParts) };
+const SlotParts = struct { seqs: []align(64) decode.PreparedSequence, literals: []u8 };
+const Block = aegis.parts.Block(Parts);
+
+/// The parts for a positive concurrency.
+fn plan(options: Options) Block.Plan {
+    const slots = @as(usize, options.concurrency) * 2;
+    return Block.plan(.{ .slots = slots, .buffers = .{ .len = slots, .each = .{ .seqs = max_sequences, .literals = decode.block_max + decode.margin } } });
+}
+
+/// Exact worker, entropy, literal and sequence storage; maxInt(usize) for
+/// options `initBuffer` refuses.
 pub fn memory(options: Options) usize {
     if (options.concurrency == 0) return std.math.maxInt(usize);
-    const head_bytes = @as(u64, options.concurrency) * 2 * @sizeOf(Slot);
-    if (head_bytes > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
-    const head = std.mem.alignForward(usize, @intCast(head_bytes), 64);
-    const stride = std.mem.alignForward(usize, max_sequences * @sizeOf(decode.PreparedSequence) + decode.block_max + decode.margin, 64);
-    const size = head +| @as(usize, options.concurrency) *| 2 *| stride;
-    if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
-    return std.mem.alignForward(usize, size, 64);
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
     if (options.concurrency == 0) return error.InvalidOptions;
-    const size = memory(options);
-    if (size == std.math.maxInt(usize)) return error.OutOfMemory;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var d = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
-    d.owned = buffer;
+    const held = try plan(options).alloc(gpa);
+    var d = assemble(held);
+    d.owned = held.bytes();
     d.gpa = gpa;
     return d;
 }
@@ -66,20 +70,17 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {
 /// shorter than `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Decompressor {
     if (options.concurrency == 0) return error.InvalidOptions;
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
-    var fba: std.heap.FixedBufferAllocator = .init(buffer);
-    return carve(fba.allocator(), options) catch error.BufferTooSmall;
+    return assemble(try plan(options).fit(buffer));
 }
 
-fn carve(a: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Decompressor {
-    const slots = try a.alignedAlloc(Slot, .@"64", @as(usize, options.concurrency) * 2);
-    for (slots) |*slot| slot.* = .{ .prepared = .{
-        .tables = undefined,
-        .cursor = undefined,
-        .seqs = try a.alignedAlloc(decode.PreparedSequence, .@"64", max_sequences),
-        .literals = try a.alloc(u8, decode.block_max + decode.margin),
-    } };
-    return .{ .slots = slots };
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(held: Block) Decompressor {
+    const p = held.parts();
+    for (p.slots, 0..) |*slot, i| {
+        const b = p.buffers.at(i);
+        slot.* = .{ .prepared = .{ .tables = undefined, .cursor = undefined, .seqs = b.seqs, .literals = b.literals } };
+    }
+    return .{ .slots = p.slots };
 }
 
 pub fn deinit(d: *Decompressor) void {

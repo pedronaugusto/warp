@@ -145,7 +145,8 @@ fn rows(p: Params) bool {
     return params_.usesRows(p.strategy) and p.window_log > 14;
 }
 
-const Layout = struct {
+/// Private: the tables' sizes for a configuration, which its parts carry.
+pub const Layout = struct {
     hash: usize,
     chain: usize,
     chain_hash: usize,
@@ -217,25 +218,68 @@ const Layout = struct {
         return l;
     }
 
-    fn bytes(l: Layout) usize {
-        const size = @as(u64, l.hash) * 4 + (if (l.chain_offset == null) @as(u64, l.chain) * 4 else 0) + l.tags + @as(u64, l.hash3) * 4 + l.opt + @as(u64, l.seqs) * (@sizeOf(encode.Sequence) + 3) + l.lits + 4 * (@as(u64, l.dict_heads) + l.dict_chain) + @sizeOf(encode.Sequence) * @as(u64, l.dict_sequences) + @as(u64, l.long_entries) * @sizeOf(long_match.Entry) + @as(u64, l.long_matches) * @sizeOf(long_match.Match) + l.long_heads;
-        if (size > std.math.maxInt(usize) - 63) return std.math.maxInt(usize);
-        return std.mem.alignForward(usize, @intCast(size), 64);
+    fn counts(l: Layout) aegis.parts.Counts(Parts) {
+        return .{
+            .layout = l,
+            .long_matches = l.long_matches,
+            .long_entries = l.long_entries,
+            .long_heads = l.long_heads,
+            .dictionary_heads = l.dict_heads,
+            .dictionary_chain = l.dict_chain,
+            .dictionary_sequences = l.dict_sequences,
+            .hash_table = l.hash,
+            .chain_table = if (l.chain_offset == null) l.chain else 0,
+            .tag_table = l.tags,
+            .hash3_table = l.hash3,
+            .opt_workspace = l.opt != 0,
+            .seqs = l.seqs,
+            .codes = 3 * l.seqs,
+            .lits = l.lits,
+        };
     }
 };
+
+/// The match tables, the sequence store and the entropy work, as parts of
+/// one block (`aegis.parts`), which the streaming and parallel encoders nest
+/// in theirs; with the layout they were counted from.
+pub const Parts = struct {
+    layout: aegis.parts.Given(Layout),
+    long_matches: []long_match.Match,
+    long_entries: []long_match.Entry,
+    long_heads: []u8,
+    dictionary_heads: []u32,
+    dictionary_chain: []u32,
+    dictionary_sequences: []encode.Sequence,
+    /// Starts on a cache line, as the hashed lookups want.
+    hash_table: []align(64) u32,
+    /// Empty where the chains lie in the hash table's suffix
+    /// (`Layout.chain_offset`).
+    chain_table: []u32,
+    tag_table: []u8,
+    hash3_table: []u32,
+    opt_workspace: ?*opt_.Workspace,
+    seqs: []encode.Sequence,
+    /// The literal-length, match-length and offset codes, a sequence each.
+    codes: []u8,
+    lits: []u8,
+};
+const Block = aegis.parts.Block(Parts);
+
+/// The parts for `options`.
+pub fn counts(options: Options) aegis.parts.Counts(Parts) {
+    return Layout.of(options).counts();
+}
 
 /// The bytes `initBuffer` needs, or maxInt(usize) when they do not fit the
 /// address space. `init` returns OutOfMemory for that configuration.
 pub fn memory(options: Options) usize {
-    return Layout.of(options).bytes();
+    return Block.plan(counts(options)).size().raw();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
-    const size = memory(options);
-    if (size == std.math.maxInt(usize)) return error.OutOfMemory;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", size);
-    var c = initBuffer(buffer, options) catch aegis.assert.never("buffer is memory(options) bytes");
-    c.owned = buffer;
+    const held = try Block.plan(counts(options)).alloc(gpa);
+    var c = fromParts(held.parts(), options);
+    c.owned = held.bytes();
     c.gpa = gpa;
     return c;
 }
@@ -243,53 +287,40 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {
 /// A compressor in caller memory, refused when shorter than
 /// `memory(options)`; `deinit` then frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Encoder {
-    const l = Layout.of(options);
-    if (buffer.len < l.bytes()) return error.BufferTooSmall;
-    var fba: std.heap.FixedBufferAllocator = .init(buffer);
-    return carve(fba.allocator(), options, l) catch error.BufferTooSmall;
+    return fromParts((try Block.plan(counts(options)).fit(buffer)).parts(), options);
 }
 
-fn carve(a: Allocator, options: Options, l: Layout) Allocator.Error!Encoder {
+/// The encoder over its parts, placed for `counts(options)`; `deinit`
+/// frees nothing.
+pub fn fromParts(parts: Parts, options: Options) Encoder {
+    const l = parts.layout.value;
     const p = resolve(options, options.sizeHint());
-    const long_matches = try a.alloc(long_match.Match, l.long_matches);
-    const long_entries = try a.alloc(long_match.Entry, l.long_entries);
-    const long_heads = try a.alloc(u8, l.long_heads);
-    const dictionary_heads = try a.alloc(u32, l.dict_heads);
-    const dictionary_chain = try a.alloc(u32, l.dict_chain);
-    const dictionary_sequences = try a.alloc(encode.Sequence, l.dict_sequences);
-    const hash_table = try a.alloc(u32, l.hash);
-    const chain_table = if (l.chain_offset) |offset| hash_table[offset..][0..l.chain] else try a.alloc(u32, l.chain);
-    const tag_table = try a.alloc(u8, l.tags);
-    const hash3_table = try a.alloc(u32, l.hash3);
-    const opt_workspace: ?*opt_.Workspace = if (l.opt != 0) try a.create(opt_.Workspace) else null;
-    const seqs = try a.alloc(encode.Sequence, l.seqs);
-    const codes_ = try a.alloc(u8, 3 * l.seqs);
-    const lits = try a.alloc(u8, l.lits);
-
-    @memset(hash_table, 0);
+    const chain_table = if (l.chain_offset) |offset| parts.hash_table[offset..][0..l.chain] else parts.chain_table;
+    @memset(parts.hash_table, 0);
     @memset(chain_table, 0);
-    @memset(tag_table, 0);
-    @memset(hash3_table, 0);
+    @memset(parts.tag_table, 0);
+    @memset(parts.hash3_table, 0);
+    const n = l.seqs;
     var c: Encoder = .{
         .options = options,
         .capacity = p,
         .active_strategy = null,
-        .hash_table = hash_table,
+        .hash_table = parts.hash_table,
         .chain_table = chain_table,
         .chain_offset = l.chain_offset,
-        .tag_table = tag_table,
+        .tag_table = parts.tag_table,
         .lazy = undefined,
         .optimal = undefined,
-        .hash3_table = hash3_table,
-        .opt_workspace = opt_workspace,
-        .store = .{ .seqs = seqs, .lits = lits, .lit_buffer = lits, .ll_codes = codes_[0..l.seqs], .ml_codes = codes_[l.seqs..][0..l.seqs], .of_codes = codes_[2 * l.seqs ..][0..l.seqs] },
+        .hash3_table = parts.hash3_table,
+        .opt_workspace = parts.opt_workspace,
+        .store = .{ .seqs = parts.seqs, .lits = parts.lits, .lit_buffer = parts.lits, .ll_codes = parts.codes[0..n], .ml_codes = parts.codes[n..][0..n], .of_codes = parts.codes[2 * n ..][0..n] },
         .entropy = undefined,
         .next_index = first_index,
         .owned = &.{},
         .gpa = undefined,
-        .dictionary_index = if (options.dictionary) |d| dictionary_match.Index.init(d.content[d.content.len - l.dict_chain ..], dictionary_heads, dictionary_chain) else null,
-        .dictionary_sequences = dictionary_sequences,
-        .long = if (options.tuning.long_distance) long_match.State.init(long_entries, long_heads, long_matches) else null,
+        .dictionary_index = if (options.dictionary) |d| dictionary_match.Index.init(d.content[d.content.len - l.dict_chain ..], parts.dictionary_heads, parts.dictionary_chain) else null,
+        .dictionary_sequences = parts.dictionary_sequences,
+        .long = if (options.tuning.long_distance) long_match.State.init(parts.long_entries, parts.long_heads, parts.long_matches) else null,
     };
     c.entropy[0].reset();
     c.entropy[1].reset();

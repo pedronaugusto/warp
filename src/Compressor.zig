@@ -46,15 +46,33 @@ pub const Options = struct {
     }
 };
 
+/// The engine's tables, as parts of one block (`aegis.parts`), which a
+/// type holding a compressor nests in its own.
+pub const Parts = deflate.Engine.Parts;
+const Block = aegis.parts.Block(Parts);
+
+fn sizes(options: Options) deflate.Engine.Sizes {
+    return .of(options.level, options.strategy, options.maxInput());
+}
+
+/// The parts for `options`.
+pub fn counts(options: Options) aegis.parts.Counts(Parts) {
+    return sizes(options).counts();
+}
+
+fn plan(options: Options) Block.Plan {
+    return Block.plan(counts(options));
+}
+
 /// The bytes `initBuffer` needs for `options`.
 pub fn memory(options: Options) usize {
-    return deflate.Engine.Sizes.of(options.level, options.strategy, options.maxInput()).memory();
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var c = initBuffer(buffer, options) catch unreachable; // unreachable: buffer is memory(options) bytes
-    c.owned = buffer;
+    const block = try plan(options).alloc(gpa);
+    var c = assemble(block, options);
+    c.owned = block.bytes();
     c.gpa = gpa;
     return c;
 }
@@ -62,8 +80,18 @@ pub fn init(gpa: Allocator, options: Options) Allocator.Error!Compressor {
 /// A compressor in caller memory, refused when shorter than
 /// `memory(options)`; `deinit` then frees nothing.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{BufferTooSmall}!Compressor {
-    const sizes = deflate.Engine.Sizes.of(options.level, options.strategy, options.maxInput());
-    return .{ .engine = try .init(buffer, sizes), .options = options, .owned = &.{}, .gpa = undefined };
+    return assemble(try plan(options).fit(buffer), options);
+}
+
+/// The one core of `init` and `initBuffer`: a block holds its parts.
+fn assemble(block: Block, options: Options) Compressor {
+    return fromParts(block.parts(), options);
+}
+
+/// A compressor over its parts, placed for `counts(options)`; `deinit`
+/// frees nothing.
+pub fn fromParts(p: Parts, options: Options) Compressor {
+    return .{ .engine = .fromParts(p, sizes(options)), .options = options, .owned = &.{}, .gpa = undefined };
 }
 
 pub fn deinit(c: *Compressor) void {

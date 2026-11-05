@@ -16,7 +16,6 @@ const Io = std.Io;
 const Lzma = @import("Compressor.zig");
 const encode = @import("encode.zig");
 const optimum = @import("optimum.zig");
-const finders = @import("Finder.zig");
 
 pub const Format = Lzma.Format;
 
@@ -70,7 +69,6 @@ const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .active, .termin
 /// longest match.
 const lookahead = encode.loop_input_max + encode.match_len_max;
 const output_len = 1 << 17;
-const coder_bytes = std.mem.alignForward(usize, @sizeOf(encode.Coder), 64);
 
 /// The bytes kept before the coding position: the dictionary, and an
 /// LZMA2 chunk that may yet be stored (one stored is shorter than 64 KiB
@@ -84,10 +82,6 @@ fn keep(o: Options) usize {
 /// dictionary of input.
 fn windowLen(o: Options) usize {
     return keep(o) + @max(o.lzma.dictionary / 2, 1 << 20);
-}
-
-fn sizes(o: Options) finders.Sizes {
-    return .of(o.lzma.match_finder, o.lzma.dictionary, null);
 }
 
 options: Options,
@@ -110,17 +104,26 @@ ended: bool = false,
 owned: []align(64) u8 = &.{},
 gpa: std.mem.Allocator = undefined,
 
+/// The coder, the finder's tables, the window and the staging buffer, one
+/// block.
+const Parts = struct { lzma: Lzma.Parts, window: []u8, output: []u8 };
+const Block = aegis.parts.Block(Parts);
+
+fn plan(options: Options) Block.Plan {
+    return Block.plan(.{ .lzma = Lzma.counts(options.lzma, null), .window = windowLen(options), .output = output_len });
+}
+
 /// The bytes `initBuffer` needs: the coder, the finder's tables, the
 /// window and the staging buffer.
 pub fn memory(options: Options) usize {
-    return coder_bytes + sizes(options).memory(options.lzma.match_finder) + windowLen(options) + output_len;
+    return plan(options).size().raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
     if (!options.valid()) return error.InvalidOptions;
-    const buffer = try gpa.alignedAlloc(u8, .@"64", memory(options));
-    var s = initBuffer(buffer, options) catch unreachable; // unreachable: the options were checked, and buffer is memory(options) bytes
-    s.owned = buffer;
+    const held = try plan(options).alloc(gpa);
+    var s = assemble(held, options);
+    s.owned = held.bytes();
     s.gpa = gpa;
     return s;
 }
@@ -129,29 +132,26 @@ pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {
 /// `memory(options)`.
 pub fn initBuffer(buffer: []align(64) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compress {
     if (!options.valid()) return error.InvalidOptions;
-    if (buffer.len < memory(options)) return error.BufferTooSmall;
+    return assemble(try plan(options).fit(buffer), options);
+}
 
+/// The one core of `init` and `initBuffer`: valid options, and a block
+/// holds its parts.
+fn assemble(held: Block, options: Options) Compress {
+    const p = held.parts();
     const o = options.lzma;
-    const coder = std.mem.bytesAsValue(encode.Coder, buffer[0..@sizeOf(encode.Coder)]);
-    coder.* = .{};
-    coder.init(o.properties, o.tuning());
-    const z = sizes(options);
-    const tables_len = z.memory(o.match_finder);
-    const tables: []align(64) u8 = buffer[coder_bytes..][0..tables_len];
-    var finder: Lzma.Finders = switch (o.match_finder) {
-        inline else => |k| @unionInit(Lzma.Finders, @tagName(k), .init(tables, z, o.dictionary, o.niceLen(), o.searchDepth())),
-    };
-    switch (finder) {
+    var lzma = Lzma.fromParts(p.lzma, o, null);
+    lzma.coder.init(o.properties, o.tuning());
+    switch (lzma.finder) {
         inline else => |*f| f.reset(),
     }
-    const window = buffer[coder_bytes + tables_len ..][0..windowLen(options)];
     return .{
         .options = options,
-        .coder = coder,
-        .finder = finder,
+        .coder = lzma.coder,
+        .finder = lzma.finder,
         .chunks = .{ .props = o.properties },
-        .window = window,
-        .output = buffer[coder_bytes + tables_len + window.len ..][0..output_len],
+        .window = p.window,
+        .output = p.output,
     };
 }
 
