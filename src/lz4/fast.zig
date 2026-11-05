@@ -287,7 +287,7 @@ inline fn candidate(comptime kind: Kind, comptime history: History, t: *const Ta
             if (e >= call.start) return e;
             // The dictionary's own position, moved to where its bytes
             // stand before the input; an empty bucket is out of reach.
-            const d = call.dictionary.?.entries[h];
+            const d = call.dictionary.?.entries[h]; // aegis: no-danger(A013): an attached call is made only by Compressor.run, over the dictionary it binds (dictionary, dictionary_end)
             const first = call.dictionary_end - @as(u32, @intCast(call.history.len));
             if (d < first) return 0;
             return d - first + (call.start - @as(u32, @intCast(call.history.len)));

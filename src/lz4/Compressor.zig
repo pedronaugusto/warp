@@ -368,7 +368,7 @@ fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: [
             }
         },
         .mid, .chains, .optimal => {
-            const chains = c.chains.?; // aegis: no-danger(A013): carve makes the chains when the top level's band is not fast, and setLevel keeps the level at most the top (band rises with the level)
+            const chains = c.chains.?; // aegis: no-danger(A013): carve makes the chains when the top level's band is not fast, and setLevel asserts them for a level past the fast band
             const prefix: hc.Prefix = switch (from) {
                 .none => .none,
                 .previous => .{ .previous = c.previous[c.previous.len -| 65536..] },
