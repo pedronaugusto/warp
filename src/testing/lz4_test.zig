@@ -383,6 +383,22 @@ test "a compressor in caller memory allocates nothing, and memory says what it n
     }
 }
 
+test "a block over the dictionary of a compressor given none refers to nothing, as one over none" {
+    const text = "no dictionary, and no dictionary again";
+    for ([_]i32{ -5, 1, 2, 6, 12 }) |level| {
+        var c: lz4.Compressor = try .init(testing.allocator, .{ .level = level });
+        defer c.deinit();
+        var over_none: [128]u8 = undefined;
+        const n = try c.compressBlock(text, &over_none, .{});
+        var over_dictionary: [128]u8 = undefined;
+        const m = try c.compressBlock(text, &over_dictionary, .{ .history = .dictionary });
+        try testing.expectEqualSlices(u8, over_none[0..n], over_dictionary[0..m]);
+        var back: [64]u8 = undefined;
+        const d = try lz4.decompressBlock(over_dictionary[0..m], &back, .{});
+        try testing.expectEqualStrings(text, back[0..d.out_len]);
+    }
+}
+
 // ---- Fuzzing ----
 
 /// A plain decoder, one byte at a time: the oracle for the fast one.

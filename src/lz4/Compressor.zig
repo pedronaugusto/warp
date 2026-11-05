@@ -60,7 +60,7 @@ pub const Options = struct {
 pub const History = union(enum) {
     /// Nothing: the block alone.
     none,
-    /// The dictionary given at `init`.
+    /// The dictionary given at `init`; with none, nothing (as `.none`).
     dictionary,
     /// The last block this compressor wrote, by any call, whose input is
     /// still in place and unchanged (lz4's `_continue`): a run of linked
@@ -312,11 +312,18 @@ pub fn compressBlockDestSize(c: *Compressor, in: []const u8, out: []u8, options:
 
 fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: []u8, history: History) ?seq.Written {
     defer c.previous = in;
+    // The history with the dictionary it names, if the compressor has one.
+    const from: union(enum) { none, dictionary: Bound, previous, bytes: []const u8 } = switch (history) {
+        .none => .none,
+        .dictionary => if (c.dictionary) |d| .{ .dictionary = d } else .none,
+        .previous => .previous,
+        .bytes => |bytes| .{ .bytes = bytes },
+    };
     const level = c.level;
     switch (band(level)) {
         .fast => {
             const accel: u32 = if (level < 0) @intCast(1 - @as(i64, level)) else 1;
-            switch (history) {
+            switch (from) {
                 .none => {
                     if (in.len < fast.small_limit) {
                         const start = c.table.begin(in.len, .small, false);
@@ -347,8 +354,7 @@ fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: [
                     fast.loadFast(c.table, start, prev);
                     return fast.compress(.large, .table, directive, c.table, .{ .src = in, .start = start, .history = prev, .acceleration = accel }, out);
                 },
-                .dictionary => {
-                    const d = c.dictionary.?;
+                .dictionary => |d| {
                     const start = c.table.begin(in.len, .large, false);
                     return fast.compress(.large, .attached, directive, c.table, .{
                         .src = in,
@@ -362,12 +368,12 @@ fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: [
             }
         },
         .mid, .chains, .optimal => {
-            const chains = c.chains.?;
-            const prefix: hc.Prefix = switch (history) {
+            const chains = c.chains.?; // aegis: no-danger(A013): carve makes the chains when the top level's band is not fast, and setLevel keeps the level at most the top (band rises with the level)
+            const prefix: hc.Prefix = switch (from) {
                 .none => .none,
                 .previous => .{ .previous = c.previous[c.previous.len -| 65536..] },
                 .bytes => |bytes| .{ .bytes = bytes[bytes.len -| 65536..] },
-                .dictionary => .{ .attached = .{ .bytes = c.dictionary.?.bytes, .chains = c.dictionary.?.chains.? } },
+                .dictionary => |d| .{ .attached = .{ .bytes = d.bytes, .chains = d.chains.? } }, // aegis: no-danger(A013): carve makes a dictionary's chains with the compressor's, when the top level's band is not fast
             };
             return chains.compress(directive, level, c.favor_decompression_speed, in, out, prefix);
         },

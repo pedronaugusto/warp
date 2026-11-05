@@ -41,6 +41,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Fixed
 
+- `lz4.Compressor.compressBlock` and `compressBlockDestSize` with `.history = .dictionary` on a compressor given no dictionary at `init` write the block over nothing, as `.none` does, where they unwrapped the missing dictionary (a safe build stopped, ReleaseFast was undefined).
 - `xz.Compressor` writes each block's check from what `init` accepted: a check id xz reserves set in `options.check` after `init` reached `unreachable` in `block` (a safe build stopped, ReleaseFast was undefined behaviour); `init` still refuses one with `InvalidOptions`.
 - The resumable LZMA, LZMA2, `.lzma` and `.xz` decoders given more output room than their window decode a run of at most the window and go on while the room lasts: a run as long as the room wrote past what the window holds before it was copied out, and panicked on the overflow (in safe builds; wrong output in unsafe ones). Found by the resumable decoders' fuzz test.
 - `zstd.parallel.Decompressor` and `xz.parallel.Decompressor` are canceled between frames and streams: a run of skippable frames, or of streams with no blocks, reached no cancellation point.
