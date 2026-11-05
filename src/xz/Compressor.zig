@@ -67,6 +67,9 @@ options: Options,
 hasher: format.Hasher,
 /// Private: a block's input with the filters applied.
 scratch: []u8 = &.{},
+/// Private: the records of the blocks `compress` has written of its stream,
+/// for the index.
+records: std.ArrayList(Record) = .empty,
 gpa: Allocator,
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
@@ -83,6 +86,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
 pub fn deinit(c: *Compressor) void {
     c.lzma.deinit();
     c.gpa.free(c.scratch);
+    c.records.deinit(c.gpa);
     c.* = undefined;
 }
 
@@ -104,19 +108,27 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8) Error!usize {
     format.writeStreamHeader(out[0..format.header_len], o.check);
     var pos: usize = format.header_len;
     const block_len = o.blockLen(in.len);
+    c.records.clearRetainingCapacity();
     var rest = in;
     while (rest.len != 0) {
         const n = @min(rest.len, block_len);
-        pos += try c.block(rest[0..n], out[pos..]);
+        const r = try c.blockRecord(rest[0..n], out[pos..]);
+        try c.records.append(c.gpa, r);
+        pos += r.span;
         rest = rest[n..];
     }
-    pos += try writeIndex(out, format.header_len, pos, o.check);
+    pos += try writeIndex(out, pos, c.records.items, o.check);
     return pos;
 }
 
 /// One block of `in` into `out`: header, LZMA2, padding, check; its
 /// length.
 pub fn block(c: *Compressor, in: []const u8, out: []u8) Error!usize {
+    return (try c.blockRecord(in, out)).span;
+}
+
+/// One block of `in` into `out`, and its index record.
+pub fn blockRecord(c: *Compressor, in: []const u8, out: []u8) Error!Record {
     const o = c.options;
     var data = in;
     if (o.filters.len != 0) {
@@ -150,49 +162,30 @@ pub fn block(c: *Compressor, in: []const u8, out: []u8) Error!usize {
     var h = c.hasher;
     h.update(in);
     h.final(out[pos..][0..check]);
-    return pos + check;
+    return .{ .unpadded = header + len + check, .uncompressed = in.len, .span = pos + check };
 }
 
-/// The index of the blocks at `out[first..end]`, read back from their
-/// headers, then the footer, at `out[end..]`; their length.
-pub fn writeIndex(out: []u8, first: usize, end: usize, check: Check) Error!usize {
-    var count: u64 = 0;
+/// The index of `records`, the stream's blocks in order, then the footer, at
+/// `out[end..]`; their length.
+pub fn writeIndex(out: []u8, end: usize, records: []const Record, check: Check) Error!usize {
     var len: usize = 1;
-    var at = first;
-    while (at < end) : (count += 1) {
-        const r = record(out[at..end], check);
-        len += format.vliLen(r.unpadded) + format.vliLen(r.uncompressed);
-        at += r.span;
-    }
-    len += format.vliLen(count);
+    for (records) |r| len += format.vliLen(r.unpadded) + format.vliLen(r.uncompressed);
+    len += format.vliLen(records.len);
     const index_len = std.mem.alignForward(usize, len, 4) + 4;
     if (out.len - end < index_len + format.footer_len) return error.OutputTooSmall;
     const index = out[end..][0..index_len];
     @memset(index, 0);
     var pos: usize = 1;
-    format.putVli(index, &pos, count);
-    at = first;
-    while (at < end) {
-        const r = record(out[at..end], check);
+    format.putVli(index, &pos, records.len);
+    for (records) |r| {
         format.putVli(index, &pos, r.unpadded);
         format.putVli(index, &pos, r.uncompressed);
-        at += r.span;
     }
     std.mem.writeInt(u32, index[index_len - 4 ..][0..4], Crc32.hash(index[0 .. index_len - 4]), .little);
     format.writeStreamFooter(out[end + index_len ..][0..format.footer_len], index_len, check);
     return index_len + format.footer_len;
 }
 
-const Record = struct { unpadded: u64, uncompressed: u64, span: usize };
-
-/// The block warp wrote at the start of `blocks`: its index record and its length.
-fn record(blocks: []const u8, check: Check) Record {
-    var fault: format.Fault = undefined;
-    const h = aegis.input.Untrusted([]const u8).init(blocks).parse(format.HeaderContext{ .check = check, .fault = &fault }, format.blockHeader) catch aegis.assert.never("warp wrote this header");
-    const data: usize = @intCast(h.compressed.?);
-    return .{
-        .unpadded = h.len + data + check.size(),
-        .uncompressed = h.uncompressed.?,
-        .span = h.len + std.mem.alignForward(usize, data, 4) + check.size(),
-    };
-}
+/// A block's index record, kept as the block is written: its unpadded and
+/// uncompressed sizes, and its whole length in the stream.
+pub const Record = struct { unpadded: u64, uncompressed: u64, span: usize };

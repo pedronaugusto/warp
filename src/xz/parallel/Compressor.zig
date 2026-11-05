@@ -1,8 +1,8 @@
 //! Parallel `.xz` encoding: the input cut into blocks (three dictionaries
 //! by default, at least 1 MiB, as `xz -T` cuts them), each encoded by a
 //! worker into its own buffer, the blocks written out in order and the
-//! index read back from their headers. The stream is the bytes the
-//! whole-buffer encoder writes with the same options and block size.
+//! index made from the records the workers kept of them. The stream is the
+//! bytes the whole-buffer encoder writes with the same options and block size.
 
 const Compressor = @This();
 
@@ -35,13 +35,13 @@ pub const Error = Serial.Error || Io.Cancelable;
 const Worker = struct {
     group: Io.Group = .init,
     encoder: Serial,
-    /// The block encoded, and its length.
+    /// The block encoded, and its index record (its length the span).
     out: []u8,
-    len: usize = 0,
+    record: Serial.Record = .{ .unpadded = 0, .uncompressed = 0, .span = 0 },
     failure: ?Serial.Error = null,
 
     fn run(w: *Worker, in: []const u8) void {
-        w.len = w.encoder.block(in, w.out) catch |err| {
+        w.record = w.encoder.blockRecord(in, w.out) catch |err| {
             w.failure = err;
             return;
         };
@@ -50,6 +50,8 @@ const Worker = struct {
 
 options: Options,
 workers: []Worker,
+/// Private: the records of the blocks placed in the current stream.
+records: std.ArrayList(Serial.Record) = .empty,
 gpa: Allocator,
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
@@ -84,6 +86,7 @@ pub fn deinit(c: *Compressor) void {
         w.encoder.deinit();
         c.gpa.free(w.out);
     }
+    c.records.deinit(c.gpa);
     c.gpa.free(c.workers);
     c.* = undefined;
 }
@@ -107,6 +110,7 @@ pub fn compress(c: *Compressor, io: Io, in: []const u8, out: []u8) Error!usize {
     if (out.len < format.header_len) return error.OutputTooSmall;
     format.writeStreamHeader(out[0..format.header_len], o.check);
     var pos: usize = format.header_len;
+    c.records.clearRetainingCapacity();
     const block: usize = @intCast(o.block_size.?);
     var at: usize = 0;
     var next: usize = 0;
@@ -116,7 +120,7 @@ pub fn compress(c: *Compressor, io: Io, in: []const u8, out: []u8) Error!usize {
         const w = &c.workers[next];
         if (busy == c.workers.len) {
             try w.group.await(io);
-            pos = try place(w, out, pos);
+            pos = try c.place(w, out, pos);
             busy -= 1;
         }
         const n = @min(block, in.len - at);
@@ -131,17 +135,19 @@ pub fn compress(c: *Compressor, io: Io, in: []const u8, out: []u8) Error!usize {
     while (busy != 0) : (busy -= 1) {
         const w = &c.workers[i];
         try w.group.await(io);
-        pos = try place(w, out, pos);
+        pos = try c.place(w, out, pos);
         i = (i + 1) % c.workers.len;
     }
-    pos += try Serial.writeIndex(out, format.header_len, pos, o.check);
+    pos += try Serial.writeIndex(out, pos, c.records.items, o.check);
     return pos;
 }
 
-/// A worker's block after the ones before it.
-fn place(w: *Worker, out: []u8, pos: usize) Serial.Error!usize {
+/// A worker's block after the ones before it, its record kept for the index.
+fn place(c: *Compressor, w: *Worker, out: []u8, pos: usize) Serial.Error!usize {
     if (w.failure) |err| return err;
-    if (out.len - pos < w.len) return error.OutputTooSmall;
-    @memcpy(out[pos..][0..w.len], w.out[0..w.len]);
-    return pos + w.len;
+    const len = w.record.span;
+    if (out.len - pos < len) return error.OutputTooSmall;
+    @memcpy(out[pos..][0..len], w.out[0..len]);
+    try c.records.append(c.gpa, w.record);
+    return pos + len;
 }
