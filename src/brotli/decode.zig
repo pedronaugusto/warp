@@ -163,13 +163,14 @@ const Machine = aegis.state.Machine(Phase, Event, .{ .initial = .stream_header, 
 
 /// Which tree group a compressed meta-block's header reads: literal, then
 /// insert-and-copy, then distance trees; `done` until the next meta-block.
-const Group = enum { literal, command, distance, done };
-const GroupEvent = enum { read, restart };
+/// The tree group a meta-block's header is reading. The distance trees' read
+/// ends the header, and the next meta-block reads from the literal trees again.
+const Group = enum { literal, command, distance };
+const GroupEvent = enum { read };
 const Groups = aegis.state.Machine(Group, GroupEvent, .{ .initial = .literal, .terminal = &.{}, .edges = &.{
     .{ .from = .literal, .on = .read, .to = .command },
     .{ .from = .command, .on = .read, .to = .distance },
-    .{ .from = .distance, .on = .read, .to = .done },
-    .{ .from = .done, .on = .restart, .to = .literal },
+    .{ .from = .distance, .on = .read, .to = .literal },
 } });
 
 /// What a prefix code's description is being read for; its event when it
@@ -339,9 +340,9 @@ fn step(comptime careful: bool, s: *State, t: *Tables, r: *Reader, h: anytype) S
             try h.begin(s.window_bits);
         },
         .metablock_header => try metablockHeader(careful, s, r, at),
-        .metadata, .uncompressed => return bytesStep(s, r, h),
-        .block_types, .block_count_code, .block_count, .distance_params, .modes, .context_map_trees, .context_map_rle, .context_map_entries, .context_map_mtf, .tree_groups, .prefix_code => return headerStep(careful, s, t, r, at),
-        .command, .literals, .distance, .copy, .word => return bodyStep(careful, s, t, r, h, at),
+        inline .metadata, .uncompressed => |phase| return bytesStep(phase, s, r, h),
+        inline .block_types, .block_count_code, .block_count, .distance_params, .modes, .context_map_trees, .context_map_rle, .context_map_entries, .context_map_mtf, .tree_groups, .prefix_code => |phase| return headerStep(careful, phase, s, t, r, at),
+        inline .command, .literals, .distance, .copy, .word => |phase| return bodyStep(careful, phase, s, t, r, h, at),
         .end => {
             if (!r.alignByte()) return s.fail(.padding, at);
             r.unload();
@@ -355,8 +356,8 @@ fn step(comptime careful: bool, s: *State, t: *Tables, r: *Reader, h: anytype) S
 
 /// The phases that take whole bytes: metadata skipped, uncompressed data
 /// copied, each from a byte boundary.
-fn bytesStep(s: *State, r: *Reader, h: anytype) StepError!?Status {
-    switch (s.phase) {
+fn bytesStep(comptime phase: Phase, s: *State, r: *Reader, h: anytype) StepError!?Status {
+    switch (phase) {
         .metadata => {
             // Metadata is skipped byte by byte from a byte boundary.
             r.unload();
@@ -379,14 +380,14 @@ fn bytesStep(s: *State, r: *Reader, h: anytype) StepError!?Status {
             }
             s.endPart(.uncompressed);
         },
-        else => unreachable,
+        else => @compileError("bytesStep takes the phases of whole bytes"),
     }
     return null;
 }
 
 /// One unit of a compressed meta-block's header.
-noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader, at: u64) StepError!?Status {
-    switch (s.phase) {
+noinline fn headerStep(comptime careful: bool, comptime phase: Phase, s: *State, t: *Tables, r: *Reader, at: u64) StepError!?Status {
+    switch (phase) {
         .block_types => {
             if (s.category == 3) {
                 s.go(.block_types, .read);
@@ -474,16 +475,15 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 .literal => s.num_literal_trees,
                 .command => s.num_types[1],
                 .distance => s.num_distance_trees,
-                .done => unreachable,
             };
             if (s.tree == n) {
+                const last = s.group == .distance;
                 switch (s.group) {
-                    inline .literal, .command, .distance => |group| s.goGroup(group, .read),
-                    .done => unreachable,
+                    inline else => |group| s.goGroup(group, .read),
                 }
                 s.tree = 0;
                 s.group_used = 0;
-                if (s.group == .done) {
+                if (last) {
                     startBody(s, t);
                     s.go(.tree_groups, .read);
                 }
@@ -495,18 +495,17 @@ noinline fn headerStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader
                 .literal => startCode(s, .tree_groups, .tree, 256, 256),
                 .command => startCode(s, .tree_groups, .tree, 704, 704),
                 .distance => startCode(s, .tree_groups, .tree, s.distance_max, s.distance_limit),
-                .done => unreachable,
             }
         },
         .prefix_code => try prefixCode(careful, s, t, r, at),
-        else => unreachable,
+        else => @compileError("headerStep takes the phases of a meta-block's header"),
     }
     return null;
 }
 
 /// One unit of a compressed meta-block's commands.
-noinline fn bodyStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader, h: anytype, at: u64) StepError!?Status {
-    switch (s.phase) {
+noinline fn bodyStep(comptime careful: bool, comptime phase: Phase, s: *State, t: *Tables, r: *Reader, h: anytype, at: u64) StepError!?Status {
+    switch (phase) {
         .command => {
             if (!careful) return fastCommands(s, t, r, h);
             try readCommand(careful, s, t, r, at);
@@ -551,7 +550,7 @@ noinline fn bodyStep(comptime careful: bool, s: *State, t: *Tables, r: *Reader, 
             if (s.remaining <= 0) return endMetablock(s, .word, at);
             s.go(.word, .read);
         },
-        else => unreachable,
+        else => @compileError("bodyStep takes the phases of a meta-block's body"),
     }
     return null;
 }
@@ -624,7 +623,6 @@ noinline fn metablockHeader(comptime careful: bool, s: *State, r: *Reader, at: u
     s.category = 0;
     s.num_types = .{ 1, 1, 1 };
     s.blocks.counts = @splat(1 << 24);
-    if (s.group == .done) s.goGroup(.done, .restart);
     aegis.assert.invariant(s.group == .literal, "a meta-block reads its tree groups from the first");
     s.tree = 0;
     s.group_used = 0;
@@ -755,7 +753,6 @@ fn codeTable(s: *const State, t: *Tables) []Entry {
             .literal => t.literal[s.group_used..],
             .command => t.command[s.group_used..],
             .distance => t.distance[s.group_used..],
-            .done => unreachable,
         },
     };
 }
@@ -1243,7 +1240,6 @@ fn groupTrees(t: *Tables, group: Group) []u32 {
         .literal => &t.literal_trees,
         .command => &t.command_trees,
         .distance => &t.distance_trees,
-        .done => unreachable,
     };
 }
 
