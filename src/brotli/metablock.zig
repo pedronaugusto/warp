@@ -63,11 +63,12 @@ fn estimateEntropy(population: []const u32) f64 {
     return cost.mulAdd(@floatFromInt(total), cost.fastLog2(total), -r);
 }
 
-const StaticContexts = struct { num: usize = 1, map: ?*const [64]u32 = null };
+/// A static context map for literals and its number of contexts.
+const StaticContexts = struct { num: usize, map: *const [64]u32 };
 
 /// One, two or three literal contexts by how well the previous byte's
-/// UTF-8 class predicts the next's.
-fn chooseContextMap(quality: u4, bigram: *const [9]u32) StaticContexts {
+/// UTF-8 class predicts the next's; null for one.
+fn chooseContextMap(quality: u4, bigram: *const [9]u32) ?StaticContexts {
     var monogram: [3]u32 = @splat(0);
     var two_prefix: [6]u32 = @splat(0);
     for (0..9) |i| {
@@ -88,7 +89,7 @@ fn chooseContextMap(quality: u4, bigram: *const [9]u32) StaticContexts {
     // Three contexts decode more slowly: not below quality 7.
     if (quality < 7) e[3] = e[1] * 10;
     // Under 0.2 bits a symbol saved: no context modelling.
-    if (e[1] - e[2] < 0.2 and e[1] - e[3] < 0.2) return .{};
+    if (e[1] - e[2] < 0.2 and e[1] - e[3] < 0.2) return null;
     if (e[2] - e[3] < 0.02) return .{ .num = 2, .map = &tables.context_map_simple_utf8 };
     return .{ .num = 3, .map = &tables.context_map_continuation };
 }
@@ -130,8 +131,8 @@ fn complexStaticContextMap(input: []const u8, start_in: usize, length: usize, ma
     return .{ .num = max_static_contexts, .map = &tables.context_map_complex_utf8 };
 }
 
-fn decideLiteralContextModeling(input: []const u8, start_in: usize, length: usize, mask: usize, quality: u4, size_hint: usize) StaticContexts {
-    if (quality < 5 or length < 64) return .{};
+fn decideLiteralContextModeling(input: []const u8, start_in: usize, length: usize, mask: usize, quality: u4, size_hint: usize) ?StaticContexts {
+    if (quality < 5 or length < 64) return null;
     if (complexStaticContextMap(input, start_in, length, mask, size_hint)) |c| return c;
     // UTF-8 class bigrams in 64-byte strides every 4 KiB.
     const end_pos = start_in + length;
@@ -402,7 +403,7 @@ const ContextBlockSplitter = struct {
 
 /// Qualities 4-9: greedy block splits for each category, and the static
 /// context map's histograms for literals.
-fn buildGreedy(gpa: Allocator, ring: []const u8, pos_in: usize, mask: usize, prev_byte_in: u8, prev_byte2_in: u8, mode: context.Mode, sc: StaticContexts, cmds: []const Command, mb: *MetaBlockSplit) Allocator.Error!void {
+fn buildGreedy(gpa: Allocator, ring: []const u8, pos_in: usize, mask: usize, prev_byte_in: u8, prev_byte2_in: u8, mode: context.Mode, sc: ?StaticContexts, cmds: []const Command, mb: *MetaBlockSplit) Allocator.Error!void {
     var num_literals: usize = 0;
     for (cmds) |c| num_literals += c.insert_len;
     const lut = &context.lookup[@backingInt(mode)];
@@ -411,9 +412,8 @@ fn buildGreedy(gpa: Allocator, ring: []const u8, pos_in: usize, mask: usize, pre
     var prev_byte2 = prev_byte2_in;
     var plain: BlockSplitter(LiteralHistogram) = undefined;
     var ctx: ContextBlockSplitter = undefined;
-    const ctx_splitter = sc.num > 1;
-    if (ctx_splitter) {
-        ctx = try .init(gpa, 256, sc.num, 512, 400.0, num_literals, &mb.literal_split, &mb.literal_histograms);
+    if (sc) |s| {
+        ctx = try .init(gpa, 256, s.num, 512, 400.0, num_literals, &mb.literal_split, &mb.literal_histograms);
     } else {
         plain = try .init(gpa, 256, 512, 400.0, num_literals, &mb.literal_split, &mb.literal_histograms);
     }
@@ -423,8 +423,8 @@ fn buildGreedy(gpa: Allocator, ring: []const u8, pos_in: usize, mask: usize, pre
         cmd_blocks.addSymbol(c.cmd_prefix);
         for (0..c.insert_len) |_| {
             const literal = ring[pos & mask];
-            if (ctx_splitter) {
-                ctx.addSymbol(literal, sc.map.?[lut[prev_byte] | lut[256 + @as(usize, prev_byte2)]]);
+            if (sc) |s| {
+                ctx.addSymbol(literal, s.map[lut[prev_byte] | lut[256 + @as(usize, prev_byte2)]]);
             } else plain.addSymbol(literal);
             prev_byte2 = prev_byte;
             prev_byte = literal;
@@ -438,7 +438,7 @@ fn buildGreedy(gpa: Allocator, ring: []const u8, pos_in: usize, mask: usize, pre
         }
     }
     var literal_size: usize = undefined;
-    if (ctx_splitter) ctx.finishBlock(true, &literal_size) else plain.finishBlock(true, &literal_size);
+    if (sc != null) ctx.finishBlock(true, &literal_size) else plain.finishBlock(true, &literal_size);
     mb.literal_histograms = try shrink(LiteralHistogram, gpa, mb.literal_histograms, literal_size);
     var command_size: usize = undefined;
     cmd_blocks.finishBlock(true, &command_size);
@@ -446,13 +446,13 @@ fn buildGreedy(gpa: Allocator, ring: []const u8, pos_in: usize, mask: usize, pre
     var distance_size: usize = undefined;
     dist_blocks.finishBlock(true, &distance_size);
     mb.distance_histograms = try shrink(DistanceHistogram, gpa, mb.distance_histograms, distance_size);
-    if (ctx_splitter) {
+    if (sc) |s| {
         // The static map's contexts, per block type.
         const size = mb.literal_split.num_types << command.literal_context_bits;
         mb.literal_context_map = try gpa.alloc(u32, size);
         for (0..mb.literal_split.num_types) |i| {
-            const offset: u32 = @intCast(i * sc.num);
-            for (0..64) |j| mb.literal_context_map[(i << command.literal_context_bits) + j] = offset + sc.map.?[j];
+            const offset: u32 = @intCast(i * s.num);
+            for (0..64) |j| mb.literal_context_map[(i << command.literal_context_bits) + j] = offset + s.map[j];
         }
     }
 }
@@ -494,7 +494,7 @@ pub fn write(gpa: Allocator, scratch: *Scratch, data: []const u8, mask: u32, las
         var mb: MetaBlockSplit = .{};
         defer mb.deinit(gpa);
         if (params.quality < 10) {
-            var sc: StaticContexts = .{};
+            var sc: ?StaticContexts = null;
             if (!params.disable_literal_context_modeling) sc = decideLiteralContextModeling(data, wrapped_last_flush_pos, bytes, mask, params.quality, params.size_hint);
             try buildGreedy(gpa, data, wrapped_last_flush_pos, mask, prev_byte, prev_byte2, mode, sc, cmds, &mb);
         } else {
