@@ -346,7 +346,8 @@ fn updateNodes(num_bytes: usize, block_start: usize, pos: usize, ring: []const u
                 if (prev_ix + best_len > mask or continuation != ring[prev_ix + best_len]) continue;
                 len = find.matchLength(ring, prev_ix, cur, max_len);
             } else if (bk > dictionary_start) {
-                const d = params.dictionary.?;
+                // Held only in a prefix dictionary, if there is one.
+                const d = params.dictionary orelse continue;
                 len = d.matchAt(ring[cur..], dictionary_start, bk, best_len, max_len, continuation) orelse continue;
             } else {
                 // Addressable by a decoder, but not held here.

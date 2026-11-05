@@ -8,6 +8,7 @@ const command = @import("command.zig");
 const hash = @import("hash.zig");
 const find = @import("find.zig");
 const settings = @import("settings.zig");
+const Prepared = @import("Prepared.zig");
 
 const Command = command.Command;
 
@@ -47,13 +48,13 @@ pub fn create(h: anytype, common: *hash.Common, num_bytes: u32, position: u32, d
         hash.H2, hash.H3, hash.H4, hash.H54, hash.H35 => true,
         else => false,
     };
-    if (!quick and params.dictionary != null)
-        createWith(H, true, h, common, num_bytes, position, data, mask, params, cache, out)
-    else
-        createWith(H, false, h, common, num_bytes, position, data, mask, params, cache, out);
+    if (!quick) if (params.dictionary) |dictionary| return createWith(H, true, h, common, num_bytes, position, data, mask, params, dictionary, cache, out);
+    createWith(H, false, h, common, num_bytes, position, data, mask, params, {}, cache, out);
 }
 
-fn createWith(comptime H: type, comptime prefix: bool, h: *H, common: *hash.Common, num_bytes: usize, position_in: usize, data: []const u8, mask: usize, params: *const settings.Resolved, cache: *[16]i32, out: *Out) void {
+/// With `prefix`, matches are also looked up in `dictionary`, the
+/// params' prefix dictionary.
+fn createWith(comptime H: type, comptime prefix: bool, h: *H, common: *hash.Common, num_bytes: usize, position_in: usize, data: []const u8, mask: usize, params: *const settings.Resolved, dictionary: if (prefix) *const Prepared else void, cache: *[16]i32, out: *Out) void {
     const max_backward_limit = (@as(usize, 1) << params.lgwin) - 16;
     const position_offset = params.stream_offset;
     var position = position_in;
@@ -73,7 +74,7 @@ fn createWith(comptime H: type, comptime prefix: bool, h: *H, common: *hash.Comm
         var dictionary_start = @min(position + position_offset, max_backward_limit);
         var sr: find.SearchResult = .{ .len = 0, .len_code_delta = 0, .distance = 0, .score = min_score };
         h.findLongestMatch(common, data, mask, cache, position, max_length, max_distance, dictionary_start + gap, params.dist.max_distance, &sr);
-        if (prefix) params.dictionary.?.lookup(data, mask, cache, position, max_length, dictionary_start, params.dist.max_distance, &sr);
+        if (prefix) dictionary.lookup(data, mask, cache, position, max_length, dictionary_start, params.dist.max_distance, &sr);
         if (sr.score > min_score) {
             // A match: look for a better one a byte later.
             var delayed: usize = 0;
@@ -89,7 +90,7 @@ fn createWith(comptime H: type, comptime prefix: bool, h: *H, common: *hash.Comm
                 max_distance = @min(position + 1, max_backward_limit);
                 dictionary_start = @min(position + 1 + position_offset, max_backward_limit);
                 h.findLongestMatch(common, data, mask, cache, position + 1, max_length, max_distance, dictionary_start + gap, params.dist.max_distance, &sr2);
-                if (prefix) params.dictionary.?.lookup(data, mask, cache, position + 1, max_length, dictionary_start, params.dist.max_distance, &sr2);
+                if (prefix) dictionary.lookup(data, mask, cache, position + 1, max_length, dictionary_start, params.dist.max_distance, &sr2);
                 if (sr2.score >= sr.score + cost_diff_lazy) {
                     // One literal now, the match from the next byte.
                     position += 1;
