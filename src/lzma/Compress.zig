@@ -301,7 +301,10 @@ fn startRaw(s: *Compress) void {
         const a = s.options.format.alone;
         s.output[0] = s.options.lzma.properties.encode();
         std.mem.writeInt(u32, s.output[1..5], s.options.lzma.dictionary, .little);
-        std.mem.writeInt(u64, s.output[5..13], if (a.size_known) s.options.pledged().? else std.math.maxInt(u64), .little);
+        // The size the header names: the pledged one where size_known says
+        // so (valid() requires one), else none (all ones).
+        const size: ?u64 = if (a.size_known) s.options.pledged() else null;
+        std.mem.writeInt(u64, s.output[5..13], size orelse std.math.maxInt(u64), .little);
         s.coder.rc.pos = Lzma.alone_header_len;
     }
     s.started = true;

@@ -49,6 +49,8 @@ format: Format,
 stream: ?Stream = null,
 header: [Decompressor.alone_header_len]u8 = undefined,
 gathered: u8 = 0,
+/// The header's properties, read from its first byte once gathered.
+properties: engine.Properties = .{},
 failure: ?Error = null,
 
 pub fn init(window: []u8, format: Format, options: Options) Decompress {
@@ -72,12 +74,12 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
             z.header[z.gathered] = in[ip];
             z.gathered += 1;
             ip += 1;
-            if (z.gathered == 1 and engine.Properties.parse(z.header[0]) == null) return z.fail(error.InvalidStream, 0, .properties);
+            if (z.gathered == 1) z.properties = engine.Properties.parse(z.header[0]) orelse return z.fail(error.InvalidStream, 0, .properties);
         }
         const dict = std.mem.readInt(u32, z.header[1..5], .little);
         const size = std.mem.readInt(u64, z.header[5..13], .little);
         if (windowLength(dict) > z.window.len) return z.fail(error.WindowTooLarge, 1, .memory_limit);
-        z.stream = Stream.init(z.window, dict, .{ .lzma1 = .{ .properties = engine.Properties.parse(z.header[0]).?, .size = if (size == std.math.maxInt(u64)) null else size } });
+        z.stream = Stream.init(z.window, dict, .{ .lzma1 = .{ .properties = z.properties, .size = if (size == std.math.maxInt(u64)) null else size } });
         z.stream.?.offset = Decompressor.alone_header_len;
     }
     const s = &z.stream.?;
