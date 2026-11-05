@@ -82,11 +82,15 @@ pub const H10 = struct {
         return 2 * (pos & h.window_mask) + 1;
     }
 
+    /// The matches a search found: each longer than the one before
+    /// (`best_len`, the longest), written from `out`, which moves past them.
+    pub const Found = struct { best_len: *usize, out: [*]BackwardMatch };
+
     /// Store the position and, in the same walk, find its matches in its
-    /// bucket's tree, re-rooting it there; with less than 128 bytes ahead
-    /// the tree is searched but left as it is. Positions only increase.
-    pub fn storeAndFindMatches(h: *H10, data: []const u8, cur_ix: usize, mask: usize, max_length: usize, max_backward: usize, best_len: ?*usize, matches_in: ?[*]BackwardMatch) ?[*]BackwardMatch {
-        var matches = matches_in;
+    /// bucket's tree into `found`, if given, re-rooting it there; with less
+    /// than 128 bytes ahead the tree is searched but left as it is.
+    /// Positions only increase.
+    pub fn storeAndFindMatches(h: *H10, data: []const u8, cur_ix: usize, mask: usize, max_length: usize, max_backward: usize, found: ?*Found) void {
         const cur = cur_ix & mask;
         const max_comp_len = @min(max_length, max_tree_comp_length);
         const reroot = max_length >= max_tree_comp_length;
@@ -113,11 +117,11 @@ pub const H10 = struct {
             }
             const cur_len = @min(best_len_left, best_len_right);
             const len = cur_len + find.matchLength(data, cur + cur_len, prev + cur_len, max_length - cur_len);
-            if (matches) |m| {
-                if (len > best_len.?.*) {
-                    best_len.?.* = len;
-                    m[0] = .init(backward, len);
-                    matches = m + 1;
+            if (found) |f| {
+                if (len > f.best_len.*) {
+                    f.best_len.* = len;
+                    f.out[0] = .init(backward, len);
+                    f.out += 1;
                 }
             }
             if (len >= max_comp_len) {
@@ -139,7 +143,6 @@ pub const H10 = struct {
                 prev_ix = forest[node_right];
             }
         }
-        return matches;
     }
 
     /// The matches at `cur_ix`, in increasing length and non-decreasing
@@ -163,7 +166,11 @@ pub const H10 = struct {
                 out += 1;
             }
         }
-        if (best_len < max_length) out = h.storeAndFindMatches(data, cur_ix, mask, max_length, max_backward, &best_len, out).?;
+        if (best_len < max_length) {
+            var found: Found = .{ .best_len = &best_len, .out = out };
+            h.storeAndFindMatches(data, cur_ix, mask, max_length, max_backward, &found);
+            out = found.out;
+        }
         var dict_matches: [static.max_match_len + 1]u32 = @splat(static.invalid_match);
         const minlen = @max(4, best_len + 1);
         if (static.findAll(data[cur..], minlen, max_length, &dict_matches)) {
@@ -187,7 +194,7 @@ pub const H10 = struct {
     pub fn store(h: *H10, data: []const u8, mask: usize, ix: usize) void {
         // Distances reach the window less 16 (RFC 7932 §9.1).
         const max_backward = h.window_mask - 16 + 1;
-        _ = h.storeAndFindMatches(data, ix, mask, max_tree_comp_length, max_backward, null, null);
+        h.storeAndFindMatches(data, ix, mask, max_tree_comp_length, max_backward, null);
     }
 
     pub fn storeRange(h: *H10, data: []const u8, mask: usize, start: usize, end: usize) void {
@@ -210,7 +217,7 @@ pub const H10 = struct {
         var i = i_start;
         while (i < i_end) : (i += 1) {
             const max_backward = h.window_mask - @max(16 - 1, position - i);
-            _ = h.storeAndFindMatches(data, i, mask, max_tree_comp_length, max_backward, null, null);
+            h.storeAndFindMatches(data, i, mask, max_tree_comp_length, max_backward, null);
         }
     }
 };

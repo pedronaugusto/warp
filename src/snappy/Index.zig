@@ -321,7 +321,7 @@ pub const Chunks = struct {
 
     /// The next entry, or null at the stream's end; the stream was checked.
     pub fn next(c: *Chunks) ?Entry {
-        return c.step() catch unreachable;
+        return c.step() catch unreachable; // aegis: no-danger(A013): next walks only a stream step walked whole first (ofStream, then write's rewind) or warp's own chunks (Compressor.finish)
     }
 
     /// The next entry, checking the chunks up to it.

@@ -231,11 +231,10 @@ pub fn decode(z: *Decompress, in: []const u8, out: []u8) Error!Step {
                 z.go(.block_header, .read);
             },
             .block_data => {
-                const status = try z.blockData(in, &ip, out, &op);
-                switch (status) {
-                    .need_input, .output_full => return .{ .in_len = ip, .out_len = op, .status = status },
+                switch (try z.blockData(in, &ip, out, &op)) {
+                    .need_input => return .{ .in_len = ip, .out_len = op, .status = .need_input },
+                    .output_full => return .{ .in_len = ip, .out_len = op, .status = .output_full },
                     .done => z.go(.block_data, .read),
-                    .need_window => unreachable, // unreachable: a block's data asks for no window; its header did
                 }
             },
             .block_padding => {
@@ -387,8 +386,11 @@ fn footer(z: *Decompress, in: []const u8, ip: *usize) Error!bool {
     return true;
 }
 
+/// Where a block's data stopped: its window was sized by its header.
+const DataStatus = enum { need_input, output_full, done };
+
 /// A block's data: LZMA2 to its end, through the filters, into `out`.
-fn blockData(z: *Decompress, in: []const u8, ip: *usize, out: []u8, op: *usize) Error!Status {
+fn blockData(z: *Decompress, in: []const u8, ip: *usize, out: []u8, op: *usize) Error!DataStatus {
     const h = &z.header;
     while (true) {
         // The input the block may still take, and the output it may make.

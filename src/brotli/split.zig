@@ -596,20 +596,31 @@ fn splitBlock(gpa: Allocator, cmds: []const Command, data: []const u8, pos: usiz
 
 /// The distances' bits under `new` (the commands' codes are under `orig`);
 /// null when one is past `new`'s reach.
+/// What the distances of `cmds` cost coded with `new`'s parameters, where
+/// they are coded with `orig`'s; null when one is past what `new` reaches.
 fn distanceCost(cmds: []const Command, orig: *const command.DistanceParams, new: *const command.DistanceParams, tmp: *DistanceHistogram) ?f64 {
-    const equal = orig.postfix_bits == new.postfix_bits and orig.direct_codes == new.direct_codes;
+    if (orig.postfix_bits == new.postfix_bits and orig.direct_codes == new.direct_codes) return codedDistanceCost(cmds, tmp);
     var extra_bits: f64 = 0;
     tmp.* = .empty;
     for (cmds) |c| {
         if (c.copyLen() == 0 or c.cmd_prefix < 128) continue;
-        var prefix: u16 = c.dist_prefix;
-        if (!equal) {
-            const distance = c.restoreDistanceCode(orig);
-            if (distance > new.max_distance) return null;
-            prefix = command.prefixEncodeDistance(distance, new.direct_codes, @intCast(new.postfix_bits)).prefix;
-        }
+        const distance = c.restoreDistanceCode(orig);
+        if (distance > new.max_distance) return null;
+        const prefix = command.prefixEncodeDistance(distance, new.direct_codes, @intCast(new.postfix_bits)).prefix;
         tmp.add(prefix & 0x3ff);
         extra_bits += @floatFromInt(prefix >> 10);
+    }
+    return cost.populationCost(DistanceHistogram, tmp) + extra_bits;
+}
+
+/// What the distances of `cmds` cost as they are coded.
+fn codedDistanceCost(cmds: []const Command, tmp: *DistanceHistogram) f64 {
+    var extra_bits: f64 = 0;
+    tmp.* = .empty;
+    for (cmds) |c| {
+        if (c.copyLen() == 0 or c.cmd_prefix < 128) continue;
+        tmp.add(c.dist_prefix & 0x3ff);
+        extra_bits += @floatFromInt(c.dist_prefix >> 10);
     }
     return cost.populationCost(DistanceHistogram, tmp) + extra_bits;
 }
@@ -704,7 +715,7 @@ pub fn buildMetaBlock(gpa: Allocator, ring: []const u8, pos: usize, mask: usize,
         ndirect_msb /= 2;
     }
     if (check_orig) {
-        const dc = distanceCost(cmds, &orig, &orig, &tmp).?;
+        const dc = codedDistanceCost(cmds, &tmp);
         if (dc < best_dist_cost) params.dist = orig;
     }
     recomputeDistancePrefixes(cmds, &orig, &params.dist);
