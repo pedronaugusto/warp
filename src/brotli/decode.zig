@@ -1124,18 +1124,18 @@ inline fn decodeOk(r: *Reader, table: [*]const Entry) u32 {
 
 /// `literals` by how the current block type finds its trees.
 inline fn literalBatch(s: *const State, t: *const Tables, f: *Fast, buf: [*]u8, n: u32, end: usize, p1: u8, p2: u8) u32 {
-    if (s.blocks.literal_tree != null) return literals(.trivial, s, t, f, buf, n, end, p1, p2);
-    if (s.blocks.literal_bytes) return literals(.bytes, s, t, f, buf, n, end, p1, p2);
-    return literals(.contexts, s, t, f, buf, n, end, p1, p2);
+    if (s.blocks.literal_tree) |tree| return literals(.trivial, tree, s, t, f, buf, n, end, p1, p2);
+    if (s.blocks.literal_bytes) return literals(.bytes, {}, s, t, f, buf, n, end, p1, p2);
+    return literals(.contexts, {}, s, t, f, buf, n, end, p1, p2);
 }
 
 /// Up to `n` literals of the current block type while the input has its
-/// margin; how many.
-inline fn literals(comptime by: enum { trivial, contexts, bytes }, s: *const State, t: *const Tables, f: *Fast, buf: [*]u8, n: u32, end: usize, first_p1: u8, first_p2: u8) u32 {
+/// margin; how many. A trivial block type reads them all with `tree`.
+inline fn literals(comptime by: enum { trivial, contexts, bytes }, tree: if (by == .trivial) u32 else void, s: *const State, t: *const Tables, f: *Fast, buf: [*]u8, n: u32, end: usize, first_p1: u8, first_p2: u8) u32 {
     const lookup = s.blocks.literal_lookup;
     const trees = &t.literal_contexts;
     const bytes = &t.literal_bytes;
-    const fixed = if (by == .trivial) t.literal[s.blocks.literal_tree.?..].ptr else undefined;
+    const fixed = if (by == .trivial) t.literal[tree..].ptr else undefined;
     var pos = f.pos;
     var p1 = first_p1;
     var p2 = first_p2;
