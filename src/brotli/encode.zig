@@ -161,6 +161,9 @@ pub const Error = Allocator.Error || error{
     InvalidOperation,
 };
 
+/// The arena of quality 0's one-pass or quality 1's two-pass fragment coder.
+const Fragments = union(enum) { one_pass: *fragment.Arena, two_pass: *fragment2.Arena };
+
 pub const Encoder = struct {
     gpa: Allocator,
     params: Resolved,
@@ -183,8 +186,8 @@ pub const Encoder = struct {
     storage: []u8 = &.{},
     small_table: [1 << 10]i32 = undefined,
     large_table: []i32 = &.{},
-    one_pass: ?*fragment.Arena = null,
-    two_pass: ?*fragment2.Arena = null,
+    /// The fragment coders' arena: quality 0's or 1's, none for the others.
+    fragments: ?Fragments = null,
     command_buf: []u32 = &.{},
     literal_buf: []u8 = &.{},
     total_in: u64 = 0,
@@ -225,25 +228,33 @@ pub const Encoder = struct {
         e.hasher = old.hasher;
         e.hasher.startStream();
         // The fragment coders' arena, kept for the quality that takes it.
-        if (old.one_pass) |a| {
-            if (e.params.quality == 0) e.one_pass = a else gpa.destroy(a);
-        }
-        if (old.two_pass) |a| {
-            if (e.params.quality == 1) e.two_pass = a else gpa.destroy(a);
-        }
+        if (old.fragments) |f| switch (f) {
+            .one_pass => |a| if (e.params.quality == 0) {
+                e.fragments = f;
+            } else gpa.destroy(a),
+            .two_pass => |a| if (e.params.quality == 1) {
+                e.fragments = f;
+            } else gpa.destroy(a),
+        };
         try e.makeArena();
     }
 
     /// The fragment coders' arena, set as new: quality 0's or 1's.
     fn makeArena(e: *Encoder) Allocator.Error!void {
-        if (e.params.quality == 0) {
-            const arena = e.one_pass orelse try e.gpa.create(fragment.Arena);
-            arena.* = .{};
-            e.one_pass = arena;
-        } else if (e.params.quality == 1) {
-            const arena = e.two_pass orelse try e.gpa.create(fragment2.Arena);
-            arena.* = .{};
-            e.two_pass = arena;
+        if (e.fragments) |f| switch (f) {
+            inline else => |a| a.* = .{},
+        } else switch (e.params.quality) {
+            0 => {
+                const a = try e.gpa.create(fragment.Arena);
+                a.* = .{};
+                e.fragments = .{ .one_pass = a };
+            },
+            1 => {
+                const a = try e.gpa.create(fragment2.Arena);
+                a.* = .{};
+                e.fragments = .{ .two_pass = a };
+            },
+            else => {},
         }
     }
 
@@ -278,8 +289,9 @@ pub const Encoder = struct {
         e.ring.deinit(gpa);
         e.hasher.deinit(gpa);
         if (e.large_table.len != 0) gpa.free(e.large_table);
-        if (e.one_pass) |a| gpa.destroy(a);
-        if (e.two_pass) |a| gpa.destroy(a);
+        if (e.fragments) |f| switch (f) {
+            inline else => |a| gpa.destroy(a),
+        };
         if (e.command_buf.len != 0) gpa.free(e.command_buf);
         if (e.literal_buf.len != 0) gpa.free(e.literal_buf);
         e.scratch.deinit(gpa);
@@ -421,17 +433,17 @@ pub const Encoder = struct {
         const mask = e.ring.mask;
 
         if (quality == 1) try e.twoPassBuffers(two_pass_block_size);
-        if (fast) {
+        // Qualities 0 and 1 (fast) code fragments in their arena.
+        if (e.fragments) |fragments| {
             const storage = try e.getStorage(2 * bytes + 503);
             var w: Writer = .{ .buf = storage, .pos = e.last_bytes_bits };
             storage[0] = @truncate(e.last_bytes);
             storage[1] = @truncate(e.last_bytes >> 8);
             const table = try e.hashTable(quality, bytes);
             const input = data[wrapped_last_processed_pos & mask ..][0..bytes];
-            if (quality == 0) {
-                fragment.compress(e.one_pass.?, input, is_last, table, &w);
-            } else {
-                fragment2.compress(e.two_pass.?, input, is_last, e.command_buf, e.literal_buf, table, &w);
+            switch (fragments) {
+                .one_pass => |a| fragment.compress(a, input, is_last, table, &w),
+                .two_pass => |a| fragment2.compress(a, input, is_last, e.command_buf, e.literal_buf, table, &w),
             }
             e.last_bytes = storage[w.pos >> 3];
             e.last_bytes_bits = @intCast(w.pos & 7);
@@ -577,7 +589,7 @@ pub const Encoder = struct {
         if (e.stream_state == .flush_requested and e.available_out == 0) e.stream_state = .processing;
     }
 
-    fn compressStreamFast(e: *Encoder, op: Operation, in: *[]const u8, out: *[]u8) Error!void {
+    fn compressStreamFast(e: *Encoder, fragments: Fragments, op: Operation, in: *[]const u8, out: *[]u8) Error!void {
         const block_size_limit = @as(usize, 1) << e.params.lgwin;
         const buf_size: usize = @min(two_pass_block_size, @min(in.len, block_size_limit));
         if (e.params.quality == 1) try e.twoPassBuffers(buf_size);
@@ -598,10 +610,9 @@ pub const Encoder = struct {
                 storage[0] = @truncate(e.last_bytes);
                 storage[1] = @truncate(e.last_bytes >> 8);
                 const table = try e.hashTable(e.params.quality, block_size);
-                if (e.params.quality == 0) {
-                    fragment.compress(e.one_pass.?, in.*[0..block_size], is_last, table, &w);
-                } else {
-                    fragment2.compress(e.two_pass.?, in.*[0..block_size], is_last, e.command_buf, e.literal_buf, table, &w);
+                switch (fragments) {
+                    .one_pass => |a| fragment.compress(a, in.*[0..block_size], is_last, table, &w),
+                    .two_pass => |a| fragment2.compress(a, in.*[0..block_size], is_last, e.command_buf, e.literal_buf, table, &w),
                 }
                 in.* = in.*[block_size..];
                 e.total_in += block_size;
@@ -692,7 +703,7 @@ pub const Encoder = struct {
         }
         if (e.stream_state == .metadata_head or e.stream_state == .metadata_body) return error.InvalidOperation;
         if (e.stream_state != .processing and in.len != 0) return error.InvalidOperation;
-        if (e.params.quality <= 1) return e.compressStreamFast(op, in, out);
+        if (e.fragments) |fragments| return e.compressStreamFast(fragments, op, in, out);
         while (true) {
             var remaining_block_size = e.remainingInputBlockSize();
             if (e.flint >= 0 and remaining_block_size > @as(usize, @intCast(e.flint))) remaining_block_size = @intCast(e.flint);
