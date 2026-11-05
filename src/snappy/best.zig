@@ -278,19 +278,19 @@ fn Parser(comptime mode: Mode) type {
             if (p.dict) |d| {
                 const dl = d.long[hl];
                 const ds = d.short[hs];
-                p.take(p.fromDict(dl & 0xffff, s, first, false));
-                p.take(p.fromDict(dl >> 16, s, first, false));
-                p.take(p.fromDict(ds & 0xffff, s, first, false));
-                p.take(p.fromDict(ds >> 16, s, first, false));
+                p.take(p.fromDict(d, dl & 0xffff, s, first, false));
+                p.take(p.fromDict(d, dl >> 16, s, first, false));
+                p.take(p.fromDict(d, ds & 0xffff, s, first, false));
+                p.take(p.fromDict(d, ds >> 16, s, first, false));
             }
             const si: isize = @intCast(s);
             if (snappy or p.inputRepeat(s)) {
                 p.take(p.candidate(@intCast(si - p.repeat + 1), s + 1, @truncate(cv >> 8), !snappy));
-            } else if (mode == .dict and si - p.repeat < -4 and p.dict != null) {
-                const c: usize = @intCast(@as(isize, @intCast(p.dict.?.content.len)) - (p.repeat - si));
-                p.take(p.fromDict(c, s, first, true));
-                p.take(p.fromDict(c + 1, s + 1, @truncate(cv >> 8), true));
-            }
+            } else if (mode == .dict and si - p.repeat < -4) if (p.dict) |d| {
+                const c: usize = @intCast(@as(isize, @intCast(d.content.len)) - (p.repeat - si));
+                p.take(p.fromDict(d, c, s, first, true));
+                p.take(p.fromDict(d, c + 1, s + 1, @truncate(cv >> 8), true));
+            };
             if (p.best.length > 0) p.ahead(s, cv);
             p.long[hl] = @as(u64, s) | (candidate_l << 32);
             p.short[hs] = @as(u64, s) | (candidate_s << 32);
@@ -306,8 +306,8 @@ fn Parser(comptime mode: Mode) type {
             var hl = hash8(ncv);
             p.around(p.short[hs], p.long[hl], ns, @truncate(ncv));
             if (p.dict) |d| {
-                p.take(p.fromDict(d.long[hl] & 0xffff, ns, @truncate(ncv), false));
-                p.take(p.fromDict(d.short[hs] & 0xffff, ns, @truncate(ncv), false));
+                p.take(p.fromDict(d, d.long[hl] & 0xffff, ns, @truncate(ncv), false));
+                p.take(p.fromDict(d, d.short[hs] & 0xffff, ns, @truncate(ncv), false));
             }
             if (snappy) p.take(p.candidate(@intCast(@as(isize, @intCast(ns)) - p.repeat + 1), ns + 1, @truncate(ncv >> 8), false));
             hs = hash4(ncv >> 8);
@@ -319,14 +319,14 @@ fn Parser(comptime mode: Mode) type {
             const nsi: isize = @intCast(ns);
             if (!snappy and p.inputRepeat(ns)) {
                 p.take(p.candidate(@intCast(nsi - p.repeat), ns, @truncate(ncv), true));
-            } else if (mode == .dict and p.repeat - nsi > 4 and p.dict != null) {
-                const c: usize = @intCast(@as(isize, @intCast(p.dict.?.content.len)) - (p.repeat - nsi));
-                p.take(p.fromDict(c, ns, @truncate(ncv), true));
-            }
+            } else if (mode == .dict and p.repeat - nsi > 4) if (p.dict) |d| {
+                const c: usize = @intCast(@as(isize, @intCast(d.content.len)) - (p.repeat - nsi));
+                p.take(p.fromDict(d, c, ns, @truncate(ncv), true));
+            };
             p.around(next_short, next_long, ns, @truncate(ncv));
             if (p.dict) |d| {
-                p.take(p.fromDict(d.long[hl] & 0xffff, ns, @truncate(ncv), false));
-                p.take(p.fromDict(d.short[hs] & 0xffff, ns, @truncate(ncv), false));
+                p.take(p.fromDict(d, d.long[hl] & 0xffff, ns, @truncate(ncv), false));
+                p.take(p.fromDict(d, d.short[hs] & 0xffff, ns, @truncate(ncv), false));
             }
             // Where the best ends, a match in the long table: tried from
             // its start, as far back.
@@ -402,9 +402,9 @@ fn Parser(comptime mode: Mode) type {
             return p.scored(m);
         }
 
-        /// The dictionary's candidate at content position `c` for `s0`.
-        fn fromDict(p: *const P, c: usize, s0: usize, first: u32, rep: bool) Match {
-            const content = p.dict.?.content;
+        /// The dictionary `d`'s candidate at content position `c` for `s0`.
+        fn fromDict(p: *const P, d: DictTables, c: usize, s0: usize, first: u32, rep: bool) Match {
+            const content = d.content;
             const off: isize = @as(isize, @intCast(c)) - @as(isize, @intCast(content.len));
             if (s0 >= 65535) return .{ .offset = off, .s = s0 };
             if (!rep and p.sameAsBest(off, s0)) return .{ .offset = off, .s = s0 };
