@@ -201,7 +201,7 @@ fn header(r: *Reader, t: *Tables) Error![2]u5 {
         t.pre[sym] = @intCast(r.pop(3));
         try r.advance();
     }
-    const pre_bits = decode.build(.precode, &t.precode, &t.pre, &decode.countLengths(&t.pre)) catch |err| return r.fail(codeReason(err));
+    const pre_bits = decode.build(.precode, &t.precode, &t.pre) catch |err| return r.fail(codeReason(err));
     r.lane = 0;
     const total = hlit + hdist;
     const lens = &t.lens;
@@ -233,8 +233,8 @@ fn header(r: *Reader, t: *Tables) Error![2]u5 {
         try r.advance();
     }
     if (lens[256] == 0) return r.fail(.no_end_code);
-    const lbits = decode.build(.litlen64, &t.litlen, lens[0..hlit], &decode.countLengths(lens[0..hlit])) catch |err| return r.fail(codeReason(err));
-    const dbits = decode.build(.dist64, &t.dist, lens[hlit..total], &decode.countLengths(lens[hlit..total])) catch |err| return r.fail(codeReason(err));
+    const lbits = decode.build(.litlen64, &t.litlen, lens[0..hlit]) catch |err| return r.fail(codeReason(err));
+    const dbits = decode.build(.dist64, &t.dist, lens[hlit..total]) catch |err| return r.fail(codeReason(err));
     return .{ lbits, dbits };
 }
 

@@ -141,20 +141,20 @@ pub const BuildError = error{
 };
 
 /// How many lengths of each value 0-15.
-pub fn countLengths(lens: []const u8) [16]u16 {
+fn countLengths(lens: []const u8) [16]u16 {
     var count: [16]u16 = @splat(0);
     for (lens) |l| count[l] += 1;
     return count;
 }
 
-/// Build `table` for the code with lengths `lens` (`count` is
-/// `countLengths(lens)`); returns the main table's bits.
+/// Build `table` for the code with lengths `lens`; returns the main
+/// table's bits.
 ///
 /// A code with no symbols at all decodes every bit pattern as invalid,
 /// one bit long, as zlib's does; a single one-bit litlen or distance code
 /// is accepted and its other bit pattern is invalid.
-pub fn build(comptime alphabet: Alphabet, table: []u32, lens: []const u8, count_in: *const [16]u16) BuildError!u5 {
-    var count = count_in.*;
+pub fn build(comptime alphabet: Alphabet, table: []u32, lens: []const u8) BuildError!u5 {
+    var count = countLengths(lens);
     count[0] = 0;
     var max: u5 = 0;
     for (1..16) |l| {
@@ -175,7 +175,7 @@ pub fn build(comptime alphabet: Alphabet, table: []u32, lens: []const u8, count_
     if (left > 0) {
         if (alphabet == .precode or max != 1) return error.Incomplete;
         // A single one-bit code: its codeword is 0.
-        const sym = std.mem.findScalar(u8, lens, 1).?;
+        const sym = std.mem.findScalar(u8, lens, 1).?; // aegis: no-danger(A013): max == 1 here, so count[1], counted from lens, is not 0
         table[0] = symbolEntry(alphabet, sym, 1);
         table[1] = invalid(1);
         return 1;
@@ -290,7 +290,7 @@ pub fn Fixed(comptime alphabet: Alphabet) type {
             } else @memset(&lens, 5);
             var t: [1 << bits]u32 = undefined;
             // unreachable: the fixed lengths are complete codes
-            const got = build(alphabet, &t, &lens, &countLengths(&lens)) catch unreachable;
+            const got = build(alphabet, &t, &lens) catch unreachable;
             std.debug.assert(got == bits);
             break :blk t;
         };
@@ -335,7 +335,7 @@ test "a code with subtables decodes every symbol, and lengths are refused as zli
     for (0..14) |i| lens[i] = @intCast(i + 2);
     lens[14] = 15;
     var table: [Alphabet.litlen.enough()]u32 = undefined;
-    const bits = try build(.litlen, &table, &lens, &countLengths(&lens));
+    const bits = try build(.litlen, &table, &lens);
     try testing.expectEqual(@as(u5, 11), bits);
     // Canonical codes: 256 is "0", symbol i (i + 2 bits) is i + 1 ones and a
     // zero, and symbol 14 is fifteen ones.
@@ -351,15 +351,15 @@ test "a code with subtables decodes every symbol, and lengths are refused as zli
     over[0] = 1;
     over[1] = 1;
     over[256] = 1;
-    try testing.expectError(error.Oversubscribed, build(.litlen, &table, &over, &countLengths(&over)));
+    try testing.expectError(error.Oversubscribed, build(.litlen, &table, &over));
     var two: [288]u8 = @splat(0);
     two[0] = 2;
     two[256] = 2;
-    try testing.expectError(error.Incomplete, build(.litlen, &table, &two, &countLengths(&two)));
+    try testing.expectError(error.Incomplete, build(.litlen, &table, &two));
     var one: [32]u8 = @splat(0);
     one[3] = 1;
-    try testing.expectEqual(@as(u5, 1), try build(.dist, &table, &one, &countLengths(&one)));
+    try testing.expectEqual(@as(u5, 1), try build(.dist, &table, &one));
     var pre: [19]u8 = @splat(0);
     pre[18] = 1;
-    try testing.expectError(error.Incomplete, build(.precode, &table, &pre, &countLengths(&pre)));
+    try testing.expectError(error.Incomplete, build(.precode, &table, &pre));
 }

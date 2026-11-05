@@ -463,7 +463,7 @@ fn precode(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
         read += 1;
         source.commit(s);
     }
-    state.pre_bits = huffman.build(.precode, &t.precode, &t.pre, &huffman.countLengths(&t.pre)) catch |err| return s.fail(codeReason(err));
+    state.pre_bits = huffman.build(.precode, &t.precode, &t.pre) catch |err| return s.fail(codeReason(err));
     read = 0;
     state.go(.precode, .read);
 }
@@ -522,8 +522,8 @@ fn lengths(t: anytype, s: *Stream, source: anytype, state: *State) Error!void {
         source.commit(s);
     }
     if (lens[256] == 0) return s.fail(.no_end_code);
-    state.lbits = huffman.build(if (@TypeOf(t.*).wide) .litlen64 else .litlen, &t.litlen, lens[0..hlit], &huffman.countLengths(lens[0..hlit])) catch |err| return s.fail(codeReason(err));
-    state.dbits = huffman.build(if (@TypeOf(t.*).wide) .dist64 else .dist, &t.dist, lens[hlit..total], &huffman.countLengths(lens[hlit..total])) catch |err| return s.fail(codeReason(err));
+    state.lbits = huffman.build(if (@TypeOf(t.*).wide) .litlen64 else .litlen, &t.litlen, lens[0..hlit]) catch |err| return s.fail(codeReason(err));
+    state.dbits = huffman.build(if (@TypeOf(t.*).wide) .dist64 else .dist, &t.dist, lens[hlit..total]) catch |err| return s.fail(codeReason(err));
     state.fixed = false;
     state.go(.lengths, .read);
 }

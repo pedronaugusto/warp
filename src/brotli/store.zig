@@ -120,7 +120,7 @@ fn moveToFrontTransform(v_in: []const u32, v_out: []u32) void {
     for (0..max_value + 1) |i| mtf[i] = @intCast(i);
     const size = max_value + 1;
     for (v_in, v_out) |v, *o| {
-        const index = std.mem.findScalar(u8, mtf[0..size], @intCast(v)).?;
+        const index = std.mem.findScalar(u8, mtf[0..size], @intCast(v)).?; // aegis: no-danger(A013): mtf[0..size] holds each of 0..max_value once (filled so, then only rotated), and v is at most max_value
         o.* = @intCast(index);
         const value = mtf[index];
         var k = index;

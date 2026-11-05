@@ -255,31 +255,27 @@ fn addTestImports(b: *std.Build, p: *std.Build, module: *std.Build.Module) void 
 fn addSourceImports(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     module.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
     const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize });
-    const Kernel = struct { name: []const u8, source: []const u8, features: []const []const u8 };
+    const Kernel = struct { name: []const u8, source: []const u8, features: std.Target.Cpu.Feature.Set };
+    const arm = std.Target.aarch64.featureSet;
+    const x86 = std.Target.x86.featureSet;
     const kernels: []const Kernel = switch (target.result.cpu.arch) {
-        .aarch64 => &.{
-            .{ .name = "kernels_arm_crc", .source = "arm_crc", .features = &.{"crc"} },
-            .{ .name = "kernels_arm_pmull", .source = "arm_pmull", .features = &.{ "crc", "aes" } },
-            .{ .name = "kernels_arm_eor3", .source = "arm_eor3", .features = &.{ "crc", "aes", "sha3" } },
-            .{ .name = "kernels_arm_dotprod", .source = "arm_dotprod", .features = &.{"dotprod"} },
+        .aarch64 => comptime &.{
+            .{ .name = "kernels_arm_crc", .source = "arm_crc", .features = arm(&.{.crc}) },
+            .{ .name = "kernels_arm_pmull", .source = "arm_pmull", .features = arm(&.{ .crc, .aes }) },
+            .{ .name = "kernels_arm_eor3", .source = "arm_eor3", .features = arm(&.{ .crc, .aes, .sha3 }) },
+            .{ .name = "kernels_arm_dotprod", .source = "arm_dotprod", .features = arm(&.{.dotprod}) },
         },
-        .x86_64 => &.{
-            .{ .name = "kernels_x86_crc", .source = "x86_crc", .features = &.{"sse4_2"} },
-            .{ .name = "kernels_x86_sse", .source = "x86_sse", .features = &.{ "sse4_1", "pclmul" } },
-            .{ .name = "kernels_x86_avx2", .source = "x86_avx2", .features = &.{ "avx2", "pclmul", "vpclmulqdq" } },
+        .x86_64 => comptime &.{
+            .{ .name = "kernels_x86_crc", .source = "x86_crc", .features = x86(&.{.sse4_2}) },
+            .{ .name = "kernels_x86_sse", .source = "x86_sse", .features = x86(&.{ .sse4_1, .pclmul }) },
+            .{ .name = "kernels_x86_avx2", .source = "x86_avx2", .features = x86(&.{ .avx2, .pclmul, .vpclmulqdq }) },
         },
         else => &.{},
     };
     for (kernels) |k| {
         var query = std.Target.Query.fromTarget(&target.result);
-        for (k.features) |f| {
-            const index = switch (target.result.cpu.arch) {
-                .aarch64 => @backingInt(std.meta.stringToEnum(std.Target.aarch64.Feature, f).?),
-                else => @backingInt(std.meta.stringToEnum(std.Target.x86.Feature, f).?),
-            };
-            query.cpu_features_sub.removeFeature(index);
-            query.cpu_features_add.addFeature(index);
-        }
+        query.cpu_features_sub.removeFeatureSet(k.features);
+        query.cpu_features_add.addFeatureSet(k.features);
         const kernel = b.createModule(.{
             .root_source_file = b.path(b.fmt("src/kernels/{s}.zig", .{k.source})),
             .target = b.resolveTargetQuery(query),
