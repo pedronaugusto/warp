@@ -162,7 +162,10 @@ fn parseFields(h: []const u8, format: Format, fault: *Fault) ParseError!Header {
         2 => content = std.mem.readInt(u32, h[pos..][0..4], .little),
         3 => content = std.mem.readInt(u64, h[pos..][0..8], .little),
     }
-    if (single) window = content.?;
+    // A single segment's window is its content, which it always declares.
+    if (single) if (content) |size| {
+        window = size;
+    };
     return .{
         .window_size = window,
         .content_size = content,

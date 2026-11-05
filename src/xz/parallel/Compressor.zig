@@ -21,10 +21,15 @@ pub const Options = struct {
     /// least 1 MiB.
     xz: Serial.Options = .{},
 
+    /// The block size the workers cut.
+    pub fn blockSize(o: Options) u64 {
+        return o.xz.block_size orelse @max(@as(u64, o.xz.lzma.dictionary) * 3, 1 << 20);
+    }
+
     /// The serial options with the block size the workers cut.
     pub fn blocks(o: Options) Serial.Options {
         var x = o.xz;
-        if (x.block_size == null) x.block_size = @max(@as(u64, x.lzma.dictionary) * 3, 1 << 20);
+        x.block_size = o.blockSize();
         return x;
     }
 };
@@ -58,7 +63,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
     if (options.concurrency == 0) return error.InvalidOptions;
     const o = options.blocks();
     if (!o.valid()) return error.InvalidOptions;
-    const block: usize = @intCast(o.block_size.?);
+    const block: usize = @intCast(options.blockSize());
     const workers = try gpa.alloc(Worker, options.concurrency);
     var made: usize = 0;
     errdefer {
@@ -111,7 +116,7 @@ pub fn compress(c: *Compressor, io: Io, in: []const u8, out: []u8) Error!usize {
     format.writeStreamHeader(out[0..format.header_len], o.check);
     var pos: usize = format.header_len;
     c.records.clearRetainingCapacity();
-    const block: usize = @intCast(o.block_size.?);
+    const block: usize = @intCast(c.options.blockSize());
     var at: usize = 0;
     var next: usize = 0;
     var busy: usize = 0;

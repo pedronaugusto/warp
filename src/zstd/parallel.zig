@@ -29,6 +29,9 @@ const Config = struct {
     job_len: usize,
     overlap: usize,
     output_len: usize,
+    /// An rsyncable cut falls where the rolling hash has these low bits
+    /// clear: half a job, rounded up to a power of two.
+    rsync_mask: usize,
 };
 
 fn config(options: Options) error{InvalidOptions}!Config {
@@ -53,7 +56,9 @@ fn config(options: Options) error{InvalidOptions}!Config {
     const blocks = std.math.divCeil(usize, job, @min(8 << 10, @as(usize, 1) << p.window_log)) catch unreachable; // unreachable: the block size is nonzero
     const coded = aegis.units.Bytes(usize).fromRaw(job).add(.fromRaw(591 * blocks)) catch return error.InvalidOptions;
     const bound: aegis.units.Bytes(usize) = .fromRaw(Encoder.bound(job));
-    return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = (if (coded.compare(bound) == .lt) bound else coded).raw() };
+    // At most 2^29 (job_len is at most 2^30), within any usize.
+    const rsync_mask: usize = @intCast(std.math.ceilPowerOfTwoPromote(u32, @max(2, job_len.raw() / 2)));
+    return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = (if (coded.compare(bound) == .lt) bound else coded).raw(), .rsync_mask = rsync_mask };
 }
 
 const Worker = struct {
@@ -96,7 +101,7 @@ const Cuts = struct {
             c.count += n;
             return n;
         }
-        const mask = std.math.ceilPowerOfTwo(usize, @max(2, cfg.job_len / 2)) catch unreachable; // unreachable: job lengths are at most 2^30
+        const mask = cfg.rsync_mask;
         for (in[0..n], 0..) |byte, i| {
             c.rolling = std.math.rotl(u64, c.rolling, 1) ^ value(byte) ^ value(c.ring[c.at]);
             c.ring[c.at] = byte;
@@ -410,7 +415,7 @@ pub const Compressor = struct {
             @memcpy(out[at..][0..n], bytes[0..n]);
             source.at += n;
             if (p.options.rsyncable and cuts.count >= @max(64, p.cfg.job_len / 2)) {
-                const mask = std.math.ceilPowerOfTwo(usize, @max(2, p.cfg.job_len / 2)) catch unreachable; // unreachable: job lengths are at most 2^30
+                const mask = p.cfg.rsync_mask;
                 if (cuts.rolling & (mask - 1) == 0) break;
             }
         }
