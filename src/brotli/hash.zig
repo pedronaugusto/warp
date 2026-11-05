@@ -913,7 +913,6 @@ pub const H55 = Composite(H54, Rolling(4));
 pub const H65 = Composite(H6, Rolling(1));
 
 pub const Impl = union(enum) {
-    none,
     h2: H2,
     h3: H3,
     h4: H4,
@@ -935,7 +934,8 @@ pub const Impl = union(enum) {
 /// reset, stitched to each block before it is parsed.
 pub const Hasher = struct {
     common: Common = .{},
-    impl: Impl = .none, // aegis: no-danger(A017): the finder chosen once, before first use (prepared): data, no lifecycle
+    /// The finder, made on the stream's first block: none before it.
+    impl: ?Impl = null, // aegis: no-danger(A017): the finder chosen once, before first use (prepared): data, no lifecycle
     prepared: bool = false,
     /// What `impl` was made for, so that a later stream can tell whether
     /// it asks for the same hasher.
@@ -948,10 +948,9 @@ pub const Hasher = struct {
     const Key = struct { params: settings.HasherParams, quality: u4, lgwin: u5, nodes: usize };
 
     pub fn deinit(h: *Hasher, gpa: Allocator) void {
-        switch (h.impl) {
-            .none => {},
+        if (h.impl) |*impl| switch (impl.*) {
             inline else => |*x| x.deinit(gpa),
-        }
+        };
         h.* = undefined;
     }
 
@@ -966,10 +965,12 @@ pub const Hasher = struct {
     pub fn startStream(h: *Hasher) void {
         h.common = .{};
         h.prepared = false;
-        h.rewind = h.impl != .none;
+        h.rewind = h.impl != null;
     }
 
-    fn setup(h: *Hasher, gpa: Allocator, params: *const settings.Resolved, data: []const u8, position: usize, input_size: usize, is_last: bool) Allocator.Error!void {
+    /// The stream's finder for this block, made or rewound as the block's
+    /// parameters ask and prepared.
+    fn setup(h: *Hasher, gpa: Allocator, params: *const settings.Resolved, data: []const u8, position: usize, input_size: usize, is_last: bool) Allocator.Error!*Impl {
         const one_shot = position == 0 and is_last;
         const key: Key = .{
             .params = params.hasher,
@@ -979,21 +980,20 @@ pub const Hasher = struct {
         };
         if (h.rewind) {
             h.rewind = false;
-            switch (h.impl) {
-                .none => unreachable,
+            if (h.impl) |*impl| switch (impl.*) {
                 inline else => |*x| if (std.meta.eql(h.made_for, key)) x.rewind() else {
                     x.deinit(gpa);
-                    h.impl = .none;
+                    h.impl = null;
                 },
-            }
+            };
         }
-        if (h.impl == .none) {
+        const impl = if (h.impl) |*kept| kept else made: {
             h.made_for = key;
             const p = params.hasher;
             // Made whole before it is the stream's: a union written in
             // place takes its tag before a failed allocation leaves its
             // payload undefined, which `deinit` would then free.
-            const impl: Impl = switch (p.type) {
+            const made: Impl = switch (p.type) {
                 .h2 => .{ .h2 = try .init(gpa) },
                 .h3 => .{ .h3 = try .init(gpa) },
                 .h4 => .{ .h4 = try .init(gpa) },
@@ -1011,23 +1011,25 @@ pub const Hasher = struct {
                 .h65 => .{ .h65 = try .init(gpa, try .init(gpa, p)) },
             };
             h.common = .{};
-            h.impl = impl;
+            h.impl = made;
             h.prepared = false;
-        }
+            break :made &h.impl.?;
+        };
         if (!h.prepared) {
-            switch (h.impl) {
-                .none => unreachable,
+            switch (impl.*) {
                 inline else => |*x| x.prepare(one_shot, input_size, data),
             }
             h.prepared = true;
         }
+        return impl;
     }
 
-    pub fn initOrStitch(h: *Hasher, gpa: Allocator, data: []const u8, mask: u32, params: *const settings.Resolved, position: u32, input_size: u32, is_last: bool) Allocator.Error!void {
-        try h.setup(gpa, params, data, position, input_size, is_last);
-        switch (h.impl) {
-            .none => unreachable,
+    /// The stream's finder, set up for this block and stitched to it.
+    pub fn initOrStitch(h: *Hasher, gpa: Allocator, data: []const u8, mask: u32, params: *const settings.Resolved, position: u32, input_size: u32, is_last: bool) Allocator.Error!*Impl {
+        const impl = try h.setup(gpa, params, data, position, input_size, is_last);
+        switch (impl.*) {
             inline else => |*x| x.stitch(input_size, position, data, mask),
         }
+        return impl;
     }
 };

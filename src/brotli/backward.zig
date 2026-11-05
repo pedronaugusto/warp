@@ -35,18 +35,22 @@ pub fn distanceCode(distance: usize, max_distance: usize, cache: *const [16]i32)
     return distance + command.short_distance_codes - 1;
 }
 
-pub fn create(num_bytes: u32, position: u32, data: []const u8, mask: u32, mode: anytype, params: *const settings.Resolved, hasher: *hash.Hasher, cache: *[16]i32, out: *Out) void {
+/// The commands of qualities 2-9, from `h`, any finder but H10's tree
+/// (qualities 10 and 11 parse through zopfli).
+pub fn create(h: anytype, common: *hash.Common, num_bytes: u32, position: u32, data: []const u8, mask: u32, mode: anytype, params: *const settings.Resolved, cache: *[16]i32, out: *Out) void {
     _ = mode;
-    switch (hasher.impl) {
-        .none, .h10 => unreachable,
-        // The quick hashers of qualities 2-4 search no prefix dictionary
-        // (H55's composite does).
-        inline .h2, .h3, .h4, .h54, .h35 => |*h| createWith(@TypeOf(h.*), false, h, &hasher.common, num_bytes, position, data, mask, params, cache, out),
-        inline else => |*h| if (params.dictionary != null)
-            createWith(@TypeOf(h.*), true, h, &hasher.common, num_bytes, position, data, mask, params, cache, out)
-        else
-            createWith(@TypeOf(h.*), false, h, &hasher.common, num_bytes, position, data, mask, params, cache, out),
-    }
+    const H = @TypeOf(h.*);
+    if (H == hash.H10) @compileError("H10's tree parses through zopfli");
+    // The quick hashers of qualities 2-4 search no prefix dictionary
+    // (H55's composite does).
+    const quick = switch (H) {
+        hash.H2, hash.H3, hash.H4, hash.H54, hash.H35 => true,
+        else => false,
+    };
+    if (!quick and params.dictionary != null)
+        createWith(H, true, h, common, num_bytes, position, data, mask, params, cache, out)
+    else
+        createWith(H, false, h, common, num_bytes, position, data, mask, params, cache, out);
 }
 
 fn createWith(comptime H: type, comptime prefix: bool, h: *H, common: *hash.Common, num_bytes: usize, position_in: usize, data: []const u8, mask: usize, params: *const settings.Resolved, cache: *[16]i32, out: *Out) void {

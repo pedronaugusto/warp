@@ -11,7 +11,6 @@ const Allocator = std.mem.Allocator;
 const command = @import("command.zig");
 const cost = @import("cost.zig");
 const settings = @import("settings.zig");
-const hash = @import("hash.zig");
 const tree = @import("tree.zig");
 const backward = @import("backward.zig");
 const blocks = @import("blocks.zig");
@@ -449,10 +448,6 @@ fn initNodes(nodes: []Node) void {
     @memset(nodes, Node.stub);
 }
 
-fn h10Of(hasher: *hash.Hasher) *H10 {
-    return &hasher.impl.h10;
-}
-
 fn modelOf(gpa: Allocator, scratch: *Scratch) Allocator.Error!*Model {
     if (scratch.model == null) {
         const m = try gpa.create(Model);
@@ -463,14 +458,13 @@ fn modelOf(gpa: Allocator, scratch: *Scratch) Allocator.Error!*Model {
 }
 
 /// Quality 10: matches found as the search goes, one pass.
-pub fn create(gpa: Allocator, scratch: *Scratch, num_bytes_in: u32, position_in: u32, ring: []const u8, mask_in: u32, mode: anytype, params: *const settings.Resolved, hasher: *hash.Hasher, dist_cache: *[16]i32, out: *backward.Out) Allocator.Error!void {
+pub fn create(gpa: Allocator, scratch: *Scratch, num_bytes_in: u32, position_in: u32, ring: []const u8, mask_in: u32, mode: anytype, params: *const settings.Resolved, h: *H10, dist_cache: *[16]i32, out: *backward.Out) Allocator.Error!void {
     _ = mode;
     const num_bytes: usize = num_bytes_in;
     const position: usize = position_in;
     const mask: usize = mask_in;
     const nodes = try ensure(Node, gpa, &scratch.nodes, num_bytes + 1);
     initNodes(nodes);
-    const h = h10Of(hasher);
     const stream_offset = params.stream_offset;
     const max_backward_limit = (@as(usize, 1) << params.lgwin) - 16;
     const max_zopfli_len = maxZopfliLen(params);
@@ -573,12 +567,11 @@ fn iterate(num_bytes: usize, position: usize, ring: []const u8, mask: usize, par
 
 /// Quality 11: all matches first, then two searches, the second with the
 /// first's commands as its cost model.
-pub fn createHq(gpa: Allocator, scratch: *Scratch, num_bytes_in: u32, position_in: u32, ring: []const u8, mask_in: u32, mode: anytype, params: *const settings.Resolved, hasher: *hash.Hasher, dist_cache: *[16]i32, out: *backward.Out) Allocator.Error!void {
+pub fn createHq(gpa: Allocator, scratch: *Scratch, num_bytes_in: u32, position_in: u32, ring: []const u8, mask_in: u32, mode: anytype, params: *const settings.Resolved, h: *H10, dist_cache: *[16]i32, out: *backward.Out) Allocator.Error!void {
     _ = mode;
     const num_bytes: usize = num_bytes_in;
     const position: usize = position_in;
     const mask: usize = mask_in;
-    const h = h10Of(hasher);
     const stream_offset = params.stream_offset;
     const max_backward_limit = (@as(usize, 1) << params.lgwin) - 16;
     const num_matches = try ensure(u32, gpa, &scratch.num_matches, num_bytes);

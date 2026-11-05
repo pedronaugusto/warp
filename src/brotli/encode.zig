@@ -451,18 +451,20 @@ pub const Encoder = struct {
             if (e.commands.len != 0) e.gpa.free(e.commands);
             e.commands = new;
         }
-        try e.hasher.initOrStitch(e.gpa, data, mask, &e.params, wrapped_last_processed_pos, bytes, is_last);
+        const finder = try e.hasher.initOrStitch(e.gpa, data, mask, &e.params, wrapped_last_processed_pos, bytes, is_last);
         const context_mode = metablock.chooseContextMode(&e.params, data, wrapPosition(e.last_flush_pos), mask, @intCast(e.input_pos - e.last_flush_pos));
         if (e.num_commands != 0 and e.last_insert_len == 0) e.extendLastCommand(&bytes, &wrapped_last_processed_pos);
 
         const cmds = e.commands[e.num_commands..];
         var refs: backward.Out = .{ .commands = cmds, .last_insert_len = &e.last_insert_len, .num_literals = &e.num_literals };
-        if (quality == 10) {
-            try zopfli.create(e.gpa, &e.scratch.zopfli, bytes, wrapped_last_processed_pos, data, mask, context_mode, &e.params, &e.hasher, &e.dist_cache, &refs);
-        } else if (quality == 11) {
-            try zopfli.createHq(e.gpa, &e.scratch.zopfli, bytes, wrapped_last_processed_pos, data, mask, context_mode, &e.params, &e.hasher, &e.dist_cache, &refs);
-        } else {
-            backward.create(bytes, wrapped_last_processed_pos, data, mask, context_mode, &e.params, &e.hasher, &e.dist_cache, &refs);
+        // Qualities 10 and 11 search H10's tree (`settings.chooseHasher`),
+        // the others the finder their quality chose.
+        switch (finder.*) {
+            .h10 => |*h| if (quality == 11)
+                try zopfli.createHq(e.gpa, &e.scratch.zopfli, bytes, wrapped_last_processed_pos, data, mask, context_mode, &e.params, h, &e.dist_cache, &refs)
+            else
+                try zopfli.create(e.gpa, &e.scratch.zopfli, bytes, wrapped_last_processed_pos, data, mask, context_mode, &e.params, h, &e.dist_cache, &refs),
+            inline else => |*h| backward.create(h, &e.hasher.common, bytes, wrapped_last_processed_pos, data, mask, context_mode, &e.params, &e.dist_cache, &refs),
         }
         e.num_commands += refs.num_commands;
 
