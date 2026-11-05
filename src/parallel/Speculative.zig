@@ -87,7 +87,7 @@ pub fn counts(concurrency: u16, options: Options) aegis.parts.Counts(Parts) {
 }
 
 pub fn memory(concurrency: u16, options: Options) usize {
-    return Memory.plan(counts(concurrency, options)).size().raw();
+    return (Memory.plan(counts(concurrency, options)).size() catch return std.math.maxInt(usize)).raw();
 }
 
 /// Refused when `buffer` is shorter than `memory(concurrency, options)`.

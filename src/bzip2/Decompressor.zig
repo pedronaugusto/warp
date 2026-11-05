@@ -63,7 +63,7 @@ const Block = aegis.parts.Block(struct { tt: []u32 });
 const plan = Block.plan(.{ .tt = decode.block_max });
 
 /// The bytes `initBuffer` needs.
-pub const memory = plan.size().raw();
+pub const memory = (plan.size() catch @compileError("the BWT vector fits the address space")).raw();
 
 pub fn init(gpa: Allocator) Allocator.Error!Decompressor {
     const held = try plan.alloc(gpa);

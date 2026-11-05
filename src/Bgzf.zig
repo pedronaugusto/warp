@@ -35,7 +35,7 @@ fn plan(options: Options) Block.Plan {
 }
 
 pub fn memory(options: Options) usize {
-    return plan(options).size().raw();
+    return (plan(options).size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) std.mem.Allocator.Error!Bgzf {

@@ -273,7 +273,7 @@ pub fn counts(options: Options) aegis.parts.Counts(Parts) {
 /// The bytes `initBuffer` needs, or maxInt(usize) when they do not fit the
 /// address space. `init` returns OutOfMemory for that configuration.
 pub fn memory(options: Options) usize {
-    return Block.plan(counts(options)).size().raw();
+    return (Block.plan(counts(options)).size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: Allocator, options: Options) Allocator.Error!Encoder {

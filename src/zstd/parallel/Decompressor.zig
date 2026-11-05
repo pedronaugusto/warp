@@ -54,7 +54,7 @@ fn plan(options: Options) Block.Plan {
 /// options `initBuffer` refuses.
 pub fn memory(options: Options) usize {
     if (options.concurrency == 0) return std.math.maxInt(usize);
-    return plan(options).size().raw();
+    return (plan(options).size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Decompressor {

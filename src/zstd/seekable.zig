@@ -230,7 +230,7 @@ pub const Writer = struct {
     /// The bytes `initBuffer` needs; maxInt(usize) when they do not fit the
     /// address space.
     pub fn memory(options: Options) usize {
-        return plan(options).size().raw();
+        return (plan(options).size() catch return std.math.maxInt(usize)).raw();
     }
 
     pub fn init(gpa: Allocator, output: *Io.Writer, options: Options) (Allocator.Error || error{InvalidOptions})!Writer {

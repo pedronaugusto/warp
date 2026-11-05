@@ -167,7 +167,7 @@ pub fn counts(options: Options, max_input: ?aegis.units.Bytes(usize)) aegis.part
 /// The bytes `initBuffer` needs for `options` over inputs of at most
 /// `max_input` bytes (null: any).
 pub fn memory(options: Options, max_input: ?aegis.units.Bytes(usize)) usize {
-    return Block.plan(counts(options, max_input)).size().raw();
+    return (Block.plan(counts(options, max_input)).size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: Allocator, options: Options, max_input: ?aegis.units.Bytes(usize)) InitError!Compressor {

@@ -169,7 +169,7 @@ pub const InitError = error{
 /// it refuses.
 pub fn memory(options: Options) usize {
     if (!validOptions(options)) return std.math.maxInt(usize);
-    return Layout.of(options).plan().size().raw();
+    return (Layout.of(options).plan().size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: Allocator, options: Options) (Allocator.Error || error{InvalidOptions})!Deflate {

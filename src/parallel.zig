@@ -67,7 +67,7 @@ pub const Compressor = struct {
     }
 
     pub fn memory(options: Options) usize {
-        return plan(options).size().raw();
+        return (plan(options).size() catch return std.math.maxInt(usize)).raw();
     }
 
     /// The chunk length, as the engine's lengths are kept.
@@ -270,7 +270,7 @@ pub const Decompressor = struct {
     }
 
     pub fn memory(options: Decompressor.Options) usize {
-        return plan(options).size().raw();
+        return (plan(options).size() catch return std.math.maxInt(usize)).raw();
     }
 
     pub fn init(gpa: std.mem.Allocator, options: Decompressor.Options) std.mem.Allocator.Error!Decompressor {

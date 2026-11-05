@@ -91,7 +91,7 @@ fn plan(options: Options) Block.Plan {
 
 /// The bytes `initBuffer` needs.
 pub fn memory(options: Options) usize {
-    return plan(options).size().raw();
+    return (plan(options).size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compress {

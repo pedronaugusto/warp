@@ -157,7 +157,7 @@ pub const Compressor = struct {
     /// Exact worker, overlap, input and output storage; maxInt means it cannot fit.
     pub fn memory(options: Options) usize {
         const cfg = config(options) catch return std.math.maxInt(usize);
-        return plan(options, cfg).size().raw();
+        return (plan(options, cfg).size() catch return std.math.maxInt(usize)).raw();
     }
 
     pub fn init(gpa: std.mem.Allocator, options: Options) InitError!Compressor {
