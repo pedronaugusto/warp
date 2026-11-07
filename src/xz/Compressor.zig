@@ -25,7 +25,7 @@ pub const Bcj = filter_.Bcj;
 
 pub const Options = struct {
     lzma: Lzma.Options = .preset(6, false),
-    check: Check = .crc64, // aegis: no-danger(A017): configuration, fixed at init
+    check: Check = .crc64,
     /// At most three filters before LZMA2, applied in order.
     filters: []const Filter = &.{},
     /// Input per block; null: one block.

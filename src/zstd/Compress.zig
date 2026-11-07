@@ -242,7 +242,7 @@ fn emit(s: *Compress, finishing: bool) void {
     } else s.encoder.store.storeLast(s.window[s.history..end]);
     s.encoder.mergeDictionary(s.window[0 .. s.history + s.have], s.history, end, s.total - s.have, s.params, s.reps, &next_reps);
     const raw = s.params.strategy == .fast and s.params.target_length > 0;
-    const n = (if (s.options.targetBlock()) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch unreachable; // aegis: no-danger(A013): output is blockMax(params) + 3 * 197 + 22 bytes (initBuffer): raw input plus headers for all 197 possible partitions
+    const n = (if (s.options.targetBlock()) |target| s.encoder.writeTarget(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last, target) else s.encoder.writeBlocks(s.params, s.window[s.history..end], s.output, raw, &s.reps, next_reps, &s.prev, s.first, last)) catch aegis.assert.never("output is blockMax(params) + 3 * 197 + 22 bytes (initBuffer): raw input plus headers for all 197 possible partitions");
 
     s.savings += @as(i64, @intCast(len)) - @as(i64, @intCast(n));
     s.pending = 0;

@@ -63,7 +63,7 @@ pub const Decoder = struct {
             if (lit.entry & huffman.end_flag != 0) return;
             if (lit.entry & huffman.literal_flag != 0) {
                 if (d.written == d.tokens.len) return error.OutputTooSmall;
-                d.tokens[d.written] = @as(u8, @truncate(lit.entry >> 16)); // aegis: no-danger(A009): the low byte of the value is the literal; the high bit is its tag
+                d.tokens[d.written] = @as(u8, @truncate(lit.entry >> 16)); // the low byte of the value is the literal; the high bit is its tag
                 d.written += 1;
                 continue;
             }

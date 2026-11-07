@@ -390,12 +390,12 @@ fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: [
             }
         },
         .mid, .chains, .optimal => {
-            const chains = c.chains.?; // aegis: no-danger(A013): plan gives the chains when the top level's band is not fast, and setLevel asserts them for a level past the fast band
+            const chains = c.chains orelse aegis.assert.never("plan gives the chains when the top level's band is not fast, and setLevel asserts them for a level past the fast band");
             const prefix: hc.Prefix = switch (from) {
                 .none => .none,
                 .previous => .{ .previous = c.previous[c.previous.len -| 65536..] },
                 .bytes => |bytes| .{ .bytes = bytes[bytes.len -| 65536..] },
-                .dictionary => |d| .{ .attached = .{ .bytes = d.bytes, .chains = d.chains.? } }, // aegis: no-danger(A013): plan gives a dictionary's chains with the compressor's, when the top level's band is not fast
+                .dictionary => |d| .{ .attached = .{ .bytes = d.bytes, .chains = (d.chains orelse aegis.assert.never("plan gives a dictionary's chains with the compressor's, when the top level's band is not fast")) } },
             };
             return chains.compress(directive, level, c.favor_decompression_speed, in, out, prefix);
         },

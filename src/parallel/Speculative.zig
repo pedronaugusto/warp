@@ -193,7 +193,7 @@ pub fn inflate(p: *Speculative, io: Io, input: []const u8, output: []u8, options
 fn advance(t: *engine.Tables, state: *unwrap.State, s: *engine.Stream, options: unwrap.Options) Native.InflateError!bool {
     switch (try unwrap.run(t, state, s, engine.no_more, options)) {
         .done => return true,
-        .output_full => unreachable, // aegis: no-danger(A013): inflate hands a partial request to the native decoder before this stream is made, so it is not partial, and its full output is OutputTooSmall
+        .output_full => aegis.assert.never("inflate hands a partial request to the native decoder before this stream is made, so it is not partial, and its full output is OutputTooSmall"),
         .block_end => return false,
         .member_end => {
             s.need(engine.no_more, 8);

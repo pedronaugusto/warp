@@ -10,6 +10,7 @@
 //! code-length items round-robin from lane 0; data in rounds of one symbol
 //! a lane, a match's distance on its lane's next turn (`writeData`).
 const std = @import("std");
+const aegis = @import("aegis");
 const block = @import("../deflate/block.zig");
 const huffman = @import("../huffman.zig");
 
@@ -118,7 +119,7 @@ pub const Writer = struct {
         const stored_cost: ?u64 = if (kinds == .stored_only) null else if (data.raw) |raw| storedCost(raw.len) else null;
         var plan: block.Plan = undefined;
         switch (block.choose(&counts, seqs.len == 0 and tail == 0, kinds, stored_cost, &plan)) {
-            .stored => w.writeStored(data.raw.?, final), // aegis: no-danger(A013): choose gives stored for a stored cost, made from data.raw above, or for stored_only, whose block a streaming window ends before its bytes slide out (stream/Deflate.zig slide), so raw is at hand
+            .stored => w.writeStored((data.raw orelse aegis.assert.never("choose gives stored for a stored cost, made from data.raw above, or for stored_only, whose block a streaming window ends before its bytes slide out (stream/Deflate.zig slide), so raw is at hand")), final),
             .fixed => {
                 w.blockHeader(final, 1);
                 var tokens: Sequences(interleaved) = .{ .data = data.bytes, .seqs = seqs, .tail = tail };

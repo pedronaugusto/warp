@@ -757,7 +757,7 @@ fn prepareLazy(c: *Encoder, p: Params, start: u32) void {
 }
 
 fn prepareOptimal(c: *Encoder, p: Params, start: u32) void {
-    const workspace = c.opt_workspace.?; // aegis: no-danger(A013): Layout.of reserves the workspace when the level resolves to btopt or above at any input size, and parameters resolves from the same options
+    const workspace = c.opt_workspace orelse aegis.assert.never("Layout.of reserves the workspace when the level resolves to btopt or above at any input size, and parameters resolves from the same options");
     workspace.model.reset();
     const hash3_log: u5 = @min(17, p.window_log);
     c.optimal = .{

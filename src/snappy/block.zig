@@ -95,7 +95,7 @@ const Decoder = struct {
     /// The dictionary's content, before `out[0]`.
     dict: []const u8,
     /// The offset a repeat copies from (S2); 0 for none yet.
-    last: usize, // aegis: no-danger(A017): the last repeat offset, a distance: data
+    last: usize,
 
     /// Decode the elements after the header's `start` bytes.
     fn run(d: *Decoder, start: usize) Error!void {

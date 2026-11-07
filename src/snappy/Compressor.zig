@@ -49,9 +49,9 @@ pub const Level = enum {
 
 pub const Options = struct {
     /// The elements written: Snappy's, or S2's.
-    format: block.Format = .snappy, // aegis: no-danger(A017): configuration, fixed at init
+    format: block.Format = .snappy,
     /// The parser; null for the format's default.
-    level: ?Level = null, // aegis: no-danger(A017): configuration, fixed at init
+    level: ?Level = null,
     /// An S2 dictionary every block may copy from (S2's parsers and
     /// format), indexed once at `init`; its content must outlive the
     /// compressor.

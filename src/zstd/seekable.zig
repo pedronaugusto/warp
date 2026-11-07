@@ -271,7 +271,7 @@ pub const Writer = struct {
             w.failure = error.TooManyFrames;
             return error.WriteFailed;
         }
-        const n = w.compressor.compress(w.input[0..w.have], w.encoded, .{ .checksum = w.frame_checksum }) catch unreachable; // aegis: no-danger(A013): encoded is Compressor.bound(frameLen) bytes (initBuffer), and have is at most frameLen
+        const n = w.compressor.compress(w.input[0..w.have], w.encoded, .{ .checksum = w.frame_checksum }) catch aegis.assert.never("encoded is Compressor.bound(frameLen) bytes (initBuffer), and have is at most frameLen");
 
         try w.output.writeAll(w.encoded[0..n]);
         w.entries[w.count] = .{ .compressed = @intCast(n), .decompressed = @intCast(w.have), .checksum = @truncate(std.hash.XxHash64.hash(0, w.input[0..w.have])) };

@@ -75,7 +75,7 @@ pub fn decompress(d: *Decompressor, in: []const u8, out: []u8, options: Options)
         };
         switch (status) {
             .need_input => return fail(options, error.Truncated, r.bitOffset(), .truncated),
-            .output_full => unreachable, // aegis: no-danger(A013): a Linear history is the whole output, and its full() refuses with OutputTooSmall; only a Ring stops at output_full
+            .output_full => aegis.assert.never("a Linear history is the whole output, and its full() refuses with OutputTooSmall; only a Ring stops at output_full"),
             .done => {},
         }
         if (options.streams == .one or r.pos == in.len) return .{ .in_len = r.pos, .out_len = h.pos };

@@ -16,6 +16,7 @@
 //! arrives.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const bits = @import("../bits.zig");
 const match = @import("../match.zig");
 const block = @import("block.zig");
@@ -232,7 +233,7 @@ pub fn Cursor(comptime keep_literals: bool, comptime Writer: type) type {
         pub fn emit(c: *Self, end: usize, final: bool) void {
             const b = c.b;
             const raw: ?[]const u8 = if (b.start >= 0) c.in[@intCast(b.start)..end] else null;
-            const data: block.Data = .{ .bytes = if (keep_literals) b.lits[0..b.n_lits] else raw.?, .raw = raw }; // aegis: no-danger(A013): a parse that keeps no literals runs over a whole input (Deflate's whole compress, parallel.zig's workers), where every block starts inside it
+            const data: block.Data = .{ .bytes = if (keep_literals) b.lits[0..b.n_lits] else (raw orelse aegis.assert.never("a parse that keeps no literals runs over a whole input (Deflate's whole compress, parallel.zig's workers), where every block starts inside it")), .raw = raw };
             if (Writer == bits.Writer) {
                 block.write(!keep_literals, c.w, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);
             } else c.w.writeBlock(!keep_literals, data, b.seqs[0..b.n], c.run, &b.counts, final, b.kinds);

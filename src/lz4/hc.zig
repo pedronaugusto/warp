@@ -564,7 +564,7 @@ pub const Chains = struct {
         var v = v_in;
         _ = &v;
         const src = v.src;
-        const opt = c.costs.?; // aegis: no-danger(A013): Compressor.carve makes the costs when the top level is 10 or more, and setLevel asserts that top for an optimal level
+        const opt = c.costs orelse aegis.assert.never("Compressor.carve makes the costs when the top level is 10 or more, and setLevel asserts that top for an optimal level");
         var e: Encoder(directive) = .init(out, v.begin);
         var ip: usize = v.begin;
         if (src.len - v.begin < seq.min_length) return e.last(src);

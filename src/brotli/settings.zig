@@ -168,7 +168,7 @@ pub const Type = enum { h2, h3, h4, h5, h6, h10, h35, h40, h41, h42, h54, h55, h
 
 /// The match finder a quality uses, and its sizes.
 pub const HasherParams = struct {
-    type: Type = .h2, // aegis: no-danger(A017): configuration, fixed at init
+    type: Type = .h2,
     bucket_bits: u5 = 0,
     block_bits: u5 = 0,
     num_last_distances_to_check: u5 = 0,

@@ -3,6 +3,7 @@
 //! fixed-code or dynamic-code block for them, by exact bit cost.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const gen = @import("gen");
 const bits = @import("../bits.zig");
 const huffman = @import("../huffman.zig");
@@ -457,7 +458,7 @@ pub fn write(comptime interleaved: bool, w: *bits.Writer, data: Data, seqs: []co
     const stored_cost: ?u64 = if (kinds == .stored_only) null else if (data.raw) |raw| storedCost(raw.len, w.bitPosition()) else null;
     var plan: Plan = undefined;
     switch (choose(counts, seqs.len == 0 and tail == 0, kinds, stored_cost, &plan)) {
-        .stored => writeStored(w, data.raw.?, final), // aegis: no-danger(A013): choose gives stored for a stored cost, made from data.raw above, or for stored_only, whose block a streaming window ends before its bytes slide out (stream/Deflate.zig slide), so raw is at hand
+        .stored => writeStored(w, (data.raw orelse aegis.assert.never("choose gives stored for a stored cost, made from data.raw above, or for stored_only, whose block a streaming window ends before its bytes slide out (stream/Deflate.zig slide), so raw is at hand")), final),
         .fixed => {
             w.add(@as(u64, @intFromBool(final)) | 2, 3);
             writeData(interleaved, w, data.bytes, seqs, tail, &fixed);

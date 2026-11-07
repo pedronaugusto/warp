@@ -25,6 +25,7 @@
 //! the codeword.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const literal_flag: u32 = 1 << 31;
 pub const exceptional: u32 = 1 << 15;
@@ -175,7 +176,7 @@ pub fn build(comptime alphabet: Alphabet, table: []u32, lens: []const u8) BuildE
     if (left > 0) {
         if (alphabet == .precode or max != 1) return error.Incomplete;
         // A single one-bit code: its codeword is 0.
-        const sym = std.mem.findScalar(u8, lens, 1).?; // aegis: no-danger(A013): max == 1 here, so count[1], counted from lens, is not 0
+        const sym = std.mem.findScalar(u8, lens, 1) orelse aegis.assert.never("max == 1 here, so count[1], counted from lens, is not 0");
         table[0] = symbolEntry(alphabet, sym, 1);
         table[1] = invalid(1);
         return 1;

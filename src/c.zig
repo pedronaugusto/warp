@@ -84,9 +84,10 @@ fn create(z: *Stream, bytes: usize) ?*State {
         @ptrCast(allocate(z.@"opaque", 1, @intCast(n)) orelse return null) // aegis: boundary(A019): zlib's contract: zalloc returns at least n writable bytes or null
     else
         std.heap.page_allocator.rawAlloc(n, .@"64", @returnAddress()) orelse return null;
-    const address = std.mem.alignForward(usize, @intFromPtr(original), 64);
-    const s: *State = @ptrFromInt(address); // aegis: no-danger(A019): the aligned address and State's size lie within the allocation
-    const engine: [*]align(64) u8 = @ptrFromInt(address + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger(A019): n reserves `bytes` after State's padded size, past the aligned address
+    // aegis: no-danger(A019): the aligned address and State's size lie within the allocation (63 bytes reserved for the offset)
+    const aligned: [*]align(64) u8 = @alignCast(original + (std.mem.alignPointerOffset(original, 64) orelse return null));
+    const s: *State = @ptrCast(aligned);
+    const engine: [*]align(64) u8 = @alignCast(aligned + std.mem.alignForward(usize, @sizeOf(State), 64)); // aegis: no-danger(A019): n reserves `bytes` after State's padded size, past the aligned address
     s.* = .{ .original = original, .allocation_len = n, .free = z.zfree, .@"opaque" = z.@"opaque", .direction = .encode, .engine = engine[0..bytes] };
     z.state = s;
     z.total_in = 0;
@@ -769,8 +770,9 @@ fn copiedState(dest: *Stream, source: *const Stream, old: *const State) ?*State 
 
 fn moved(slice: anytype, old: *const State, fresh: *State) @TypeOf(slice) {
     if (slice.len == 0) return slice;
-    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old);
-    const pointer: @TypeOf(slice.ptr) = @ptrFromInt(@intFromPtr(fresh) + offset); // aegis: no-danger(A019): the identical copied layout preserves the slice's alignment and length
+    const offset = @intFromPtr(slice.ptr) - @intFromPtr(old); // safe: an address difference, a number for the offset
+    // aegis: no-danger(A019): the identical copied layout preserves the slice's alignment and length
+    const pointer: @TypeOf(slice.ptr) = @ptrCast(@alignCast(@as([*]u8, @ptrCast(fresh)) + offset));
     return pointer[0..slice.len];
 }
 

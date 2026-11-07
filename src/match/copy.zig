@@ -70,7 +70,8 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
 }
 
 inline fn store16(p: [*]u8, v: @Vector(16, u8)) void {
-    @as(*align(1) @Vector(16, u8), @ptrCast(p)).* = v; // aegis: no-danger(A019): an unaligned store of 16 bytes the caller has bounded
+    // An unaligned store of 16 bytes the caller has bounded.
+    p[0..16].* = v;
 }
 
 fn periodMask(comptime period: usize) @Vector(16, i32) {

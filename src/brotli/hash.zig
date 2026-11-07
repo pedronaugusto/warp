@@ -935,7 +935,7 @@ pub const Impl = union(enum) {
 pub const Hasher = struct {
     common: Common = .{},
     /// The finder, made on the stream's first block: none before it.
-    impl: ?Impl = null, // aegis: no-danger(A017): the finder chosen once, before first use (prepared): data, no lifecycle
+    impl: ?Impl = null,
     prepared: bool = false,
     /// What `impl` was made for, so that a later stream can tell whether
     /// it asks for the same hasher.

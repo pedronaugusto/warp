@@ -332,7 +332,7 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
             z.in_total += in.len;
             return .{ .in_len = in.len, .op = s.op, .status = .need_input, .replaced = z.state.history_replaced, .history = s.history, .start = s.start };
         },
-        error.OutputTooSmall => unreachable, // aegis: no-danger(A013): s.partial is set above, and a partial decode stops at a full output with output_full
+        error.OutputTooSmall => aegis.assert.never("s.partial is set above, and a partial decode stops at a full output with output_full"),
         error.InvalidStream, error.ChecksumMismatch, error.DictionaryMismatch => |e| {
             if (z.options.diagnostic) |d| d.* = diagnostic;
             z.state.sum(&s);
