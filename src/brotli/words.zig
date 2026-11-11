@@ -6,6 +6,7 @@
 //! "frozen" bitmap fixes it), and pinned against the reference's table.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const dictionary = @import("dictionary.zig");
 const find = @import("find.zig");
 const tables = @import("tables.zig");
@@ -90,7 +91,7 @@ pub inline fn lutWord(j: usize) Word {
 }
 
 comptime {
-    std.debug.assert(lut.len == 2 * lut_buckets + 4 * lut_items);
+    aegis.assert.invariant(lut.len == 2 * lut_buckets + 4 * lut_items, "the lookup holds its buckets and items");
 }
 
 /// The chains of the words hashing to each bucket, newest first, as the
@@ -196,7 +197,7 @@ fn build(r: *Lut, c: *Chains) void {
         c.uppercaseFirsts(l, n);
         c.uppercaseAlls(l, n);
     }
-    std.debug.assert(c.next == lut_items - 1);
+    aegis.assert.invariant(c.next == lut_items - 1, "the transforms fill the lookup");
     // Offsets start at 1: entry 0 is unused.
     r.words[0] = .{ .len = 0, .transform = 0, .idx = 0 };
     var pos: usize = 1;

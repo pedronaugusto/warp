@@ -2,6 +2,7 @@
 //! (Appendix B): what a distance past the history names.
 
 const std = @import("std");
+const aegis = @import("aegis");
 
 /// The dictionary's words, grouped by length and sorted within each group.
 pub const data: *const [122784]u8 = @embedFile("dictionary.bin");
@@ -20,7 +21,7 @@ pub const offsets = blk: {
         o[len] = at;
         at += @as(u32, len) << size_bits[len];
     }
-    std.debug.assert(at == data.len);
+    aegis.assert.invariant(at == data.len, "the word lengths cover the dictionary");
     break :blk o;
 };
 

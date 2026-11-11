@@ -32,7 +32,7 @@ pub fn BinaryTreesFor(comptime window: u32) type {
 }
 
 pub fn BinaryTreesWith(comptime config: Config) type {
-    comptime std.debug.assert(config.shortest == 2 or config.shortest == 3);
+    comptime aegis.assert.invariant(config.shortest == 2 or config.shortest == 3, "binary trees find matches of 2 or 3 bytes first");
     const window = config.window;
     return struct {
         const BinaryTrees = @This();

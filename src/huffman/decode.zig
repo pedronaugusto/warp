@@ -292,7 +292,7 @@ pub fn Fixed(comptime alphabet: Alphabet) type {
             var t: [1 << bits]u32 = undefined;
             // unreachable: the fixed lengths are complete codes
             const got = build(alphabet, &t, &lens) catch unreachable;
-            std.debug.assert(got == bits);
+            aegis.assert.invariant(got == bits, "the fixed table is as wide as its bits");
             break :blk t;
         };
     };

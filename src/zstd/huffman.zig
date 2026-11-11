@@ -13,7 +13,7 @@ pub const max_log = 12;
 /// A decoding table's cell: `log` bits peeked, at most `max_log`.
 const Index = u12;
 comptime {
-    std.debug.assert(@bitSizeOf(Index) == max_log);
+    aegis.assert.invariant(@bitSizeOf(Index) == max_log, "a cell index is max_log bits");
 }
 pub const max_symbols = 256;
 

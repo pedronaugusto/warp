@@ -7,7 +7,6 @@
 //! chain links are written before they are read, so a short stream clears
 //! a few kilobytes, not the window.
 
-const std = @import("std");
 const aegis = @import("aegis");
 const match = @import("history.zig");
 
@@ -28,8 +27,8 @@ pub fn HashChainsFor(comptime window: u32) type {
 }
 
 pub fn HashChainsWith(comptime config: Config) type {
-    comptime std.debug.assert(config.chain == 3 or config.chain == 4);
-    comptime std.debug.assert(config.shortest == 2 or (config.shortest == 3 and config.chain == 4));
+    comptime aegis.assert.invariant(config.chain == 3 or config.chain == 4, "hash chains hash 3 or 4 bytes");
+    comptime aegis.assert.invariant(config.shortest == 2 or (config.shortest == 3 and config.chain == 4), "a shortest match of 3 needs the chain of 4");
     const window = config.window;
     return struct {
         const HashChains = @This();
@@ -233,7 +232,7 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// one of `max_len`; inserts `p`. The matches go to `out` by
         /// increasing length; their count is returned. No dictionary.
         pub fn matches(hc: *HashChains, h: match.History, p: isize, max_len: u32, depth: u32, out: [*]Match) usize {
-            comptime std.debug.assert(pairs);
+            comptime aegis.assert.invariant(pairs, "matches is for finders of shortest 2");
             hc.advance(p);
             const base = hc.base;
             const prev = hc.prev.ptr;

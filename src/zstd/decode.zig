@@ -746,9 +746,9 @@ const LlState = u9;
 const MlState = u9;
 const OfState = u8;
 comptime {
-    std.debug.assert(codes.max_ll_log == @bitSizeOf(LlState));
-    std.debug.assert(codes.max_ml_log == @bitSizeOf(MlState));
-    std.debug.assert(codes.max_of_log == @bitSizeOf(OfState));
+    aegis.assert.invariant(codes.max_ll_log == @bitSizeOf(LlState), "a literal-length state indexes its largest table");
+    aegis.assert.invariant(codes.max_ml_log == @bitSizeOf(MlState), "a match-length state indexes its largest table");
+    aegis.assert.invariant(codes.max_of_log == @bitSizeOf(OfState), "an offset state indexes its largest table");
 }
 
 const SequenceCells = struct {
