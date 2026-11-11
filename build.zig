@@ -223,9 +223,9 @@ pub fn dev(b: *std.Build, tools: type) void {
             .optimize = optimize,
         },
     });
-    // A project that depends on warp by path, with aegis alone to fetch:
+    // A project that depends on warp by path, with aegis and ladar to fetch:
     // the build a consumer gets.
-    tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig"), .packages = &.{p.dependency("aegis", .{ .target = target, .optimize = optimize })} });
+    tools.preflight.addConsumerCheck(b, p, .{ .package = "warp", .program = p.path("ci/consumer.zig"), .packages = &.{ p.dependency("aegis", .{ .target = target, .optimize = optimize }), p.dependency("ladar", .{ .target = target, .optimize = optimize }) } });
 }
 
 /// warp's one module. The checksum kernels that need instructions beyond the
@@ -239,7 +239,7 @@ fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lan
 /// What warp's sources import: aegis, and the checksum kernels that need
 /// instructions beyond the target's baseline, each a module of its own
 /// built with those instructions enabled; warp calls one only where the CPU
-/// has them (src/cpu.zig). Zig sets CPU features per module, so these are
+/// has them (ladar, which detects it). Zig sets CPU features per module, so these are
 /// the only modules that may use them: nothing else in warp can be compiled
 /// into them.
 /// What the tests read beside warp's sources: the differential corpus,
@@ -254,6 +254,7 @@ fn addTestImports(b: *std.Build, p: *std.Build, module: *std.Build.Module) void 
 
 fn addSourceImports(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     module.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
+    module.addImport("ladar", b.dependency("ladar", .{ .target = target, .optimize = optimize }).module("ladar"));
     const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize });
     const Kernel = struct { name: []const u8, source: []const u8, features: std.Target.Cpu.Feature.Set };
     const arm = std.Target.aarch64.featureSet;

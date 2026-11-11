@@ -11,7 +11,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const cpu = @import("../cpu.zig");
+const cpu = @import("ladar");
 const Kernel = @import("kernel.zig").Kernel;
 const crc_ = @import("crc.zig");
 

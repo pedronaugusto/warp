@@ -32,7 +32,6 @@ pub fn kernels() Kernels {
 }
 
 test {
-    _ = @import("cpu.zig");
     _ = crc_;
     _ = crc32_;
     _ = crc32c_;

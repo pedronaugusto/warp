@@ -145,7 +145,8 @@ one table load and one add to the bit buffer. The same input, options and
 dictionary always give the same bytes.
 
 **Checksums.** Each checksum has kernels for the instructions it can use and picks
-one per process, on first use, from what the CPU reports (`warp.kernels()` says
+one per process, on first use, from what the CPU reports through
+[ladar](https://github.com/pedronaugusto/ladar) (`warp.kernels()` says
 which). CRC-32 and CRC-32C fold 16-byte lanes forward with carry-less multiplies,
 twelve lanes at a time with PMULL on AArch64 (joined with EOR3 where the CPU has
 SHA3) and with PCLMULQDQ or VPCLMULQDQ on x86-64, then finish with the CRC32
@@ -578,6 +579,8 @@ behave the same.
 - [Zig](https://ziglang.org) 0.17.0 and its standard library; nothing is linked.
 - [aegis](https://github.com/pedronaugusto/aegis): the sizes and offsets the API takes
   and gives.
+- [ladar](https://github.com/pedronaugusto/ladar): which instruction-set extensions
+  the CPU has, for the checksum kernels.
 - [bay](https://github.com/pedronaugusto/bay) runs warp's development.
   [preflight](https://github.com/pedronaugusto/preflight) (the source checks, the
   tests and CI) and [shakedown](https://github.com/pedronaugusto/shakedown) (the

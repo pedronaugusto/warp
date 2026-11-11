@@ -12,7 +12,6 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/kernels/x86_sse.zig",
         "src/kernels/x86_avx2.zig",
     } },
-    .{ .name = "cpu", .patterns = &.{"src/cpu.zig"} },
     .{ .name = "diagnostic", .patterns = &.{"src/Diagnostic.zig"} },
     .{ .name = "checksum kernel names", .patterns = &.{"src/checksum/kernel.zig"} },
     .{ .name = "crc", .patterns = &.{"src/checksum/crc.zig"} },
@@ -129,6 +128,7 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
     .{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{
         "aegis",
         "builtin",
+        "ladar",
         "gen",
         "shakedown",
         "std",
