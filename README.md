@@ -3,26 +3,34 @@
 warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
 through `warp.lz4`, Snappy and S2 blocks and streams through `warp.snappy`, Brotli
-streams through `warp.brotli`, and decodes bzip2
-through `warp.bzip2` and xz and LZMA through `warp.xz` and `warp.lzma`. It
+streams through `warp.brotli`, xz, `.lzma` and raw LZMA/LZMA2 through `warp.xz` and
+`warp.lzma` and GDeflate through `warp.gdeflate`, and decodes bzip2 through `warp.bzip2`. It
 computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
 as the reference does for a stream other than one its encoder wrote before, and from
 quality 4 the block splitter's working sets in each meta-block. Checksum dispatch selects
 a kernel supported by the CPU.
 
-W5 performance work remains in progress. Correctness and deterministic
-corpus sizes are checked in CI; measurements are reported separately.
+Correctness and deterministic corpus sizes are checked in CI; measurements are
+reported separately.
 
 ## Install
 
-Requires Zig 0.17.0. Fetch with `zig fetch --save
+Requires Zig 0.17. Fetch with `zig fetch --save
 git+https://github.com/pedronaugusto/warp`, then obtain the `warp` module through
-`b.dependency` and add it to your executable's imports. warp has no dependencies.
+`b.dependency` and add it to your executable's imports. It depends on
+[aegis](https://github.com/pedronaugusto/aegis) and
+[ladar](https://github.com/pedronaugusto/ladar), which the fetch brings with it.
 It is one module: what a program does not call is not compiled, so a program that
 only checksums carries no codec.
 The codecs build for every target, wasm32-freestanding included. CPU detection
 reads the instructions available; parallel calls take `std.Io` for their workers.
+
+## Stability
+
+warp is 0.x and tracks Zig 0.17.x. A breaking change comes only in a minor release
+(0.5 to 0.6), with a CHANGELOG entry saying what changed and what to write instead; a
+patch release never breaks.
 
 ## Usage
 
