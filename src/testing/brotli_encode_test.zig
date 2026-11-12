@@ -217,11 +217,26 @@ const Case = struct {
     }
 };
 
-test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input" {
+/// One third of the encoder's 300 fuzz cases, from a seed of its own drawn from the run's, so
+/// the three parts are 300 distinct cases and each stays inside the test runner's 120 s bound
+/// on the slowest hosted runner (Windows, Debug), where the 300 in one test passed it.
+fn fuzzPart(part: u64) !void {
     var kept: Kept = .{ .whole = .init(testing.allocator, .{}), .stream = try .init(testing.allocator, .{}) };
     defer kept.whole.deinit();
     defer kept.stream.deinit();
-    try shakedown.check(testing.allocator, &kept, Case.run, .{ .cases = 300 });
+    try shakedown.check(testing.allocator, &kept, Case.run, .{ .cases = 100, .seed = testing.random_seed ^ (part *% 0x9e3779b97f4a7c15) });
+}
+
+test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input (1 of 3)" {
+    try fuzzPart(1);
+}
+
+test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input (2 of 3)" {
+    try fuzzPart(2);
+}
+
+test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input (3 of 3)" {
+    try fuzzPart(3);
 }
 
 test "a whole-buffer encoder keeps what a stream the size of one it wrote before needs" {
