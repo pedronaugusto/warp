@@ -1,5 +1,4 @@
 {
-  "attest": true,
   "compile_step": "check",
   "targets": [
     "x86_64-linux-gnu",
@@ -19,7 +18,7 @@
     {
       "name": "sizes",
       "step": "check-sizes",
-      "tiers": ["fast", "merge", "release"],
+      "tiers": ["ci", "release"],
       "setup": false,
       "timeout": 30
     }

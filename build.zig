@@ -218,7 +218,7 @@ pub fn dev(b: *std.Build, tools: type) void {
                 .{ .name = "xz-bench", .source = "bench/xz.zig" },
                 .{ .name = "snappy-bench", .source = "bench/snappy.zig" },
             },
-            .imports = benchImports,
+            .imports = tools.preflight.Bench.importsFrom(benchImports),
             .target = target,
             .optimize = optimize,
         },

@@ -32,6 +32,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- Pins aegis c8982a8, still 0.2.4: six additive commits after 3c0b13e (the role declarations a linter reads, `lint_rules`), the aegis the development build's preflight selects. Nothing warp calls changed.
 - The CPU feature detection the checksum kernels dispatch on is [ladar](https://github.com/pedronaugusto/ladar)'s, a dependency beside aegis; warp's own `cpu.zig` is gone. Which kernel runs is unchanged.
 - The README states warp's stability policy (0.x, tracking Zig 0.17.x; a breaking change only in a minor release, with its CHANGELOG entry; a patch release never breaks), names aegis as its one dependency where it said it had none, lists xz, LZMA and GDeflate encoding, and drops the stale W5 line.
 - The README states warp's stability policy (0.x, tracking Zig 0.17.x; a breaking change only in a minor release, with its CHANGELOG entry; a patch release never breaks), names its dependencies (aegis, ladar) where it said it had none, lists xz, LZMA and GDeflate encoding, and drops the stale W5 line.
