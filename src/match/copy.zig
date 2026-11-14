@@ -65,7 +65,7 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
                 store16(op + i + step, pattern);
             }
         },
-        else => unreachable, // glint-ignore: A013 -- no-danger: offsets of 8 and more returned above, and 0 is refused at the top
+        else => unreachable, // offsets of 8 and more returned above, and 0 is refused at the top
     }
 }
 

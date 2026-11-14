@@ -1,0 +1,11 @@
+{
+  "seams": [
+    {
+      "file": "src/c.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the zlib C stream ABI: a C caller's z_stream hands over its opaque state and its input, output and header buffers as C pointers with their lengths beside them, which zlib's contract makes the caller's to keep true"
+    }
+  ]
+}

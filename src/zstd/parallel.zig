@@ -57,7 +57,7 @@ fn config(options: Options) error{InvalidOptions}!Config {
     const coded = aegis.units.Bytes(usize).fromRaw(job).add(.fromRaw(591 * blocks)) catch return error.InvalidOptions;
     const bound: aegis.units.Bytes(usize) = .fromRaw(Encoder.bound(job));
     // At most 2^29 (job_len is at most 2^30), within any usize.
-    const rsync_mask: usize = @intCast(std.math.ceilPowerOfTwoPromote(u32, @max(2, job_len.raw() / 2)));
+    const rsync_mask: usize = @intCast(std.math.ceilPowerOfTwoPromote(u32, @max(2, (job_len.divTrunc(2) catch return error.InvalidOptions).raw())));
     return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = (if (coded.compare(bound) == .lt) bound else coded).raw(), .rsync_mask = rsync_mask };
 }
 

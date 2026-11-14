@@ -93,7 +93,7 @@ pub fn deinit(c: *Compressor) void {
 /// The largest stream an input of `len` bytes encodes to with `options`.
 pub fn bound(options: Options, len: usize) usize {
     const most = options.blockLen(len);
-    const count = if (len == 0) 0 else std.math.divCeil(usize, len, most) catch unreachable;
+    const count = if (len == 0) 0 else std.math.divCeil(usize, len, most) catch unreachable; // glint-ignore: Z026 -- most is at least 1: init refuses a block_size of 0 and len is not 0 here
     const data = Lzma.bound(.lzma2, most);
     const header = format.blockHeaderLen(.{ .compressed = data, .uncompressed = most, .filters = options.filters, .dictionary = options.lzma.dictionary });
     const per_block = header + std.mem.alignForward(usize, data, 4) + options.check.size();

@@ -1028,7 +1028,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 push = symbol != 0;
             } else {
                 const range = t.distance_ranges[symbol];
-                f.br.fill(false, range.extra) catch unreachable; // glint-ignore: A013 -- no-danger: a fast fill (careful = false) has no error path; its loads are stated by fill's invariants
+                f.br.fill(false, range.extra) catch unreachable; // glint-ignore: Z026 -- a fast fill (careful = false) has no error path; its loads are stated by fill's invariants
                 // `extra` is 5 bits: at most 31 of them.
                 d = range.offset +% (@as(u32, @as(u31, @intCast(f.br.peek(range.extra)))) << npostfix);
                 f.br.drop(range.extra);
