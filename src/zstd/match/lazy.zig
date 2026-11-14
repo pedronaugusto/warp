@@ -359,7 +359,7 @@ fn findInRow(comptime mls: u4, comptime rl: u3, st: *State, w: Window, b: Bytes,
         if (pos == 0) continue;
         const m = st.hash[row + pos];
         if (m < low) break;
-        @prefetch(b.ptr(m), .{});
+        b.prefetch(m);
         buffer[count] = m;
         count += 1;
         attempts -= 1;

@@ -105,7 +105,7 @@ pub noinline fn compress(comptime mls: u4, long_table: []u32, long_log: u5, shor
             idxl0 = idxl1;
             // AArch64 cores keep ahead of the scan with this (as the
             // reference does there); x86 prefetchers need no help.
-            if (builtin.cpu.arch == .aarch64) @prefetch(b.ptr(ip + 256), .{});
+            if (builtin.cpu.arch == .aarch64) b.prefetch(ip + 256);
             if (ip1 > limit) break :search .none;
         };
         switch (outcome) {
@@ -159,6 +159,6 @@ inline fn matches32(b: window.Bytes, prefix: usize, p: usize, i: usize) bool {
 }
 
 inline fn prefetch(b: window.Bytes, ip: usize) void {
-    @prefetch(b.ptr(ip + 64), .{});
-    @prefetch(b.ptr(ip + 128), .{});
+    b.prefetch(ip + 64);
+    b.prefetch(ip + 128);
 }

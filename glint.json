@@ -6,6 +6,20 @@
         "P007"
       ],
       "reason": "the zlib C stream ABI: a C caller's z_stream hands over its opaque state and its input, output and header buffers as C pointers with their lengths beside them, which zlib's contract makes the caller's to keep true"
+    },
+    {
+      "file": "src/zstd/copy.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "zstd's wild and overlap copies: whole vectors moved past the length asked for, each with the slack it needs checked in safe builds"
+    },
+    {
+      "file": "src/zstd/match/probe.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the match finders' raw probe: the input addressed by index on the axis the tables store, each read's bytes checked against the input in safe builds"
     }
   ]
 }

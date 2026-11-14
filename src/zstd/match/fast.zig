@@ -96,8 +96,8 @@ pub noinline fn compress(comptime mls: u4, comptime cmov: bool, table: []u32, ha
                 ip3 = ip1 + step;
                 if (ip2 >= next_step) {
                     step += 1;
-                    @prefetch(b.ptr(ip1 + 64), .{});
-                    @prefetch(b.ptr(ip1 + 128), .{});
+                    b.prefetch(ip1 + 64);
+                    b.prefetch(ip1 + 128);
                     next_step += step_increment;
                 }
                 if (ip3 >= limit) break :outer;

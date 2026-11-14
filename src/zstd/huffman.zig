@@ -330,7 +330,7 @@ inline fn lookupSingle(cells: *const [1 << max_log]u16, log: u4, r: *bits.Reader
 
 /// Two symbols' bytes written (the second may be overwritten next); the
 /// count returned.
-inline fn lookupDouble(cells: *const [1 << max_log]u32, log: u4, r: *bits.Reader, out: [*]u8) u32 {
+inline fn lookupDouble(cells: *const [1 << max_log]u32, log: u4, r: *bits.Reader, out: []u8) u32 {
     const c = cells[@as(Index, @intCast(r.peek(log)))];
     std.mem.writeInt(u16, out[0..2], @truncate(c), .little);
     r.skip((c >> 16) & 0xff);
@@ -362,7 +362,7 @@ fn lockstepDouble(t: *const Table, r: *[4]bits.Reader, out: []u8, op: *[4]usize)
     const limit = out.len - 7;
     while (op[3] < limit) {
         inline for (0..4) |_| {
-            inline for (0..4) |s| op[s] += lookupDouble(cells, log, &r[s], out[op[s]..].ptr);
+            inline for (0..4) |s| op[s] += lookupDouble(cells, log, &r[s], out[op[s]..]);
         }
         var status: u2 = 0;
         inline for (0..4) |s| status |= @backingInt(r[s].reloadFast());
@@ -396,15 +396,15 @@ fn streamDouble(t: *const Table, r: *bits.Reader, out: []u8) void {
     if (end >= 8) {
         while (p + 8 <= end) {
             if (r.reload() != .unfinished) break;
-            inline for (0..4) |_| p += lookupDouble(cells, log, r, out[p..].ptr);
+            inline for (0..4) |_| p += lookupDouble(cells, log, r, out[p..]);
         }
     } else _ = r.reload();
     if (end - p >= 2) {
         while (p + 2 <= end) {
             if (r.reload() != .unfinished) break;
-            p += lookupDouble(cells, log, r, out[p..].ptr);
+            p += lookupDouble(cells, log, r, out[p..]);
         }
-        while (p + 2 <= end) p += lookupDouble(cells, log, r, out[p..].ptr);
+        while (p + 2 <= end) p += lookupDouble(cells, log, r, out[p..]);
     }
     if (p < end) {
         // The last symbol: a lookup may hold two, of which one is wanted;

@@ -6,6 +6,7 @@
 //! below the window's low end and never match: a call clears nothing.
 
 const std = @import("std");
+const Probe = @import("probe.zig").Probe;
 
 /// The input of one call, and where its indices start.
 pub const Window = struct {
@@ -102,30 +103,30 @@ pub inline fn read32(in: []const u8, p: usize) u32 {
     return std.mem.readInt(u32, in[p..][0..4], .little);
 }
 
-/// The input addressed by index: index `i` is the byte at `base + i`. One
-/// register serves current positions and candidates alike, as in the
-/// reference encoder's loops.
+/// The input addressed by index, through the match finders' raw probe (`probe.zig`): index `i`
+/// is the byte at `w.in[i - w.start]`.
 pub const Bytes = struct {
-    base: usize,
+    probe: Probe,
 
     pub fn of(w: Window) Bytes {
-        return .{ .base = @intFromPtr(w.in.ptr) -% w.start };
-    }
-
-    pub inline fn ptr(b: Bytes, i: usize) [*]const u8 {
-        return @ptrFromInt(b.base +% i); // glint-ignore: P007 -- no-danger: callers pass only indices whose byte lies in w.in
+        return .{ .probe = .init(w.in, w.start) };
     }
 
     pub inline fn byte(b: Bytes, i: usize) u8 {
-        return b.ptr(i)[0];
+        return b.probe.at(i, 1)[0];
     }
 
     pub inline fn load32(b: Bytes, i: usize) u32 {
-        return std.mem.readInt(u32, b.ptr(i)[0..4], .little);
+        return std.mem.readInt(u32, b.probe.at(i, 4), .little);
     }
 
     pub inline fn load64(b: Bytes, i: usize) u64 {
-        return std.mem.readInt(u64, b.ptr(i)[0..8], .little);
+        return std.mem.readInt(u64, b.probe.at(i, 8), .little);
+    }
+
+    /// Asks the cache for index `i`'s line, which may lie past the input.
+    pub inline fn prefetch(b: Bytes, i: usize) void {
+        b.probe.prefetch(i);
     }
 
     /// `hash` of the bytes at index `i`.

@@ -25,6 +25,7 @@ const fse = @import("fse.zig");
 const huffman = @import("huffman.zig");
 const codes = @import("codes.zig");
 const Diagnostic = @import("Diagnostic.zig");
+const copy = @import("copy.zig");
 
 pub const block_max = 1 << 17;
 /// Room the fast loop may write past a sequence's end.
@@ -497,13 +498,13 @@ pub const Frame = struct {
             const o_end = o_lit + ml;
             const l_end = l + ll;
             if (l_end <= literal_len and o_end <= out.len -| margin) {
-                const dst = out.ptr + o;
-                copy16(dst, lit.ptr + l);
-                if (ll > 16) wildCopy16(dst + 16, lit.ptr + l + 16, ll - 16);
+                // The literals' buffer keeps `margin` bytes past them; the output keeps `margin`
+                // past the match.
+                copy.copy16(out[o..], lit[l..]);
+                if (ll > 16) copy.wild16(out[o + 16 ..], lit[l + 16 ..], ll - 16);
                 if (offset <= o_lit - prefix) {
-                    const match = out.ptr + o_lit;
                     aegis.assert.invariant(offset <= o_lit, "offset <= o_lit");
-                    if (offset >= 16) wildCopy16(match, match - offset, ml) else overlapCopy(match, match - offset, offset, ml);
+                    if (offset >= 16) copy.wild16(out[o_lit..], out[o_lit - offset ..], ml) else copy.overlap(out, o_lit, offset, ml);
                 } else try f.fromDictionary(o_lit, ml, offset - (o_lit - prefix), at);
             } else {
                 try f.executeCarefully(o, lit, literal_len, l, ll, ml, offset, out.len, at);
@@ -579,7 +580,7 @@ pub const Frame = struct {
         var rep = f.entropy.reps;
         const out = f.out;
         const prefix = f.start;
-        const lit = lits.bytes.ptr;
+        const lit = lits.bytes;
         // Long literal runs can read up to 31 bytes past their end, so a fast copy's literals end
         // `margin` before the section's bytes do: below `lit_fast_bound`, which is 0 (no sequence
         // passes, not even one with no literals) where the section is shorter than `margin`.
@@ -638,18 +639,18 @@ pub const Frame = struct {
             const write_limit = if (behind_literals) in_out + l_end else lits_limit;
             if (l_end < lit_fast_bound and o_end + margin <= write_limit) {
                 @branchHint(.likely);
-                const dst = out.ptr + o;
-                wildCopy32(dst, lit + l, ll);
+                // What may be written ends short of the next unread literal and of the output's
+                // end; the literals keep `margin` bytes past `l_end`.
+                const room = out[0..write_limit];
+                copy.wild32(room[o..], lit[l..], ll);
                 l = l_end;
-                const m = out.ptr + o_lit;
                 if (offset <= o_lit - prefix) {
                     @branchHint(.likely);
                     aegis.assert.invariant(offset <= o_lit, "offset <= o_lit");
-                    const src = m - offset;
                     if (offset >= 16) {
-                        wildCopy32(m, src, ml);
+                        copy.wild32(room[o_lit..], room[o_lit - offset ..], ml);
                     } else {
-                        overlapCopy(m, src, offset, ml);
+                        copy.overlap(room, o_lit, offset, ml);
                     }
                 } else try f.fromDictionary(o_lit, ml, offset - (o_lit - prefix), at);
                 o = o_end;
@@ -680,7 +681,7 @@ pub const Frame = struct {
         const from = f.dict[f.dict.len - back ..];
         const first = @min(target.len, from.len);
         @memcpy(target[0..first], from[0..first]);
-        if (first < target.len) repeat(target[first..].ptr, f.out[f.start..o_lit].ptr, target.len - first);
+        if (first < target.len) repeat(f.out, o_lit + first, o_lit + first - f.start, target.len - first);
     }
 
     fn readLiterals(f: *Frame, cursor: *LiteralCursor, out: []u8, at: usize) Error!void {
@@ -709,7 +710,7 @@ pub const Frame = struct {
             aegis.assert.invariant(start <= f.out.len, "start <= f.out.len");
             const written = f.out[0..start];
             aegis.assert.invariant(offset <= written.len, "offset <= written.len");
-            repeat(f.out[start..].ptr, written[written.len - offset ..].ptr, match);
+            repeat(f.out, start, offset, match);
         }
         return lit + match;
     }
@@ -735,7 +736,7 @@ pub const Frame = struct {
         aegis.assert.invariant(o_lit <= room.len, "o_lit <= room.len");
         const written = room[0..o_lit];
         aegis.assert.invariant(offset <= written.len, "offset <= written.len");
-        repeat(room[o_lit..].ptr, written[written.len - offset ..].ptr, ml);
+        repeat(room, o_lit, offset, ml);
     }
 };
 
@@ -936,76 +937,11 @@ pub const LiteralCursor = union(enum) {
     }
 };
 
-inline fn copy16(dst: [*]u8, src: [*]const u8) void {
-    const v: @Vector(16, u8) = src[0..16].*;
-    dst[0..16].* = v;
-}
-
-inline fn copy8(dst: [*]u8, src: [*]const u8) void {
-    const v: @Vector(8, u8) = src[0..8].*;
-    dst[0..8].* = v;
-}
-
-/// Copy `len` bytes 16 at a time, writing up to 31 past the end; source
-/// and destination at least 16 apart, or the source after.
-inline fn wildCopy16(dst: [*]u8, src: [*]const u8, len: usize) void {
-    copy16(dst, src);
-    var i: usize = 16;
-    while (i < len) : (i += 32) {
-        copy16(dst + i, src + i);
-        copy16(dst + i + 16, src + i + 16);
-    }
-}
-
-/// Copy `len` bytes, the first 32 whatever `len` is (a short copy is the
-/// common one, and a branch on its length mispredicts), 32 at a time after,
-/// writing up to 31 past the end; source and destination at least 16 apart,
-/// or the source after.
-inline fn wildCopy32(dst: [*]u8, src: [*]const u8, len: usize) void {
-    copy16(dst, src);
-    copy16(dst + 16, src + 16);
-    var i: usize = 32;
-    while (i < len) : (i += 32) {
-        copy16(dst + i, src + i);
-        copy16(dst + i + 16, src + i + 16);
-    }
-}
-
-/// A match closer than 16 bytes: its first 8 bytes laid down so that the
-/// distance from source to destination becomes 8 or more (a multiple of
-/// the offset), then 8 at a time. Writes up to 7 bytes past the end.
-inline fn overlapCopy(dst_: [*]u8, src_: [*]const u8, offset: usize, len: usize) void {
-    var dst = dst_;
-    var src = src_;
-    if (offset < 8) {
-        // Bytes 4-7 repeat the pattern from `add` on; after the 8 bytes
-        // the source has moved on by `advance`.
-        const add = [8]u8{ 0, 1, 2, 1, 4, 4, 4, 4 };
-        const advance = [8]u8{ 0, 1, 2, 2, 4, 3, 2, 1 };
-        dst[0] = src[0];
-        dst[1] = src[1];
-        dst[2] = src[2];
-        dst[3] = src[3];
-        const v: @Vector(4, u8) = (src + add[offset])[0..4].*;
-        dst[4..8].* = v;
-        src += advance[offset];
-    } else {
-        copy8(dst, src);
-        src += 8;
-    }
-    dst += 8;
-    var i: usize = 8;
-    while (i < len) : (i += 8) {
-        copy8(dst, src);
-        dst += 8;
-        src += 8;
-    }
-}
-
-/// Copy forward a byte at a time: where the source runs into the bytes
-/// being written, they repeat, as a match does.
-fn repeat(dst: [*]u8, src: [*]const u8, len: usize) void {
-    for (0..len) |i| dst[i] = src[i];
+/// A match of `len` in `buf` at `at`, `offset` back, copied forward a byte at a time: where the
+/// source runs into the bytes being written, they repeat, as a match does.
+fn repeat(buf: []u8, at: usize, offset: usize, len: usize) void {
+    aegis.assert.invariant(offset >= 1 and offset <= at, "a match starts inside what is written");
+    for (buf[at..][0..len], at..) |*byte, i| byte.* = buf[i - offset];
 }
 
 /// A first state: `log` bits, the table's log, which its state type holds.

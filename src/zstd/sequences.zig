@@ -1,6 +1,7 @@
 //! Sequence storage shared by the matchfinders and the block encoder.
 
 const codes = @import("codes.zig");
+const copy = @import("copy.zig");
 const std = @import("std");
 
 /// How matches are searched, from fastest to strongest: the reference
@@ -79,9 +80,9 @@ pub const SeqStore = struct {
         const len = to - from;
         const dst = s.lit_buffer[s.lit_len..];
         if (to + 32 <= limit) {
-            copy16(dst.ptr, in[from..].ptr);
+            copy.copy16(dst, in[from..]);
             var i: usize = 16;
-            while (i < len) : (i += 16) copy16(dst.ptr + i, in[from + i ..].ptr);
+            while (i < len) : (i += 16) copy.copy16(dst[i..], in[from + i ..]);
         } else {
             @memcpy(dst[0..len], in[from..to]);
         }
@@ -179,8 +180,3 @@ pub const SeqStore = struct {
         }
     }
 };
-
-inline fn copy16(dst: [*]u8, src: [*]const u8) void {
-    const v: @Vector(16, u8) = src[0..16].*;
-    dst[0..16].* = v;
-}
