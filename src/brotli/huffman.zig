@@ -34,7 +34,7 @@ inline fn entry(len: u32, value: u32) Entry {
 /// Decode one symbol from the table at `table[0..]`. Fast mode reads with
 /// 15 bits loaded; careful mode reads what the input has and fails only if
 /// the symbol's code is longer.
-pub inline fn decode(r: *Reader, comptime careful: bool, table: [*]const Entry) NeedInput!u32 {
+pub inline fn decode(r: *Reader, comptime careful: bool, table: []const Entry) NeedInput!u32 {
     if (careful) r.fillAvailable(max_length) else try r.fill(false, max_length);
     const b = r.buf;
     var e = table[@as(u8, @truncate(b))];

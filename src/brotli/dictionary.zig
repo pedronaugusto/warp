@@ -205,7 +205,7 @@ const affixes = blk: {
 /// Write word `word` transformed by transform `index` (< `transforms.len`)
 /// at `dst`, which has `transform_room` bytes; return its length. Bytes
 /// past it may be written.
-pub inline fn transform(dst: [*]u8, word: []const u8, index: usize) usize {
+pub inline fn transform(dst: []u8, word: []const u8, index: usize) usize {
     const t = transforms[index];
     const a = affixes[index];
     dst[0..8].* = a.prefix;
@@ -217,7 +217,7 @@ pub inline fn transform(dst: [*]u8, word: []const u8, index: usize) usize {
     } else if (k >= @backingInt(Kind.omit_first_1)) {
         w = w[@min(w.len, k - @backingInt(Kind.omit_first_1) + 1)..];
     }
-    copySmall(dst + n, w);
+    copySmall(dst[n..], w);
     switch (t.kind) {
         .uppercase_first => _ = upper(dst[n..][0..w.len]),
         .uppercase_all => {
@@ -233,7 +233,7 @@ pub inline fn transform(dst: [*]u8, word: []const u8, index: usize) usize {
 
 /// Copy up to 24 bytes with two overlapping moves, no byte past `src`
 /// read and none past its length written.
-inline fn copySmall(dst: [*]u8, src: []const u8) void {
+inline fn copySmall(dst: []u8, src: []const u8) void {
     const n = src.len;
     if (n >= 16) {
         dst[0..16].* = src[0..16].*;

@@ -520,7 +520,7 @@ noinline fn bodyStep(comptime careful: bool, comptime phase: Phase, s: *State, t
             if (h.room() == 0) return h.full();
             if (s.blocks.counts[0] == 0) try blockSwitch(careful, s, t, r, 0, at);
             const tree = s.blocks.literal_tree orelse t.literal_contexts[s.blocks.literal_lookup[h.back(1)] | s.blocks.literal_lookup[256 + @as(usize, h.back(2))]];
-            const literal = try huffman.decode(r, careful, t.literal[tree..].ptr);
+            const literal = try huffman.decode(r, careful, t.literal[tree..]);
             s.blocks.counts[0] -= 1;
             h.put(@intCast(literal));
             s.insert -= 1;
@@ -639,7 +639,7 @@ fn varLenUint8(comptime careful: bool, r: *Reader) bits_.NeedInput!u8 {
 }
 
 fn blockCount(comptime careful: bool, r: *Reader, table: []const Entry) bits_.NeedInput!u32 {
-    const range = codes.block_counts[try huffman.decode(r, careful, table.ptr)];
+    const range = codes.block_counts[try huffman.decode(r, careful, table)];
     return range.offset + try r.bits(careful, range.extra);
 }
 
@@ -909,7 +909,7 @@ inline fn shortDistance(d: *const [4]u32, symbol: u32) u32 {
 /// the block switch the command category's count asks for.
 inline fn readCommand(comptime careful: bool, s: *State, t: *Tables, r: *Reader, at: u64) StepError!void {
     if (s.blocks.counts[1] == 0) try blockSwitch(careful, s, t, r, 1, at);
-    const symbol = try huffman.decode(r, careful, t.command[s.blocks.command_tree..].ptr);
+    const symbol = try huffman.decode(r, careful, t.command[s.blocks.command_tree..]);
     const c = codes.commands[symbol];
     try r.fill(careful, @as(u6, c.insert_extra) + c.copy_extra);
     // Extras are at most 24 bits.
@@ -930,7 +930,7 @@ inline fn readCommand(comptime careful: bool, s: *State, t: *Tables, r: *Reader,
 inline fn readDistance(comptime careful: bool, s: *State, t: *Tables, r: *Reader, at: u64) StepError!struct { distance: u32, push: bool } {
     if (s.implicit) return .{ .distance = s.distances[0], .push = false };
     if (s.blocks.counts[2] == 0) try blockSwitch(careful, s, t, r, 2, at);
-    const symbol = try huffman.decode(r, careful, t.distance[t.distance_contexts[s.distance_context]..].ptr);
+    const symbol = try huffman.decode(r, careful, t.distance[t.distance_contexts[s.distance_context]..]);
     s.blocks.counts[2] -= 1;
     if (symbol < codes.short_distance_codes) return .{ .distance = shortDistance(&s.distances, symbol), .push = symbol != 0 };
     const range = t.distance_ranges[symbol];
@@ -951,13 +951,13 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
     aegis.assert.invariant(r.in.len >= bits_.margin, "r.in.len >= bits_.margin");
     const end = r.in.len - bits_.margin;
     var f: Fast = .load(s, r, h);
-    const buf = h.buf.ptr;
+    const buf = h.buf;
     const limit = h.limit;
     // The stream's output so far is `base +% f.pos`.
     const base = h.total() -% @as(u64, f.pos);
     const npostfix = s.npostfix;
     const max_backward = s.max_backward;
-    var command_table = t.command[s.blocks.command_tree..].ptr;
+    var command_table = t.command[s.blocks.command_tree..];
     while (true) {
         if (f.br.pos > end) return f.stop(s, r, h, null);
         const at = f.br.bitOffset();
@@ -966,7 +966,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             f.save(s, r, h);
             try blockSwitch(false, s, t, r, 1, at);
             f.reload(s, r, h);
-            command_table = t.command[s.blocks.command_tree..].ptr;
+            command_table = t.command[s.blocks.command_tree..];
         }
         const c = codes.commands[decodeOk(&f.br, command_table)];
         f.br.fill(false, @as(u6, c.insert_extra) + c.copy_extra) catch unreachable; // glint-ignore: Z026 -- a fast read (careful = false) has no error path; fill states its loads
@@ -1021,7 +1021,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 try blockSwitch(false, s, t, r, 2, dat);
                 f.reload(s, r, h);
             }
-            const symbol = decodeOk(&f.br, t.distance[t.distance_contexts[c.distance_context]..].ptr);
+            const symbol = decodeOk(&f.br, t.distance[t.distance_contexts[c.distance_context]..]);
             f.counts[2] -= 1;
             if (symbol < codes.short_distance_codes) {
                 d = shortDistance(&f.distances, symbol);
@@ -1049,7 +1049,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
         } else {
             f.save(s, r, h);
             s.copy = copy;
-            switch (try resolveBeyond(s, h, d, push, dat, buf + h.pos)) {
+            switch (try resolveBeyond(s, h, d, push, dat, buf[h.pos..])) {
                 .prefix => {
                     h.write(h.prefix()[s.prefix_at..][0..copy]);
                     s.from_prefix = false;
@@ -1118,12 +1118,12 @@ const Fast = struct {
 };
 
 /// A fast read's symbol: fast reads fail only on no input.
-inline fn decodeOk(r: *Reader, table: [*]const Entry) u32 {
+inline fn decodeOk(r: *Reader, table: []const Entry) u32 {
     return huffman.decode(r, false, table) catch unreachable; // glint-ignore: Z026 -- a fast read (careful = false) has no error path; fill states its loads
 }
 
 /// `literals` by how the current block type finds its trees.
-inline fn literalBatch(s: *const State, t: *const Tables, f: *Fast, buf: [*]u8, n: u32, end: usize, p1: u8, p2: u8) u32 {
+inline fn literalBatch(s: *const State, t: *const Tables, f: *Fast, buf: []u8, n: u32, end: usize, p1: u8, p2: u8) u32 {
     if (s.blocks.literal_tree) |tree| return literals(.trivial, tree, s, t, f, buf, n, end, p1, p2);
     if (s.blocks.literal_bytes) return literals(.bytes, {}, s, t, f, buf, n, end, p1, p2);
     return literals(.contexts, {}, s, t, f, buf, n, end, p1, p2);
@@ -1131,11 +1131,11 @@ inline fn literalBatch(s: *const State, t: *const Tables, f: *Fast, buf: [*]u8, 
 
 /// Up to `n` literals of the current block type while the input has its
 /// margin; how many. A trivial block type reads them all with `tree`.
-inline fn literals(comptime by: enum { trivial, contexts, bytes }, tree: if (by == .trivial) u32 else void, s: *const State, t: *const Tables, f: *Fast, buf: [*]u8, n: u32, end: usize, first_p1: u8, first_p2: u8) u32 {
+inline fn literals(comptime by: enum { trivial, contexts, bytes }, tree: if (by == .trivial) u32 else void, s: *const State, t: *const Tables, f: *Fast, buf: []u8, n: u32, end: usize, first_p1: u8, first_p2: u8) u32 {
     const lookup = s.blocks.literal_lookup;
     const trees = &t.literal_contexts;
     const bytes = &t.literal_bytes;
-    const fixed = if (by == .trivial) t.literal[tree..].ptr else undefined;
+    const fixed = if (by == .trivial) t.literal[tree..] else undefined;
     var pos = f.pos;
     var p1 = first_p1;
     var p2 = first_p2;
@@ -1143,8 +1143,8 @@ inline fn literals(comptime by: enum { trivial, contexts, bytes }, tree: if (by 
     while (left != 0 and f.br.pos <= end) : (left -= 1) {
         const table = switch (by) {
             .trivial => fixed,
-            .contexts => t.literal[trees[lookup[p1] | lookup[256 + @as(usize, p2)]]..].ptr,
-            .bytes => t.literal[bytes[(@as(usize, p1) << 3) | lookup[256 + @as(usize, p2)]]..].ptr,
+            .contexts => t.literal[trees[lookup[p1] | lookup[256 + @as(usize, p2)]]..],
+            .bytes => t.literal[bytes[(@as(usize, p1) << 3) | lookup[256 + @as(usize, p2)]]..],
         };
         const literal: u8 = @intCast(decodeOk(&f.br, table));
         buf[pos] = literal;
@@ -1173,7 +1173,7 @@ const Beyond = enum { prefix, word };
 
 /// Commit the command's distance: refuse it, or say what it copies from,
 /// with the meta-block's remaining length taken.
-noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: [*]u8) StepError!Source {
+noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: []u8) StepError!Source {
     const max_distance: u64 = @min(h.total(), s.max_backward);
     if (d <= max_distance) {
         if (push) pushDistance(s, d);
@@ -1189,7 +1189,7 @@ noinline fn resolve(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst
 }
 
 /// `resolve` for a distance past the history.
-noinline fn resolveBeyond(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: [*]u8) StepError!Beyond {
+noinline fn resolveBeyond(s: *State, h: anytype, d: u32, push: bool, at: u64, word_dst: []u8) StepError!Beyond {
     const max_distance: u64 = @min(h.total(), s.max_backward);
     aegis.assert.invariant(d > max_distance, "d > max_distance");
     if (d > codes.max_allowed_distance) return s.fail(.distance, at);
@@ -1275,11 +1275,11 @@ pub const Linear = struct {
 
     /// The byte `n` (1 or 2) back, 0 before the stream's start.
     pub inline fn back(h: *const Linear, n: usize) u8 {
-        return backAt(h.buf.ptr, h.limit, h.pos, h.total(), n);
+        return backAt(h.buf, h.limit, h.pos, h.total(), n);
     }
 
     /// `back` at `pos`, the stream's output `total` there.
-    pub inline fn backAt(buf: [*]const u8, _: usize, pos: usize, written: u64, n: usize) u8 {
+    pub inline fn backAt(buf: []const u8, _: usize, pos: usize, written: u64, n: usize) u8 {
         return if (written >= n) buf[pos - n] else 0;
     }
 
@@ -1303,31 +1303,33 @@ pub const Linear = struct {
     /// Copy `len` bytes from `distance` back of `pos` with 16-byte moves
     /// that may write up to 15 bytes past them; the caller left that room.
     /// Returns the position after them.
-    pub inline fn copyAt(buf: [*]u8, limit: usize, pos: usize, distance: u32, len: u32) usize {
+    pub inline fn copyAt(buf: []u8, limit: usize, pos: usize, distance: u32, len: u32) usize {
         _ = limit;
-        linearCopy(buf + pos, distance, len);
+        linearCopy(buf, pos, distance, len);
         return pos + len;
     }
 
     pub inline fn copyFast(h: *Linear, distance: u32, len: u32) bool {
-        h.pos = copyAt(h.buf.ptr, h.limit, h.pos, distance, len);
+        h.pos = copyAt(h.buf, h.limit, h.pos, distance, len);
         return true;
     }
 
-    inline fn linearCopy(dst: [*]u8, distance: u32, len: u32) void {
-        const src = dst - distance;
+    /// `len` bytes at `at` in `buf`, `distance` back, moved in 16 or 8 bytes at a time that may run up
+    /// to 15 past `at + len` inside `buf`: the room the caller left, which safe builds check.
+    inline fn linearCopy(buf: []u8, at: usize, distance: u32, len: u32) void {
+        const from = at - distance;
         if (distance >= 16) {
             var i: usize = 0;
-            while (i < len) : (i += 16) dst[i..][0..16].* = src[i..][0..16].*;
+            while (i < len) : (i += 16) buf[at + i ..][0..16].* = buf[from + i ..][0..16].*;
         } else if (distance >= 8) {
             var i: usize = 0;
-            while (i < len) : (i += 8) dst[i..][0..8].* = src[i..][0..8].*;
+            while (i < len) : (i += 8) buf[at + i ..][0..8].* = buf[from + i ..][0..8].*;
         } else if (distance == 1) {
-            const v: @Vector(16, u8) = @splat(src[0]);
+            const v: @Vector(16, u8) = @splat(buf[from]);
             var i: usize = 0;
-            while (i < len) : (i += 16) dst[i..][0..16].* = v;
+            while (i < len) : (i += 16) buf[at + i ..][0..16].* = v;
         } else {
-            for (0..len) |i| dst[i] = src[i];
+            for (0..len) |i| buf[at + i] = buf[from + i];
         }
     }
 
@@ -1385,10 +1387,10 @@ pub const Ring = struct {
     }
 
     pub inline fn back(h: *const Ring, n: usize) u8 {
-        return backAt(h.buf.ptr, h.limit, h.pos, h.total(), n);
+        return backAt(h.buf, h.limit, h.pos, h.total(), n);
     }
 
-    pub inline fn backAt(buf: [*]const u8, limit: usize, pos: usize, written: u64, n: usize) u8 {
+    pub inline fn backAt(buf: []const u8, limit: usize, pos: usize, written: u64, n: usize) u8 {
         return if (written >= n) buf[(pos + limit - n) & (limit - 1)] else 0;
     }
 
@@ -1410,7 +1412,7 @@ pub const Ring = struct {
 
     /// As `Linear.copyAt`; a source that starts in the last lap, at the
     /// ring's end, is copied from there first, then from the start.
-    pub inline fn copyAt(buf: [*]u8, limit: usize, pos: usize, distance: u32, len: u32) usize {
+    pub inline fn copyAt(buf: []u8, limit: usize, pos: usize, distance: u32, len: u32) usize {
         var at = pos;
         var n = len;
         if (distance > at) {
@@ -1418,22 +1420,21 @@ pub const Ring = struct {
             // (a distance is at most 2^WBITS - 16), so moving forward in
             // 16-byte pieces reads each byte before it is written.
             const behind = distance - at;
-            const src = buf + (limit - behind);
-            const dst = buf + at;
+            const from = limit - behind;
             const first = @min(n, behind);
             var i: usize = 0;
-            while (i + 16 <= first) : (i += 16) dst[i..][0..16].* = src[i..][0..16].*;
-            while (i < first) : (i += 1) dst[i] = src[i];
+            while (i + 16 <= first) : (i += 16) buf[at + i ..][0..16].* = buf[from + i ..][0..16].*;
+            while (i < first) : (i += 1) buf[at + i] = buf[from + i];
             at += first;
             n -= first;
             if (n == 0) return at;
         }
-        Linear.linearCopy(buf + at, distance, n);
+        Linear.linearCopy(buf, at, distance, n);
         return at + n;
     }
 
     pub inline fn copyFast(h: *Ring, distance: u32, len: u32) bool {
-        h.pos = copyAt(h.buf.ptr, h.limit, h.pos, distance, len);
+        h.pos = copyAt(h.buf, h.limit, h.pos, distance, len);
         return true;
     }
 
