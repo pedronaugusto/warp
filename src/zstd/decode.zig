@@ -580,8 +580,10 @@ pub const Frame = struct {
         const out = f.out;
         const prefix = f.start;
         const lit = lits.bytes.ptr;
-        // Long literal runs can read up to 31 bytes past their end.
-        const lit_fast_end = @min(lits.len, lits.bytes.len -| margin);
+        // Long literal runs can read up to 31 bytes past their end, so a fast copy's literals end
+        // `margin` before the section's bytes do: below `lit_fast_bound`, which is 0 (no sequence
+        // passes, not even one with no literals) where the section is shorter than `margin`.
+        const lit_fast_bound: usize = if (lits.bytes.len < margin) 0 else @min(lits.len, lits.bytes.len - margin) + 1;
         var o = op.*;
         var l = lp.*;
         var n = count;
@@ -634,7 +636,7 @@ pub const Frame = struct {
             const l_end = l + ll;
             // Writes stop short of the next unread literal and of the end.
             const write_limit = if (behind_literals) in_out + l_end else lits_limit;
-            if (l_end <= lit_fast_end and o_end + margin <= write_limit) {
+            if (l_end < lit_fast_bound and o_end + margin <= write_limit) {
                 @branchHint(.likely);
                 const dst = out.ptr + o;
                 wildCopy32(dst, lit + l, ll);

@@ -4,6 +4,7 @@
 //! say about themselves agrees with what they decode to.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const gen = @import("gen");
 const corpus = @import("corpus.zig");
@@ -307,4 +308,30 @@ test "zstd partial decode: captured frames give their prefixes, including dictio
         checked += 1;
     }
     try testing.expect(checked > 1500);
+}
+
+test "zstd: a literal section shorter than the margin, at the output's end, reads nothing past the output" {
+    // An empty raw literal section too long for the block to hold in place goes to the end of a
+    // roomy output; a sequence taking no literal then took the fast path, whose 32-byte literal
+    // copy read 32 bytes past the output's end (v0.2.0 to v0.4.5). Here the page after the
+    // output is unmapped, so such a read faults in every build.
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    // warp's encoder, a 32-byte raw dictionary, and its first 16 bytes: one block of an empty raw
+    // literal section and one sequence, a 16-byte match into the dictionary.
+    const dictionary = [_]u8{
+        0xde, 0xa7, 0x27, 0x46, 0xf8, 0x99, 0x85, 0x29, 0x87, 0x08, 0x7d, 0xe9, 0x90, 0x14, 0x04, 0xb6,
+        0xdc, 0xca, 0x30, 0xd7, 0xaa, 0x52, 0x9f, 0x21, 0x27, 0x18, 0xb4, 0xfb, 0x6e, 0x1e, 0x33, 0x51,
+    };
+    const compressed = [_]u8{ 0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x10, 0x35, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03, 0x51, 0x40, 0x21, 0xf0, 0x2f, 0x22 };
+    const page = std.heap.pageSize();
+    // Room past a block and its margins, so the literals are placed at the output's end.
+    const len = std.mem.alignForward(usize, decode.block_max + 4 * decode.margin, page);
+    const mapping = try std.posix.mmap(null, len + page, .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
+    std.posix.munmap(@alignCast(mapping[len..]));
+    defer std.posix.munmap(@alignCast(mapping[0..len]));
+    const out = mapping[0..len];
+    const dict = Dictionary.raw(&dictionary);
+    var d: Decompressor = .init;
+    const result = try d.decompress(&compressed, out, .{ .dictionaries = &.{&dict} });
+    try testing.expectEqualSlices(u8, dictionary[0..16], out[0..result.out_len]);
 }
