@@ -53,7 +53,7 @@ fn config(options: Options) error{InvalidOptions}!Config {
     const span = aegis.units.Bytes(u64).fromRaw(job_len.raw()).add(.fromRaw(overlap)) catch return error.InvalidOptions;
     if (span.compare(.fromRaw(std.math.maxInt(u32) - 3)) == .gt) return error.InvalidOptions;
     const job: usize = job_len.raw();
-    const blocks = std.math.divCeil(usize, job, @min(8 << 10, @as(usize, 1) << p.window_log)) catch unreachable; // unreachable: the block size is nonzero
+    const blocks = std.math.divCeil(usize, job, @min(8 << 10, @as(usize, 1) << p.window_log)) catch unreachable; // glint-ignore: Z026 -- the block size is nonzero
     const coded = aegis.units.Bytes(usize).fromRaw(job).add(.fromRaw(591 * blocks)) catch return error.InvalidOptions;
     const bound: aegis.units.Bytes(usize) = .fromRaw(Encoder.bound(job));
     // At most 2^29 (job_len is at most 2^30), within any usize.
@@ -293,7 +293,7 @@ pub const Compressor = struct {
     pub fn writeSeekable(p: *Compressor, io: Io, in: []const u8, out: *Io.Writer, records: []seekable.Record, frame_size: aegis.units.Bytes(u32), checksum: bool) (Error || error{TooManyFrames})!usize {
         const frame_bytes = try p.seekableFrame(frame_size);
         const frame_len = frame_bytes.raw();
-        const total = @max(1, std.math.divCeil(usize, in.len, frame_len) catch unreachable); // unreachable: frame_len is nonzero
+        const total = @max(1, std.math.divCeil(usize, in.len, frame_len) catch unreachable); // glint-ignore: Z026 -- frame_len is nonzero
         if (total > records.len or total > (std.math.maxInt(u32) - 9) / 12) return error.TooManyFrames;
         var group: Io.Group = .init;
         defer group.cancel(io);

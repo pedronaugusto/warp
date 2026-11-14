@@ -286,7 +286,7 @@ pub fn validStream(options: Options, stream: Stream) bool {
 pub fn streamBound(options: Options, len: usize, stream: Stream) usize {
     if (!validStream(options, stream)) return std.math.maxInt(usize);
     const b = blockSize(options, stream);
-    const blocks = std.math.divCeil(usize, len, b) catch unreachable; // unreachable: a valid stream's block is at least 4 KiB
+    const blocks = std.math.divCeil(usize, len, b) catch unreachable; // glint-ignore: Z026 -- a valid stream's block is at least 4 KiB
     const index = if (stream.index == .none) 0 else Index.bound(blocks + 1);
     const chunks = std.math.mul(usize, blocks, chunkBound(b)) catch return std.math.maxInt(usize);
     const ends = (stream.padding.add(.fromRaw(frame.identifier_len + frame.header_len + index)) catch return std.math.maxInt(usize)).raw();

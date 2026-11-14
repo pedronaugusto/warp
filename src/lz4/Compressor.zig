@@ -217,13 +217,13 @@ pub const Frame = struct {
 pub fn bound(len: usize, f: Frame) usize {
     switch (f.format) {
         .legacy => {
-            // unreachable: the divisor is a constant, not zero
+            // glint-ignore: Z026 -- the divisor is a constant, not zero
             const blocks = std.math.divCeil(usize, len, frame.legacy_block_len) catch unreachable;
             return 4 + blocks * (4 + seq.bound(frame.legacy_block_len));
         },
         .standard => {
             const block_len = f.block_size.bytes();
-            // unreachable: a block size is at least 64 KiB
+            // glint-ignore: Z026 -- a block size is at least 64 KiB
             const blocks = std.math.divCeil(usize, len, block_len) catch unreachable;
             const per_block: usize = 4 + @as(usize, if (f.block_checksum) 4 else 0);
             // A block that does not compress is stored: its own length.

@@ -280,9 +280,9 @@ fn json(p: *Prng, out: []u8) void {
             if (!put(out, &at, "\"") or !put(out, &at, key) or !put(out, &at, "\":")) return;
             var buf: [24]u8 = undefined;
             const value = switch (p.below(4)) {
-                // unreachable: 24 bytes hold any u64 in decimal
+                // glint-ignore: Z026 -- 24 bytes hold any u64 in decimal
                 0 => std.mem.print(&buf, "{d}", .{seq}) catch unreachable,
-                // unreachable: 24 bytes hold any u64 in decimal
+                // glint-ignore: Z026 -- 24 bytes hold any u64 in decimal
                 1 => std.mem.print(&buf, "{d}", .{p.below(1000)}) catch unreachable,
                 2 => if (p.below(2) == 0) "true" else "false",
                 else => blk: {

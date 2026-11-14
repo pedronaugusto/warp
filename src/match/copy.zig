@@ -12,7 +12,7 @@ const aegis = @import("aegis");
 /// off the path from `lit`, where reassociation would put it back.
 pub inline fn chainless(x: usize) usize {
     return switch (@import("builtin").cpu.arch) {
-        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // aegis: boundary(A019): an empty template; the value passes through its register
+        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // glint-ignore: P007 -- boundary: an empty template; the value passes through its register
             : [out] "=r" (-> usize),
             : [in] "0" (x),
         ),
@@ -65,7 +65,7 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
                 store16(op + i + step, pattern);
             }
         },
-        else => unreachable, // aegis: no-danger(A013): offsets of 8 and more returned above, and 0 is refused at the top
+        else => unreachable, // glint-ignore: A013 -- no-danger: offsets of 8 and more returned above, and 0 is refused at the top
     }
 }
 

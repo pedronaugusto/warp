@@ -305,7 +305,7 @@ pub fn EngineFor(comptime window: u32) type {
                 };
                 // A block's sequences are made from its path, over the nodes'
                 // memory (see `optimal.emitPath`); the other parsers' fit too.
-                e.b.seqs = @as([*]block.Sequence, @ptrCast(o.nodes.ptr))[0..o.nodes.len]; // aegis: no-danger(A019): two u32 and two u32-aligned u16 pairs, 8 bytes each
+                e.b.seqs = @as([*]block.Sequence, @ptrCast(o.nodes.ptr))[0..o.nodes.len]; // glint-ignore: P007 -- no-danger: two u32 and two u32-aligned u16 pairs, 8 bytes each
             }
             return e;
         }

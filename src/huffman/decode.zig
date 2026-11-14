@@ -290,7 +290,7 @@ pub fn Fixed(comptime alphabet: Alphabet) type {
                 @memset(lens[280..288], 8);
             } else @memset(&lens, 5);
             var t: [1 << bits]u32 = undefined;
-            // unreachable: the fixed lengths are complete codes
+            // glint-ignore: Z026 -- the fixed lengths are complete codes
             const got = build(alphabet, &t, &lens) catch unreachable;
             aegis.assert.invariant(got == bits, "the fixed table is as wide as its bits");
             break :blk t;
