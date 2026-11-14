@@ -6,8 +6,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const module = warpModule(b, target, optimize);
-    b.modules.put(b.allocator, "warp", module) catch @panic("OOM");
+    const module = b.addModule("warp", .{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
+    addSourceImports(b, module, target, optimize);
     b.installArtifact(b.addLibrary(.{ .name = "warp", .root_module = module }));
     if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
         const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
