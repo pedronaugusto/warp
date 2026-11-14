@@ -5,6 +5,10 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- zstd: a block whose literal section is shorter than 32 bytes and placed at the end of a roomy output (an empty or short raw section the block cannot hold in place, or an RLE or Huffman one) no longer takes the fast path for a sequence of no literals, whose 32-byte literal copy read up to 32 bytes past the end of the output buffer: a crafted frame could fault a decode where the output ends at an unmapped page (v0.2.0 to v0.4.5). The bytes read landed past the decoded length, never in what a decode returns. Regression test: a 19-byte frame decoded into an output followed by an unmapped page.
+
 ## [0.4.5] - 2026-10-27
 
 ### Security
