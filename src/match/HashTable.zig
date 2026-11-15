@@ -62,7 +62,7 @@ pub fn HashTableFor(comptime window: u32) type {
             if (p - ht.base >= window) {
                 @branchHint(.unlikely);
                 const n = @as(usize, 1) << ht.bits;
-                match.rebase(window, std.mem.bytesAsSlice(Pos, std.mem.sliceAsBytes(ht.table[0..n])));
+                match.rebasePairs(window, ht.table[0..n]);
                 ht.base += window;
             }
         }

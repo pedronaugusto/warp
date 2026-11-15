@@ -139,7 +139,7 @@ pub fn HashChainsWith(comptime config: Config) type {
             // Locals, so that no store through `distance` or the tables makes the
             // compiler reload them.
             const base = hc.base;
-            const prev = hc.prev.ptr;
+            const prev = hc.prev;
             const mask = windowMask(hc, full_window);
             // A match as long as the input allows ends the search too.
             const nice_len = @min(nice_len_in, max_len);
@@ -231,11 +231,11 @@ pub fn HashChainsWith(comptime config: Config) type {
         /// `max_len` (`p + max(max_len, required) <= in.len`), stopping at
         /// one of `max_len`; inserts `p`. The matches go to `out` by
         /// increasing length; their count is returned. No dictionary.
-        pub fn matches(hc: *HashChains, h: match.History, p: isize, max_len: u32, depth: u32, out: [*]Match) usize {
+        pub fn matches(hc: *HashChains, h: match.History, p: isize, max_len: u32, depth: u32, out: []Match) usize {
             comptime aegis.assert.invariant(pairs, "matches is for finders of shortest 2");
             hc.advance(p);
             const base = hc.base;
-            const prev = hc.prev.ptr;
+            const prev = hc.prev;
             const slots = hc.prev.len - 1;
             const cur: Pos = @intCast(p - base);
             const cutoff: i32 = @as(i32, cur) - @as(i32, @intCast(hc.reach));

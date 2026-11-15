@@ -17,33 +17,25 @@ pub inline fn load32(data: []const u8, at: usize) u32 {
 
 /// How many bytes from `a` and `b` agree, at most `limit`.
 pub inline fn matchLength(data: []const u8, a: usize, b: usize, limit: usize) usize {
-    return matchSpan(data[a..].ptr, data[b..].ptr, limit);
+    return matchLengthIn(data[a..], data[b..], limit);
 }
 
-/// `matchLength` between two buffers.
+/// `matchLength` between two buffers, each holding `limit` bytes or more.
+/// The reference's loop: eight bytes compared at a step, then the rest one
+/// at a time (bytes past `limit` are never read).
 pub inline fn matchLengthIn(a: []const u8, b: []const u8, limit: usize) usize {
-    return matchSpan(a.ptr, b.ptr, limit);
-}
-
-/// The reference's loop: the limit counted down, both pointers stepped, so
-/// a step is two loads, a compare and the count (bytes past `limit` are
-/// never read).
-inline fn matchSpan(s1: [*]const u8, s2_in: [*]const u8, limit_in: usize) usize {
-    var p1 = s1;
-    var s2 = s2_in;
-    var limit = limit_in;
-    while (limit >= 8) : (limit -= 8) {
-        const x = std.mem.readInt(u64, s2[0..8], .little) ^ std.mem.readInt(u64, p1[0..8], .little);
-        s2 += 8;
-        if (x != 0) return @intFromPtr(p1) - @intFromPtr(s1) + (@ctz(x) >> 3);
-        p1 += 8;
+    var n: usize = 0;
+    var left = limit;
+    while (left >= 8) : (left -= 8) {
+        const x = load64(b, n) ^ load64(a, n);
+        if (x != 0) return n + (@ctz(x) >> 3);
+        n += 8;
     }
-    while (limit != 0 and p1[0] == s2[0]) {
-        limit -= 1;
-        p1 += 1;
-        s2 += 1;
+    while (left != 0 and a[n] == b[n]) {
+        left -= 1;
+        n += 1;
     }
-    return @intFromPtr(p1) - @intFromPtr(s1);
+    return n;
 }
 
 pub const SearchResult = struct {

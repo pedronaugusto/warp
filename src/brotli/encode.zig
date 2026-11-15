@@ -191,8 +191,9 @@ pub const Encoder = struct {
     command_buf: []u32 = &.{},
     literal_buf: []u8 = &.{},
     total_in: u64 = 0,
-    /// Output waiting to be taken: `next_out[0..available_out]`.
-    next_out: [*]u8 = undefined,
+    /// Output waiting to be taken: `next_out[0..available_out]`, in a buffer
+    /// that holds room past it to the end of `next_out`.
+    next_out: []u8 = &.{},
     available_out: usize = 0,
     total_out: u64 = 0,
     tiny_buf: [16]u8 = undefined,
@@ -448,7 +449,7 @@ pub const Encoder = struct {
             e.last_bytes = storage[w.pos >> 3];
             e.last_bytes_bits = @intCast(w.pos & 7);
             _ = e.updateLastProcessedPos();
-            e.next_out = storage.ptr;
+            e.next_out = storage;
             e.available_out = w.pos >> 3;
             return;
         }
@@ -519,7 +520,7 @@ pub const Encoder = struct {
         e.num_literals = 0;
         // Kept in case the next meta-block is stored raw.
         e.saved_dist_cache = e.dist_cache[0..4].*;
-        e.next_out = storage.ptr;
+        e.next_out = storage;
         e.available_out = w.pos >> 3;
     }
 
@@ -555,13 +556,8 @@ pub const Encoder = struct {
         // ISLAST 0, MNIBBLES 11, reserved 0, MSKIPBYTES 00.
         seal |= @as(u32, 0x6) << @intCast(seal_bits);
         seal_bits += 6;
-        var dest: [*]u8 = undefined;
-        if (e.available_out != 0) {
-            dest = e.next_out + e.available_out;
-        } else {
-            dest = &e.tiny_buf;
-            e.next_out = dest;
-        }
+        if (e.available_out == 0) e.next_out = &e.tiny_buf;
+        const dest = e.next_out[e.available_out..];
         dest[0] = @truncate(seal);
         if (seal_bits > 8) dest[1] = @truncate(seal >> 8);
         if (seal_bits > 16) dest[2] = @truncate(seal >> 16);
@@ -577,7 +573,7 @@ pub const Encoder = struct {
             const n = @min(e.available_out, out.len);
             @memcpy(out.*[0..n], e.next_out[0..n]);
             out.* = out.*[n..];
-            e.next_out += n;
+            e.next_out = e.next_out[n..];
             e.available_out -= n;
             e.total_out += n;
             return true;
@@ -622,7 +618,7 @@ pub const Encoder = struct {
                     e.total_out += out_bytes;
                     e.last_bytes = out.*[0];
                 } else {
-                    e.next_out = storage.ptr;
+                    e.next_out = storage;
                     e.available_out = out_bytes;
                     e.last_bytes = storage[out_bytes];
                 }

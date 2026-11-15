@@ -119,7 +119,7 @@ pub fn BinaryTreesWith(comptime config: Config) type {
         inline fn advance(bt: *BinaryTrees, p: isize) void {
             if (p - bt.base >= window) {
                 @branchHint(.unlikely);
-                match.rebase(window, std.mem.bytesAsSlice(Pos, std.mem.sliceAsBytes(bt.hash3[0 .. @as(usize, 1) << bt.hash3_bits])));
+                match.rebasePairs(window, bt.hash3[0 .. @as(usize, 1) << bt.hash3_bits]);
                 match.rebase(window, bt.hash4[0 .. @as(usize, 1) << bt.hash4_bits]);
                 match.rebase(window, bt.child);
                 if (pairs) match.rebase(window, bt.hash2);
@@ -138,24 +138,24 @@ pub fn BinaryTreesWith(comptime config: Config) type {
         /// `max_len` (`max_len >= required`, `p + max_len <= in.len`), stopping at
         /// one of `nice_len` or after `depth` nodes; inserts `p`. The matches go
         /// to `out` by increasing length; their count is returned.
-        pub inline fn matches(bt: *BinaryTrees, comptime dictionary: bool, comptime full_window: bool, h: match.History, p: isize, max_len: u32, nice_len: u32, depth: u32, out: [*]Match) usize {
+        pub inline fn matches(bt: *BinaryTrees, comptime dictionary: bool, comptime full_window: bool, h: match.History, p: isize, max_len: u32, nice_len: u32, depth: u32, out: []Match) usize {
             return bt.search(dictionary, full_window, true, h, p, max_len, nice_len, depth, out);
         }
 
         /// Insert `p` without recording its matches: a position inside a long
         /// match. `max_len >= required`.
         pub inline fn skip(bt: *BinaryTrees, comptime dictionary: bool, comptime full_window: bool, h: match.History, p: isize, max_len: u32, depth: u32) void {
-            _ = bt.search(dictionary, full_window, false, h, p, max_len, max_len, depth, undefined);
+            _ = bt.search(dictionary, full_window, false, h, p, max_len, max_len, depth, &.{});
         }
 
-        inline fn search(bt: *BinaryTrees, comptime dictionary: bool, comptime full_window: bool, comptime record: bool, h: match.History, p: isize, max_len: u32, nice_in: u32, depth_in: u32, out: [*]Match) usize {
+        inline fn search(bt: *BinaryTrees, comptime dictionary: bool, comptime full_window: bool, comptime record: bool, h: match.History, p: isize, max_len: u32, nice_in: u32, depth_in: u32, out: []Match) usize {
             bt.advance(p);
             const nice_len = @min(nice_in, max_len);
             const input_end: isize = @intCast(h.in.len);
             if (max_len == nice_len and p + match.offset(max_len) == input_end and bt.prefix_end == null) bt.prefix_end = input_end;
             const trust_prefix = if (bt.prefix_end) |end| input_end <= end else true;
             const base = bt.base;
-            const child = bt.child.ptr;
+            const child = bt.child;
             const cur: Pos = @intCast(p - base);
             const reach: i32 = if (full_window) window else @intCast(bt.window);
             const cutoff: i32 = @as(i32, cur) - reach;
@@ -263,7 +263,7 @@ pub fn BinaryTreesWith(comptime config: Config) type {
         /// with those two bytes, a three-byte one from the latest with the
         /// hash of three (another position), the later of them extended to
         /// its full length. Their count.
-        inline fn shortMatches(comptime dictionary: bool, h: match.History, p: isize, base: isize, cutoff: i32, c2: Pos, two: [2]Pos, word: u32, max_len: u32, out: [*]Match) usize {
+        inline fn shortMatches(comptime dictionary: bool, h: match.History, p: isize, base: isize, cutoff: i32, c2: Pos, two: [2]Pos, word: u32, max_len: u32, out: []Match) usize {
             var n: usize = 0;
             var last: isize = undefined;
             if (c2 > cutoff and h.load32Of(dictionary, base + c2) & 0xffff == word & 0xffff) {

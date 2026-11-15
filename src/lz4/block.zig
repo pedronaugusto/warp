@@ -110,7 +110,7 @@ const Decoder = struct {
                 const past_offset = chainless(ip + 3);
                 const lit: usize = token >> 4;
                 out[op..][0..16].* = in[past_offset - 2 ..][0..16].*;
-                const offset: usize = read16(in.ptr + past_offset - 2 + lit);
+                const offset: usize = read16(in, past_offset - 2 + lit);
                 const at = op + lit;
                 const len = (token & 15) + min_match;
                 // `at` may be past `out_end` by the literals: compared as a
@@ -161,7 +161,7 @@ const Decoder = struct {
             }
             ip += lit;
             const at = op + lit;
-            const offset: usize = read16(in.ptr + ip);
+            const offset: usize = read16(in, ip);
             ip += 2;
             const code: usize = token & 15;
             if (!d.longMatch(&ip, &op, at, seq_ip, offset, code)) return;
@@ -267,10 +267,9 @@ const Decoder = struct {
     }
 };
 
-/// The little-endian offset at `p`, in one load.
-inline fn read16(p: [*]const u8) u16 {
-    // An unaligned read of two bytes the caller has bounded.
-    return std.mem.readInt(u16, p[0..2], .little);
+/// The little-endian offset at `in[at..]`, in one unaligned load.
+inline fn read16(in: []const u8, at: usize) u16 {
+    return std.mem.readInt(u16, in[at..][0..2], .little);
 }
 
 /// A length's bytes after its token field's 15, read while `ip` stays

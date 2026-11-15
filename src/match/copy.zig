@@ -27,32 +27,29 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
     aegis.assert.invariant(at <= out.len, "at <= out.len");
     aegis.assert.invariant(len <= out.len - at, "len <= out.len - at");
     aegis.assert.invariant(out.len - at - len >= 32, "out.len - at - len >= 32");
-    // The decoders refuse a match with no distance.
-    aegis.assert.invariant(offset != 0, "offset != 0");
-    // The match itself; its length bounds the loops.
-    const match = out[at..][0..len];
-    const op = match.ptr;
-    const from = op - offset;
+    // The decoders refuse a match with no distance, or one reaching before the output.
+    aegis.assert.invariant(offset != 0 and offset <= at, "0 < offset <= at");
+    const from = at - offset;
     if (offset >= 16) {
         // Each 16-byte store reads bytes already written.
         var i: usize = 0;
-        while (i < match.len) : (i += 32) {
-            op[i..][0..16].* = from[i..][0..16].*;
-            op[i + 16 ..][0..16].* = from[i + 16 ..][0..16].*;
+        while (i < len) : (i += 32) {
+            out[at + i ..][0..16].* = out[from + i ..][0..16].*;
+            out[at + i + 16 ..][0..16].* = out[from + i + 16 ..][0..16].*;
         }
         return;
     }
     if (offset >= 8) {
         var i: usize = 0;
-        while (i < match.len) : (i += 16) {
-            op[i..][0..8].* = from[i..][0..8].*;
-            op[i + 8 ..][0..8].* = from[i + 8 ..][0..8].*;
+        while (i < len) : (i += 16) {
+            out[at + i ..][0..8].* = out[from + i ..][0..8].*;
+            out[at + i + 8 ..][0..8].* = out[from + i + 8 ..][0..8].*;
         }
         return;
     }
     // A period shorter than 8: the period's bytes repeated across 16,
     // stored twice a step, each store a whole number of periods on.
-    const v: @Vector(16, u8) = from[0..16].*;
+    const v: @Vector(16, u8) = out[from..][0..16].*;
     switch (offset) {
         inline 1...7 => |period| {
             const pattern: @Vector(16, u8) = @shuffle(u8, v, undefined, periodMask(period));
@@ -60,18 +57,13 @@ pub inline fn copyMatch(out: []u8, at: usize, offset: usize, len: usize) void {
             // a call to `memset`, slower for a match's few stores.
             const step = chainless(16 - 16 % period);
             var i: usize = 0;
-            while (i < match.len) : (i += 2 * step) {
-                store16(op + i, pattern);
-                store16(op + i + step, pattern);
+            while (i < len) : (i += 2 * step) {
+                out[at + i ..][0..16].* = pattern;
+                out[at + i + step ..][0..16].* = pattern;
             }
         },
         else => unreachable, // offsets of 8 and more returned above, and 0 is refused at the top
     }
-}
-
-inline fn store16(p: [*]u8, v: @Vector(16, u8)) void {
-    // An unaligned store of 16 bytes the caller has bounded.
-    p[0..16].* = v;
 }
 
 fn periodMask(comptime period: usize) @Vector(16, i32) {

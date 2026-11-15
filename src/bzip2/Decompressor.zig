@@ -79,6 +79,12 @@ pub fn initBuffer(buffer: []align(4) u8) error{BufferTooSmall}!Decompressor {
     return assemble(try plan.fit(buffer));
 }
 
+/// The BWT vector over caller memory aligned to 4, refused when shorter
+/// than `memory`: `Decompress`'s.
+pub fn vector(buffer: []align(4) u8) error{BufferTooSmall}![]u32 {
+    return (try plan.fit(buffer)).parts().tt;
+}
+
 /// The one core of `init` and `initBuffer`: a block holds its parts.
 fn assemble(held: Block) Decompressor {
     return .{ .tt = held.parts().tt, .tables = undefined, .state = .{}, .owned = &.{}, .gpa = undefined };

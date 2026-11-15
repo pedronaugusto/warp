@@ -484,7 +484,7 @@ pub fn create(gpa: Allocator, scratch: *Scratch, num_bytes_in: u32, position_in:
         const pos = position + i;
         const max_distance = @min(pos, max_backward_limit);
         const dictionary_start = @min(pos + stream_offset, max_backward_limit);
-        var num_matches = h.findAllMatches(ring, mask, pos, num_bytes - i, max_distance, dictionary_start + gap, params, matches_all[lz_matches_offset..].ptr);
+        var num_matches = h.findAllMatches(ring, mask, pos, num_bytes - i, max_distance, dictionary_start + gap, params, matches_all[lz_matches_offset..]);
         if (params.dictionary) |d| {
             const cd = d.findAll(ring, mask, pos, 3, num_bytes - i, dictionary_start, params.dist.max_distance, matches_all[lz_matches_offset - 64 ..][0..64]);
             mergeMatches(matches_all, matches_all[lz_matches_offset - 64 ..][0..cd], matches_all[lz_matches_offset..][0..num_matches]);
@@ -595,7 +595,7 @@ pub fn createHq(gpa: Allocator, scratch: *Scratch, num_bytes_in: u32, position_i
             scratch.matches = try blocks.grow(BackwardMatch, gpa, scratch.matches, size, cur_match_pos);
             matches = scratch.matches;
         }
-        var found = h.findAllMatches(ring, mask, pos, max_length, max_distance, dictionary_start + gap, params, matches[cur_match_pos + shadow_matches ..].ptr);
+        var found = h.findAllMatches(ring, mask, pos, max_length, max_distance, dictionary_start + gap, params, matches[cur_match_pos + shadow_matches ..]);
         if (params.dictionary) |d| {
             const cd = d.findAll(ring, mask, pos, 3, max_length, dictionary_start, params.dist.max_distance, matches[cur_match_pos + shadow_matches - 64 ..][0..64]);
             mergeMatches(matches[cur_match_pos..], matches[cur_match_pos + shadow_matches - 64 ..][0..cd], matches[cur_match_pos + shadow_matches ..][0..found]);

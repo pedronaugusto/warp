@@ -13,7 +13,7 @@ const encode = huffman.encode;
 
 /// A match and the literals before it. The literals are the input's own
 /// bytes, read again when the block is written.
-pub const Sequence = struct {
+pub const Sequence = extern struct {
     literals: u32,
     /// 3-258.
     length: u16,

@@ -61,9 +61,10 @@ between: bool = false,
 pending: usize = 0,
 failure: ?Error = null,
 
-/// `buffer.len >= memory`, aligned to 4.
-pub fn init(buffer: []align(4) u8, options: Options) Decompress {
-    return .{ .options = options, .tt = std.mem.bytesAsSlice(u32, buffer[0..memory]) };
+/// A decompressor over caller memory aligned to 4, refused when shorter
+/// than `memory`.
+pub fn init(buffer: []align(4) u8, options: Options) error{BufferTooSmall}!Decompress {
+    return .{ .options = options, .tt = try Decompressor.vector(buffer) };
 }
 
 pub fn reset(s: *Decompress) void {
@@ -193,8 +194,9 @@ pub const Reader = struct {
     state: Decompress,
     failure: ?Error = null,
 
-    pub fn init(input: *Io.Reader, buffer: []align(4) u8, options: Options) Reader {
-        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..4096], .seek = 0, .end = 0 }, .input = input, .state = Decompress.init(buffer[4096..], options) };
+    pub fn init(input: *Io.Reader, buffer: []align(4) u8, options: Options) error{BufferTooSmall}!Reader {
+        if (buffer.len < 4096) return error.BufferTooSmall;
+        return .{ .interface = .{ .vtable = &.{ .stream = stream, .readVec = readVec }, .buffer = buffer[0..4096], .seek = 0, .end = 0 }, .input = input, .state = try Decompress.init(buffer[4096..], options) };
     }
 
     /// The error behind an `error.ReadFailed`, when it was the stream's.

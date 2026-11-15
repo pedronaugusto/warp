@@ -83,8 +83,8 @@ pub const H10 = struct {
     }
 
     /// The matches a search found: each longer than the one before
-    /// (`best_len`, the longest), written from `out`, which moves past them.
-    pub const Found = struct { best_len: *usize, out: [*]BackwardMatch };
+    /// (`best_len`, the longest), written to `out` from `n`, which counts them.
+    pub const Found = struct { best_len: *usize, out: []BackwardMatch, n: usize };
 
     /// Store the position and, in the same walk, find its matches in its
     /// bucket's tree into `found`, if given, re-rooting it there; with less
@@ -120,8 +120,8 @@ pub const H10 = struct {
             if (found) |f| {
                 if (len > f.best_len.*) {
                     f.best_len.* = len;
-                    f.out[0] = .init(backward, len);
-                    f.out += 1;
+                    f.out[f.n] = .init(backward, len);
+                    f.n += 1;
                 }
             }
             if (len >= max_comp_len) {
@@ -147,8 +147,8 @@ pub const H10 = struct {
 
     /// The matches at `cur_ix`, in increasing length and non-decreasing
     /// distance, into `matches`; returns how many.
-    pub fn findAllMatches(h: *H10, data: []const u8, mask: usize, cur_ix: usize, max_length: usize, max_backward: usize, dictionary_distance: usize, params: *const settings.Resolved, matches: [*]BackwardMatch) usize {
-        var out = matches;
+    pub fn findAllMatches(h: *H10, data: []const u8, mask: usize, cur_ix: usize, max_length: usize, max_backward: usize, dictionary_distance: usize, params: *const settings.Resolved, matches: []BackwardMatch) usize {
+        var n: usize = 0;
         const cur = cur_ix & mask;
         var best_len: usize = 1;
         const short_max_backward: usize = if (params.quality != 11) 16 else 64;
@@ -162,14 +162,14 @@ pub const H10 = struct {
             const len = find.matchLength(data, prev, cur, max_length);
             if (len > best_len) {
                 best_len = len;
-                out[0] = .init(backward, len);
-                out += 1;
+                matches[n] = .init(backward, len);
+                n += 1;
             }
         }
         if (best_len < max_length) {
-            var found: Found = .{ .best_len = &best_len, .out = out };
+            var found: Found = .{ .best_len = &best_len, .out = matches, .n = n };
             h.storeAndFindMatches(data, cur_ix, mask, max_length, max_backward, &found);
-            out = found.out;
+            n = found.n;
         }
         var dict_matches: [static.max_match_len + 1]u32 = @splat(static.invalid_match);
         const minlen = @max(4, best_len + 1);
@@ -181,13 +181,13 @@ pub const H10 = struct {
                 if (dict_id < static.invalid_match) {
                     const distance = dictionary_distance + (dict_id >> 5) + 1;
                     if (distance <= params.dist.max_distance) {
-                        out[0] = .dictionary(distance, l, dict_id & 31);
-                        out += 1;
+                        matches[n] = .dictionary(distance, l, dict_id & 31);
+                        n += 1;
                     }
                 }
             }
         }
-        return @intCast(out - matches);
+        return n;
     }
 
     /// Store `ix` (128 bytes ahead of it in the block) with no matches.

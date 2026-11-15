@@ -908,19 +908,21 @@ fn copyCareful(s: *Stream, distance: usize, length: usize) void {
     if (done < target.len) {
         // The rest from the output, which it may overlap, a byte at a
         // time: from `distance` back, or from the start once the history
-        // has given its part.
+        // has given its part. The source runs on into the target, so it
+        // is the output from its start on.
         const from = if (done == 0) from: {
             aegis.assert.invariant(distance <= written.len, "distance <= written.len");
-            break :from written[written.len - distance ..];
-        } else written[s.start..];
-        copyForward(target[done..].ptr, from.ptr, target.len - done);
+            break :from s.out[written.len - distance ..];
+        } else s.out[s.start..];
+        copyForward(target[done..], from);
     }
     s.op += length;
 }
 
-/// Copy `len` bytes forward from `src` to `dst`, which may overlap it.
-fn copyForward(dst: [*]u8, src: [*]const u8, len: usize) void {
-    for (0..len) |i| dst[i] = src[i];
+/// Fill `dst` forward from `src`, which may overlap it and holds as many
+/// bytes or more.
+fn copyForward(dst: []u8, src: []const u8) void {
+    for (dst, 0..) |*d, i| d.* = src[i];
 }
 
 /// A match that starts in the history, from the fast loop (the output has
@@ -947,9 +949,8 @@ fn copyFromHistory(s: *Stream, op: usize, distance: usize, length: usize) void {
     aegis.assert.invariant(from_history <= s.out.len - op, "from_history <= s.out.len - op");
     if (from_history + 15 <= piece.len) {
         // Up to fifteen bytes past the part are written, inside the margin.
-        const dst = s.out[op..].ptr;
         var i: usize = 0;
-        while (i < from_history) : (i += 16) dst[i..][0..16].* = piece[i..][0..16].*;
+        while (i < from_history) : (i += 16) s.out[op + i ..][0..16].* = piece[i..][0..16].*;
     } else h.copyOut(k, s.out[op..][0..from_history]);
     if (from_history < length) copyMatch(u8, s.out, op + from_history, distance, length - from_history);
 }
@@ -960,26 +961,25 @@ pub inline fn copyMatch(comptime T: type, out: []T, op: usize, distance: usize, 
     // The caller has checked that the match is in the output.
     aegis.assert.invariant(op <= out.len, "op <= out.len");
     aegis.assert.invariant(distance <= op, "distance <= op");
-    const dst = out.ptr + op;
-    const src = out.ptr + (op - distance);
+    const from = op - distance;
     if (distance >= 16) {
         // Most matches are at most 32 bytes: two copies, no branch.
-        dst[0..16].* = src[0..16].*;
-        dst[16..32].* = src[16..32].*;
+        out[op..][0..16].* = out[from..][0..16].*;
+        out[op + 16 ..][0..16].* = out[from + 16 ..][0..16].*;
         var i: usize = 32;
-        while (i < length) : (i += 16) dst[i..][0..16].* = src[i..][0..16].*;
+        while (i < length) : (i += 16) out[op + i ..][0..16].* = out[from + i ..][0..16].*;
     } else if (distance >= 8) {
         // Eight bytes a step: no step reads what it writes.
-        dst[0..8].* = src[0..8].*;
+        out[op..][0..8].* = out[from..][0..8].*;
         var i: usize = 8;
-        while (i < length) : (i += 8) dst[i..][0..8].* = src[i..][0..8].*;
+        while (i < length) : (i += 8) out[op + i ..][0..8].* = out[from + i ..][0..8].*;
     } else if (distance == 1) {
         // A run of one byte, sixteen at a time. The byte is read again each
         // step (from what the last wrote), which keeps the loop a loop
         // rather than a call to memset.
         var i: usize = 0;
         while (true) {
-            dst[i..][0..16].* = @as(@Vector(16, T), @splat(src[i]));
+            out[op + i ..][0..16].* = @as(@Vector(16, T), @splat(out[from + i]));
             i += 16;
             if (i >= length) break;
         }
@@ -987,8 +987,8 @@ pub inline fn copyMatch(comptime T: type, out: []T, op: usize, distance: usize, 
         // Distances 2-7: each eight-byte step writes the pattern and moves
         // on by the distance, so it reads only bytes already written.
         switch (distance) {
-            inline 2...6 => |d| copyPeriod(T, d, dst, src, length),
-            else => copyPeriod(T, 7, dst, src, length),
+            inline 2...6 => |d| copyPeriod(T, d, out, op, length),
+            else => copyPeriod(T, 7, out, op, length),
         }
     }
 }
@@ -996,10 +996,10 @@ pub inline fn copyMatch(comptime T: type, out: []T, op: usize, distance: usize, 
 /// `copyMatch`'s eight-byte steps for a distance `period` of 2 to 7, by
 /// a step the optimizer cannot see, so that each period stays one small
 /// loop rather than an unrolled one.
-inline fn copyPeriod(comptime T: type, comptime period: usize, dst: [*]T, src: [*]const T, length: usize) void {
+inline fn copyPeriod(comptime T: type, comptime period: usize, out: []T, op: usize, length: usize) void {
     const step = chainless(period);
     var i: usize = 0;
-    while (i < length) : (i += step) dst[i..][0..8].* = src[i..][0..8].*;
+    while (i < length) : (i += step) out[op + i ..][0..8].* = out[op - period + i ..][0..8].*;
 }
 
 test "history reads as one across a ring's two pieces" {

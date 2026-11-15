@@ -21,10 +21,10 @@ fn input(gpa: std.mem.Allocator, spec: []const u8) ![]u8 {
 
 /// What the resumable decoder makes of `in` given in pieces of `cut` bytes
 /// (0: whole) into pieces of output of `out_cut` bytes.
-fn streamed(gpa: std.mem.Allocator, in: []const u8, out: []u8, cut: usize, out_cut: usize, streams: bzip2.Streams) (Error || error{OutOfMemory})!struct { in_len: usize, out_len: usize } {
+fn streamed(gpa: std.mem.Allocator, in: []const u8, out: []u8, cut: usize, out_cut: usize, streams: bzip2.Streams) (Error || error{ OutOfMemory, BufferTooSmall })!struct { in_len: usize, out_len: usize } {
     const buffer = try gpa.alignedAlloc(u8, .@"4", Decompress.memory);
     defer gpa.free(buffer);
-    var s: Decompress = .init(buffer, .{ .streams = streams });
+    var s: Decompress = try .init(buffer, .{ .streams = streams });
     var ip: usize = 0;
     var op: usize = 0;
     // Bytes given back, given again with more.
@@ -219,7 +219,7 @@ test "the reader adapter reads what the decoder writes" {
     var source: std.Io.Reader = .fixed(r.fields[3]);
     const buffer = try gpa.alignedAlloc(u8, .@"4", 4096 + Decompress.memory);
     defer gpa.free(buffer);
-    var reader: Decompress.Reader = .init(&source, buffer, .{});
+    var reader: Decompress.Reader = try .init(&source, buffer, .{});
     const got = try reader.interface.allocRemaining(gpa, .unlimited);
     defer gpa.free(got);
     try testing.expectEqualSlices(u8, in, got);
@@ -267,7 +267,7 @@ test "the reader adapter leaves what follows the streams in its source, at every
             var source: Pieces = .init(stream, size, &source_buffer);
             const buffer = try gpa.alignedAlloc(u8, .@"4", 4096 + Decompress.memory);
             defer gpa.free(buffer);
-            var reader: Decompress.Reader = .init(&source.interface, buffer, .{});
+            var reader: Decompress.Reader = try .init(&source.interface, buffer, .{});
             const got = try reader.interface.allocRemaining(gpa, .unlimited);
             defer gpa.free(got);
             try testing.expectEqual(in_len, source.taken());

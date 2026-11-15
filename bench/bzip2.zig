@@ -138,7 +138,7 @@ pub const Decode = struct {
             .whole => return (try c.d.decompress(c.stream, c.out, .{})).out_len,
             .parallel => return (try c.p.decompress(c.session.io, c.stream, c.out, .{})).out_len,
             .pieces => {
-                var z: bzip2.Decompress = .init(c.memory, .{});
+                var z: bzip2.Decompress = try .init(c.memory, .{});
                 var ip: usize = 0;
                 var op: usize = 0;
                 while (true) {

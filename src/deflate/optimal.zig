@@ -51,7 +51,7 @@ const min_block = 5000;
 /// A node of a block's graph, one per position and one for its end: the
 /// least cost from here to the end of the block, and the item that starts
 /// that path.
-pub const Node = struct { cost: u32, item: Item };
+pub const Node = extern struct { cost: u32, item: Item };
 
 /// A path's step: a literal (`len` 1, `payload` its byte) or a match
 /// (`payload` its distance).
@@ -204,7 +204,7 @@ pub fn parse(comptime dictionary: bool, comptime full_window: bool, c: anytype, 
             if (p >= stop) return;
             const max = maxLen(n, p);
             var found: usize = 0;
-            if (max >= BinaryTrees.required) found = bt.matches(dictionary, full_window, h, @intCast(p), max, params.nice, params.depth, o.cache[o.len..].ptr);
+            if (max >= BinaryTrees.required) found = bt.matches(dictionary, full_window, h, @intCast(p), max, params.nice, params.depth, o.cache[o.len..]);
             const best: u32 = if (found > 0) o.cache[o.len + found - 1].length else 0;
             o.len += found;
             if (p >= o.next_observation) {

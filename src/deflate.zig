@@ -124,7 +124,6 @@ pub fn EngineFor(comptime window: u32) type {
         const HashChains = match.HashChainsFor(window);
         const HashTable = match.HashTableFor(window);
         const BinaryTrees = match.BinaryTreesFor(window);
-        const Pos = match.Position(window);
 
         /// What the engine needs, in table sizes and buffer lengths.
         pub const Sizes = struct {
@@ -238,7 +237,7 @@ pub fn EngineFor(comptime window: u32) type {
                         .table = if (s.table) HashTable.counts(s.ht_bits) else null,
                         .trees = if (s.trees) BinaryTrees.counts(s.tree_bits, s.tree_bits, s.window) else null,
                     },
-                    .optimal = if (s.nodes != 0) .{ .nodes = s.nodes, .cache = s.cache } else null,
+                    .optimal = if (s.nodes != 0) .{ .path = .{ .nodes = s.nodes, .seqs = s.nodes }, .cache = s.cache } else null,
                     .seqs = s.sequences,
                     .lits = s.literals,
                 };
@@ -251,10 +250,18 @@ pub fn EngineFor(comptime window: u32) type {
             finders: Finders,
             /// The near-optimal parser's state, nodes and matches; its
             /// blocks' sequences lie over the nodes.
-            optimal: ?struct { state: *optimal.State, nodes: []optimal.Node, cache: []optimal.Match },
+            optimal: ?struct { state: *optimal.State, path: Path, cache: []optimal.Match },
             /// The other parsers' sequences.
             seqs: []block.Sequence,
             lits: []u8,
+        };
+
+        /// A block's graph and, over its memory, the sequences made from
+        /// its path (`optimal.emitPath`) or by the other parsers.
+        const Path = struct {
+            pub const arrangement: aegis.parts.Arrangement = .overlap;
+            nodes: []optimal.Node,
+            seqs: []block.Sequence,
         };
 
         /// The matchfinders overlap: one of them is in use at a time.
@@ -297,7 +304,7 @@ pub fn EngineFor(comptime window: u32) type {
             if (p.optimal) |o| {
                 e.opt = o.state;
                 e.opt.* = .{
-                    .nodes = o.nodes,
+                    .nodes = o.path.nodes,
                     .cache = o.cache,
                     .cache_limit = sizes.cacheLimit(),
                     .block_max = sizes.block_max,
@@ -305,7 +312,7 @@ pub fn EngineFor(comptime window: u32) type {
                 };
                 // A block's sequences are made from its path, over the nodes'
                 // memory (see `optimal.emitPath`); the other parsers' fit too.
-                e.b.seqs = @as([*]block.Sequence, @ptrCast(o.nodes.ptr))[0..o.nodes.len]; // glint-ignore: P007 -- no-danger: two u32 and two u32-aligned u16 pairs, 8 bytes each
+                e.b.seqs = o.path.seqs;
             }
             return e;
         }

@@ -95,8 +95,11 @@ test "lz4: Compressor and Compress in exactly their memory" {
 }
 
 test "snappy: Compressor and Compress in exactly their memory" {
-    const o: snappy.Compressor.Options = .{};
-    try exact(snappy.Compressor, snappy.Compressor.memory(o), .{o});
+    // Each parser's tables, laid over one another.
+    for (std.enums.values(snappy.Compressor.Level)) |level| {
+        const o: snappy.Compressor.Options = .{ .format = .s2, .level = level };
+        try exact(snappy.Compressor, snappy.Compressor.memory(o), .{o});
+    }
     const s: snappy.Compress.Options = .{};
     try exact(snappy.Compress, snappy.Compress.memory(s), .{s});
 }
@@ -138,6 +141,14 @@ test "lzma: Compressor and Compress in exactly their memory" {
 
 test "bzip2: Decompressor and the parallel one in exactly their memory" {
     try exact(bzip2.Decompressor, bzip2.Decompressor.memory, .{});
+    // The resumable decoder and its reader refuse a vector one byte short.
+    const buffer = try testing.allocator.alignedAlloc(u8, .@"4", 4096 + bzip2.Decompress.memory);
+    defer testing.allocator.free(buffer);
+    try testing.expectError(error.BufferTooSmall, bzip2.Decompress.init(buffer[0 .. bzip2.Decompress.memory - 1], .{}));
+    _ = try bzip2.Decompress.init(buffer[0..bzip2.Decompress.memory], .{});
+    var source: std.Io.Reader = .fixed("");
+    try testing.expectError(error.BufferTooSmall, bzip2.Decompress.Reader.init(&source, buffer[0 .. buffer.len - 1], .{}));
+    _ = try bzip2.Decompress.Reader.init(&source, buffer, .{});
     const o: bzip2.parallel.Decompressor.Options = .{ .concurrency = 2, .block_out = .literal("1MiB") };
     try exact(bzip2.parallel.Decompressor, bzip2.parallel.Decompressor.memory(o), .{o});
 }

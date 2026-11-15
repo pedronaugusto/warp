@@ -84,40 +84,45 @@ pub const Error = error{
 };
 
 options: Options,
-/// The parser's tables.
-memory_: []align(16) u8,
-gpa: ?Allocator,
+/// The parser's tables: those of `options.parser()` hold its counts, the
+/// others none.
+work: Work,
+/// A dictionary's tables for the parser, as `work`; none without one.
+dict: DictTables,
+/// The block `init` took, which `deinit` frees; null over parts or a buffer.
+held: ?struct { gpa: Allocator, block: Block },
 
-/// The bytes of the parser's tables.
-fn workMemory(options: Options) usize {
-    return switch (options.parser()) {
-        .snappy_1, .snappy_2 => reference.max_table * @sizeOf(u16),
-        .fast => fast.max_table * @sizeOf(u32),
-        .better => (better.max_long + better.max_short) * @sizeOf(u32),
-        .best => (best.max_long + best.max_short) * @sizeOf(u64),
-    };
+fn Pair(comptime T: type) type {
+    return struct { long: []T, short: []T };
 }
 
-/// The bytes of a dictionary's tables for the parser.
-fn dictMemory(options: Options) usize {
-    if (options.dictionary == null) return 0;
-    return switch (options.parser()) {
-        .snappy_1, .snappy_2 => 0,
-        .fast => fast.dict_table * @sizeOf(u16),
-        .better => (better.dict_long + better.dict_short) * @sizeOf(u16),
-        .best => (best.max_long + best.max_short) * @sizeOf(u32),
-    };
-}
+/// The parsers' tables, one parser's in use: they lie over one another.
+const Work = struct {
+    pub const arrangement: aegis.parts.Arrangement = .overlap;
+    reference: []u16,
+    fast: []u32,
+    better: Pair(u32),
+    best: Pair(u64),
+};
+
+/// A dictionary's tables for each parser, one parser's in use.
+const DictTables = struct {
+    pub const arrangement: aegis.parts.Arrangement = .overlap;
+    fast: []u16,
+    better: Pair(u16),
+    best: Pair(u32),
+};
 
 /// The bytes of tables the parser takes, and its dictionary's.
 pub fn memory(options: Options) usize {
-    return workMemory(options) + dictMemory(options);
+    return (Block.plan(counts(options)).size() catch return std.math.maxInt(usize)).raw();
 }
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
     if (!options.valid()) return error.InvalidOptions;
-    var c = fromParts((try Block.plan(counts(options)).alloc(gpa)).parts(), options);
-    c.gpa = gpa;
+    const b = try Block.plan(counts(options)).alloc(gpa);
+    var c = fromParts(b.parts(), options);
+    c.held = .{ .gpa = gpa, .block = b };
     return c;
 }
 
@@ -126,49 +131,58 @@ fn indexDictionary(c: *Compressor) void {
     const dict = c.options.dictionary orelse return;
     switch (c.options.parser()) {
         .snappy_1, .snappy_2 => {},
-        .best => {
-            const t = c.dictTables(u32);
-            best.indexDict(dict.content, t[0..best.max_long], t[best.max_long..][0..best.max_short]);
-        },
-        .fast => fast.indexDict(dict.content, c.dictTables(u16)),
-        .better => {
-            const t = c.dictTables(u16);
-            better.indexDict(dict.content, t[0..better.dict_long], t[better.dict_long..][0..better.dict_short]);
-        },
+        .best => best.indexDict(dict.content, c.dict.best.long, c.dict.best.short),
+        .fast => fast.indexDict(dict.content, c.dict.fast),
+        .better => better.indexDict(dict.content, c.dict.better.long, c.dict.better.short),
     }
 }
 
-fn dictTables(c: *Compressor, comptime T: type) []T {
-    return std.mem.bytesAsSlice(T, c.memory_)[workMemory(c.options) / @sizeOf(T) ..];
-}
-
-/// A compressor over the caller's `buffer` (aligned to 16), refused when
+/// A compressor over the caller's `buffer` (aligned to `Block.alignment`), refused when
 /// shorter than `memory(options)`.
-pub fn initBuffer(buffer: []align(16) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compressor {
+pub fn initBuffer(buffer: []align(Block.alignment) u8, options: Options) error{ InvalidOptions, BufferTooSmall }!Compressor {
     if (!options.valid()) return error.InvalidOptions;
     return fromParts((try Block.plan(counts(options)).fit(buffer)).parts(), options);
 }
 
 /// The parser's and its dictionary's tables, as a part of one block
 /// (`aegis.parts`), which the streaming compressor nests in its own.
-pub const Parts = struct { tables: []align(16) u8 };
+pub const Parts = struct { work: Work, dict: DictTables };
 const Block = aegis.parts.Block(Parts);
 
-/// The parts for valid `options`.
+/// The parts for valid `options`: the parser's tables, and its
+/// dictionary's when it has one.
 pub fn counts(options: Options) aegis.parts.Counts(Parts) {
-    return .{ .tables = memory(options) };
+    const parser = options.parser();
+    const dict = options.dictionary != null;
+    const reference_table: usize = switch (parser) {
+        .snappy_1, .snappy_2 => reference.max_table,
+        else => 0,
+    };
+    return .{
+        .work = .{
+            .reference = reference_table,
+            .fast = if (parser == .fast) fast.max_table else 0,
+            .better = if (parser == .better) .{ .long = better.max_long, .short = better.max_short } else .{ .long = 0, .short = 0 },
+            .best = if (parser == .best) .{ .long = best.max_long, .short = best.max_short } else .{ .long = 0, .short = 0 },
+        },
+        .dict = .{
+            .fast = if (dict and parser == .fast) fast.dict_table else 0,
+            .better = if (dict and parser == .better) .{ .long = better.dict_long, .short = better.dict_short } else .{ .long = 0, .short = 0 },
+            .best = if (dict and parser == .best) .{ .long = best.max_long, .short = best.max_short } else .{ .long = 0, .short = 0 },
+        },
+    };
 }
 
 /// A compressor over its parts, placed for `counts(options)` of valid
 /// `options`; `deinit` frees nothing.
 pub fn fromParts(p: Parts, options: Options) Compressor {
-    var c: Compressor = .{ .options = options, .memory_ = p.tables, .gpa = null };
+    var c: Compressor = .{ .options = options, .work = p.work, .dict = p.dict, .held = null };
     c.indexDictionary();
     return c;
 }
 
 pub fn deinit(c: *Compressor) void {
-    if (c.gpa) |gpa| gpa.free(c.memory_);
+    if (c.held) |h| h.gpa.free(h.block.bytes());
     c.* = undefined;
 }
 
@@ -196,35 +210,31 @@ pub fn compressBlock(c: *Compressor, in: []const u8, out: []u8) Error!usize {
 fn parse(c: *Compressor, in: []const u8, out: []u8, at: usize) ?usize {
     const snappy = c.options.format == .snappy;
     return switch (c.options.parser()) {
-        .snappy_1 => reference.compress(.one, in, out, at, c.tables(u16)),
-        .snappy_2 => reference.compress(.two, in, out, at, c.tables(u16)),
+        .snappy_1 => reference.compress(.one, in, out, at, c.work.reference),
+        .snappy_2 => reference.compress(.two, in, out, at, c.work.reference),
         .fast => if (in.len < fast.min_len)
             null
         else if (c.options.dictionary) |dict|
-            fast.encodeDict(dict.content, dict.repeat, c.dictTables(u16), in, out, at, c.tables(u32))
+            fast.encodeDict(dict.content, dict.repeat, c.dict.fast, in, out, at, c.work.fast)
         else if (snappy)
-            fast.encode(true, in, out, at, c.tables(u32))
+            fast.encode(true, in, out, at, c.work.fast)
         else
-            fast.encode(false, in, out, at, c.tables(u32)),
+            fast.encode(false, in, out, at, c.work.fast),
         .better => blk: {
             if (in.len < fast.min_len) break :blk null;
-            const t = c.tables(u32);
-            const long = t[0..better.max_long];
-            const short = t[better.max_long..][0..better.max_short];
+            const long = c.work.better.long;
+            const short = c.work.better.short;
             if (c.options.dictionary) |dict| {
-                const d = c.dictTables(u16);
-                break :blk better.encodeDict(dict.content, dict.repeat, d[0..better.dict_long], d[better.dict_long..][0..better.dict_short], in, out, at, long, short);
+                break :blk better.encodeDict(dict.content, dict.repeat, c.dict.better.long, c.dict.better.short, in, out, at, long, short);
             }
             break :blk if (snappy) better.encode(true, in, out, at, long, short) else better.encode(false, in, out, at, long, short);
         },
         .best => blk: {
             if (in.len < fast.min_len) break :blk null;
-            const t = c.tables(u64);
-            const long = t[0..best.max_long];
-            const short = t[best.max_long..][0..best.max_short];
+            const long = c.work.best.long;
+            const short = c.work.best.short;
             if (c.options.dictionary) |dict| {
-                const d = c.dictTables(u32);
-                break :blk best.encode(.dict, in, out, at, long, short, .{ .content = dict.content, .repeat = dict.repeat, .long = d[0..best.max_long], .short = d[best.max_long..][0..best.max_short] });
+                break :blk best.encode(.dict, in, out, at, long, short, .{ .content = dict.content, .repeat = dict.repeat, .long = c.dict.best.long, .short = c.dict.best.short });
             }
             break :blk if (snappy) best.encode(.snappy, in, out, at, long, short, null) else best.encode(.s2, in, out, at, long, short, null);
         },
@@ -368,8 +378,4 @@ pub fn chunk(c: *Compressor, in: []const u8, out: []u8, store: bool) usize {
     frame.writeHeader(out[0..frame.header_len], frame.Type.uncompressed, frame.checksum_len + in.len);
     @memcpy(out[head..][0..in.len], in);
     return head + in.len;
-}
-
-fn tables(c: *Compressor, comptime T: type) []T {
-    return std.mem.bytesAsSlice(T, c.memory_[0..workMemory(c.options)]);
 }

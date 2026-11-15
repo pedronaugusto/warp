@@ -171,6 +171,14 @@ pub fn rebase(comptime window_: u32, table: []Position(window_)) void {
     for (table[i..]) |*e| e.* = (e.* -| @as(P, window_ - 1)) -| 1;
 }
 
+/// `rebase` over a table of pairs: both entries of each.
+pub fn rebasePairs(comptime window_: u32, table: [][2]Position(window_)) void {
+    const P = Position(window_);
+    for (table) |*pair| {
+        for (pair) |*e| e.* = (e.* -| @as(P, window_ - 1)) -| 1;
+    }
+}
+
 test "match lengths: across eight-byte steps, at the limit, and into the input from a dictionary" {
     const in = "abcdefghij-abcdefghij-abcdefghijX";
     try std.testing.expectEqual(@as(u32, 21), matchLengthIn(in, 0, 11, 0, 22));
