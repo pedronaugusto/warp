@@ -255,7 +255,11 @@ fn addTestImports(b: *std.Build, p: *std.Build, module: *std.Build.Module) void 
 fn addSourceImports(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
     module.addImport("aegis", b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis"));
     module.addImport("ladar", b.dependency("ladar", .{ .target = target, .optimize = optimize }).module("ladar"));
-    const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize });
+    // The machine instructions the kernels use, glint's P007 seam for them: inline, so each is
+    // assembled in its caller's module with that module's CPU features.
+    const instructions = b.createModule(.{ .root_source_file = b.path("src/kernels/instructions.zig"), .target = target, .optimize = optimize });
+    module.addImport("kernels_instructions", instructions);
+    const fold = b.createModule(.{ .root_source_file = b.path("src/kernels/fold.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "kernels_instructions", .module = instructions }} });
     const Kernel = struct { name: []const u8, source: []const u8, features: std.Target.Cpu.Feature.Set };
     const arm = std.Target.aarch64.featureSet;
     const x86 = std.Target.x86.featureSet;
@@ -281,7 +285,7 @@ fn addSourceImports(b: *std.Build, module: *std.Build.Module, target: std.Build.
             .root_source_file = b.path(b.fmt("src/kernels/{s}.zig", .{k.source})),
             .target = b.resolveTargetQuery(query),
             .optimize = optimize,
-            .imports = &.{.{ .name = "kernels_fold", .module = fold }},
+            .imports = &.{ .{ .name = "kernels_fold", .module = fold }, .{ .name = "kernels_instructions", .module = instructions } },
         });
         module.addImport(k.name, kernel);
     }

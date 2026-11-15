@@ -65,13 +65,13 @@ const Match = struct { len: i32 = 0, off: i32 = 0, back: i32 = 0 };
 pub const Chains = struct {
     hash: [1 << hash_log]u32,
     chain: [1 << 16]u16,
-    /// The virtual index of the input's first byte (lz4's `dictLimit`), of
-    /// the history's first (`lowLimit`), the next position to index, and
-    /// where the indexed bytes end.
-    prefix_idx: u32,
+    /// Positions on lz4's one virtual axis: the input's first byte (lz4's `dictLimit`),
+    /// the history's first (`lowLimit`), the next position to index, and where the
+    /// indexed bytes end.
+    prefix_start: u32,
     low_limit: u32,
     next_to_update: u32,
-    end_idx: u32, // glint-ignore: P008 -- no-danger: four positions on lz4's one virtual axis, each compared with and subtracted from the others: one kind, not distinct identities
+    indexed_end: u32,
     /// The tables hold LZ4MID's two hashes, not the chains'.
     mid: bool = false,
     /// The optimal parser's costs, when the levels reach it.
@@ -90,10 +90,10 @@ pub const Chains = struct {
         const c = p.chains;
         c.hash = @splat(0);
         c.chain = @splat(0xFFFF);
-        c.prefix_idx = window_gap;
+        c.prefix_start = window_gap;
         c.low_limit = window_gap;
         c.next_to_update = window_gap;
-        c.end_idx = window_gap;
+        c.indexed_end = window_gap;
         c.mid = false;
         c.costs = p.costs;
 
@@ -105,60 +105,60 @@ pub const Chains = struct {
     pub fn load(c: *Chains, bytes: []const u8, mid: bool) void {
         c.hash = @splat(0);
         c.chain = @splat(0xFFFF);
-        c.prefix_idx = window_gap;
+        c.prefix_start = window_gap;
         c.low_limit = window_gap;
         c.next_to_update = window_gap;
-        c.end_idx = window_gap + @as(u32, @intCast(bytes.len));
+        c.indexed_end = window_gap + @as(u32, @intCast(bytes.len));
         c.mid = mid;
-        const v: View = .{ .src = bytes, .prefix_idx = c.prefix_idx, .hist = &.{}, .dict_idx = c.prefix_idx };
+        const v: View = .{ .src = bytes, .prefix_start = c.prefix_start, .hist = &.{}, .dict_start = c.prefix_start };
         if (mid) c.midFill(v) else if (bytes.len >= 4) c.insert(v, bytes.len - 3);
     }
 
     /// Start a call: the input's first byte a window past the last's, or
     /// right after it when it is the history.
     fn begin(c: *Chains, in_len: usize, history_len: usize, keep: bool) void {
-        if (!keep or c.end_idx > rebase_at) {
-            if (c.end_idx > rebase_at) {
+        if (!keep or c.indexed_end > rebase_at) {
+            if (c.indexed_end > rebase_at) {
                 c.hash = @splat(0);
                 c.chain = @splat(0xFFFF);
-                c.end_idx = 0;
+                c.indexed_end = 0;
             }
-            const start = c.end_idx + window_gap + @as(u32, @intCast(history_len));
-            c.prefix_idx = start;
+            const start = c.indexed_end + window_gap + @as(u32, @intCast(history_len));
+            c.prefix_start = start;
             c.low_limit = start - @as(u32, @intCast(history_len));
             c.next_to_update = start;
         } else {
             // The last input is the history: positions run on.
-            c.prefix_idx = c.end_idx;
-            c.low_limit = c.end_idx - @as(u32, @intCast(history_len));
-            c.next_to_update = c.end_idx;
+            c.prefix_start = c.indexed_end;
+            c.low_limit = c.indexed_end - @as(u32, @intCast(history_len));
+            c.next_to_update = c.indexed_end;
         }
-        c.end_idx = c.prefix_idx + @as(u32, @intCast(in_len));
+        c.indexed_end = c.prefix_start + @as(u32, @intCast(in_len));
     }
 
     /// Compress `in` at `level` into `out`.
     pub fn compress(c: *Chains, comptime directive: seq.Directive, level: i32, favor: bool, in: []const u8, out: []u8, prefix: Prefix) ?seq.Written {
         const p = params(level);
-        var v: View = .{ .src = in, .prefix_idx = 0, .hist = &.{}, .dict_idx = 0 };
+        var v: View = .{ .src = in, .prefix_start = 0, .hist = &.{}, .dict_start = 0 };
         var dict: ?Dict = null;
         switch (prefix) {
             .none => c.begin(in.len, 0, false),
             .previous => |prev| {
-                if (prev.len > 0 and prev.ptr + prev.len == in.ptr and c.end_idx <= rebase_at) {
+                if (prev.len > 0 and prev.ptr + prev.len == in.ptr and c.indexed_end <= rebase_at) {
                     // Just before the input in memory: one prefix, as lz4
                     // continues a stream whose blocks lie end to end.
-                    const first = c.end_idx - @as(u32, @intCast(prev.len));
-                    c.prefix_idx = first;
+                    const first = c.indexed_end - @as(u32, @intCast(prev.len));
+                    c.prefix_start = first;
                     c.low_limit = first;
                     c.next_to_update = @max(c.next_to_update, first);
-                    c.end_idx += @intCast(in.len);
+                    c.indexed_end += @intCast(in.len);
                     v.src = prev.ptr[0 .. prev.len + in.len];
                     v.begin = prev.len;
                 } else {
                     // Elsewhere: an external dictionary, its last positions
                     // indexed first, as lz4 does.
-                    if (prev.len >= 4 and c.next_to_update < c.end_idx - 3) {
-                        const pv: View = .{ .src = prev, .prefix_idx = c.end_idx - @as(u32, @intCast(prev.len)), .hist = &.{}, .dict_idx = 0 };
+                    if (prev.len >= 4 and c.next_to_update < c.indexed_end - 3) {
+                        const pv: View = .{ .src = prev, .prefix_start = c.indexed_end - @as(u32, @intCast(prev.len)), .hist = &.{}, .dict_start = 0 };
                         if (!c.mid) c.insert(pv, prev.len - 3);
                     }
                     c.begin(in.len, prev.len, true);
@@ -167,12 +167,12 @@ pub const Chains = struct {
             },
             .bytes => |bytes| {
                 c.begin(in.len, bytes.len, false);
-                const hv: View = .{ .src = bytes, .prefix_idx = c.low_limit, .hist = &.{}, .dict_idx = c.low_limit };
+                const hv: View = .{ .src = bytes, .prefix_start = c.low_limit, .hist = &.{}, .dict_start = c.low_limit };
                 c.next_to_update = c.low_limit;
                 if (p.strategy == .mid) {
                     c.midFill(hv);
                 } else if (bytes.len >= 4) c.insert(hv, bytes.len - 3);
-                c.next_to_update = c.prefix_idx;
+                c.next_to_update = c.prefix_start;
                 v.hist = bytes;
             },
             .attached => |a| {
@@ -181,8 +181,8 @@ pub const Chains = struct {
             },
         }
         c.mid = p.strategy == .mid;
-        v.prefix_idx = c.prefix_idx;
-        v.dict_idx = c.low_limit;
+        v.prefix_start = c.prefix_start;
+        v.dict_start = c.low_limit;
         return switch (p.strategy) {
             .mid => c.midCompress(directive, v, out, dict),
             .chains => c.chainCompress(directive, v, out, p.searches, dict),
@@ -198,10 +198,10 @@ pub const Chains = struct {
 
     /// Index every position from `next_to_update` up to `ip` (excluded).
     fn insert(c: *Chains, v: View, ip: usize) void {
-        const target = v.prefix_idx + @as(u32, @intCast(ip));
+        const target = v.prefix_start + @as(u32, @intCast(ip));
         var idx = c.next_to_update;
         while (idx < target) : (idx += 1) {
-            const h = hashPtr(v.src[idx - v.prefix_idx ..]);
+            const h = hashPtr(v.src[idx - v.prefix_start ..]);
             const delta = @min(idx -% c.hash[h], max_distance);
             c.chain[@as(u16, @truncate(idx))] = @intCast(delta);
             c.hash[h] = idx;
@@ -225,11 +225,11 @@ pub const Chains = struct {
         favor: bool,
     ) Match {
         const src = v.src;
-        const prefix_idx = v.prefix_idx;
-        const ip_index = prefix_idx + @as(u32, @intCast(ip));
+        const prefix_start = v.prefix_start;
+        const ip_index = prefix_start + @as(u32, @intCast(ip));
         const within_start = c.low_limit + max_distance + 1 > ip_index;
         const lowest = if (within_start) c.low_limit else ip_index - max_distance;
-        const dict_idx = c.low_limit;
+        const dict_start = c.low_limit;
         const look_back: i32 = @intCast(ip - i_low);
         var attempts = max_attempts;
         var chain_pos: u32 = 0;
@@ -247,8 +247,8 @@ pub const Chains = struct {
             attempts -= 1;
             if (favor and ip_index - match_index < 8) {
                 // Matches of offset below 8 decode slower: skipped.
-            } else if (match_index >= prefix_idx) {
-                const mp: usize = match_index - prefix_idx;
+            } else if (match_index >= prefix_start) {
+                const mp: usize = match_index - prefix_start;
                 const at: usize = @intCast(@as(isize, @intCast(i_low)) + longest - 1);
                 const at_m: usize = @intCast(@as(isize, @intCast(mp)) - look_back + longest - 1);
                 if (read16(src[at..]) == read16(src[at_m..]) and read32(src[mp..]) == pattern) {
@@ -262,9 +262,9 @@ pub const Chains = struct {
                     }
                 }
             } else {
-                const mp: usize = match_index - dict_idx;
-                if (match_index <= prefix_idx - 4 and read32(v.hist[mp..]) == pattern) {
-                    const v_limit = @min(ip + (prefix_idx - match_index), i_high);
+                const mp: usize = match_index - dict_start;
+                if (match_index <= prefix_start - 4 and read32(v.hist[mp..]) == pattern) {
+                    const v_limit = @min(ip + (prefix_start - match_index), i_high);
                     var n: usize = seq.countMatch(src[ip + seq.min_match .. v_limit], v.hist[mp + seq.min_match ..]) + seq.min_match;
                     if (ip + n == v_limit and v_limit < i_high) n += seq.countMatch(src[ip + n .. i_high], src);
                     const back: i32 = if (look_back != 0) countBack(src, ip, v.hist, mp, i_low, 0) else 0;
@@ -345,9 +345,9 @@ pub const Chains = struct {
     /// a time, and take the run itself as a match where it is longer.
     fn patternStep(c: *Chains, v: View, p: *Repeat, ip: usize, i_high: usize, lowest: u32, look_back: i32, pattern: u32) RepeatStep {
         const src = v.src;
-        const prefix_idx = v.prefix_idx;
-        const dict_idx = c.low_limit;
-        const ip_index = prefix_idx + @as(u32, @intCast(ip));
+        const prefix_start = v.prefix_start;
+        const dict_start = c.low_limit;
+        const ip_index = prefix_start + @as(u32, @intCast(ip));
         const cand = p.match_index - 1;
         if (p.state == .untested) {
             if ((pattern & 0xFFFF) == (pattern >> 16) and (pattern & 0xFF) == (pattern >> 24)) {
@@ -355,10 +355,10 @@ pub const Chains = struct {
                 p.src_len = countPattern(src, ip + 4, i_high, pattern) + 4;
             } else p.state = .not;
         }
-        if (!(p.state == .confirmed and cand >= lowest and protectDictEnd(prefix_idx, cand))) return .follow;
-        const ext = cand < prefix_idx;
+        if (!(p.state == .confirmed and cand >= lowest and protectDictEnd(prefix_start, cand))) return .follow;
+        const ext = cand < prefix_start;
         const seg = if (ext) v.hist else src;
-        const mp: usize = if (ext) cand - dict_idx else cand - prefix_idx;
+        const mp: usize = if (ext) cand - dict_start else cand - prefix_start;
         if (read32(seg[mp..]) != pattern) return .follow;
         const i_limit = if (ext) v.hist.len else i_high;
         var forward = countPattern(seg, mp + 4, i_limit, pattern) + 4;
@@ -367,7 +367,7 @@ pub const Chains = struct {
             forward += countPattern(src, 0, i_high, rotated);
         }
         var back_len = reverseCountPattern(seg, mp, 0, pattern);
-        if (!ext and mp - back_len == 0 and dict_idx < prefix_idx) {
+        if (!ext and mp - back_len == 0 and dict_start < prefix_start) {
             const rotated = rotatePattern(0 -% back_len, pattern);
             back_len += reverseCountPattern(v.hist, v.hist.len, 0, rotated);
         }
@@ -376,12 +376,12 @@ pub const Chains = struct {
         const segment_len = back_len + forward;
         if (segment_len >= p.src_len and forward <= p.src_len) {
             const new_index: u32 = cand + @as(u32, @intCast(forward)) - @as(u32, @intCast(p.src_len));
-            p.match_index = if (protectDictEnd(prefix_idx, new_index)) new_index else prefix_idx;
+            p.match_index = if (protectDictEnd(prefix_start, new_index)) new_index else prefix_start;
             return .next;
         }
         const new_index: u32 = cand - @as(u32, @intCast(back_len));
-        if (!protectDictEnd(prefix_idx, new_index)) {
-            p.match_index = prefix_idx;
+        if (!protectDictEnd(prefix_start, new_index)) {
+            p.match_index = prefix_start;
             return .next;
         }
         p.match_index = new_index;
@@ -402,13 +402,13 @@ pub const Chains = struct {
     /// The tail of a search into an attached dictionary's chains.
     fn dictSearch(d: Dict, src: []const u8, ip: usize, i_low: usize, i_high: usize, ip_index: u32, lowest: u32, look_back: i32, pattern: u32, attempts_in: i32, best: *Match) void {
         const dc = d.chains;
-        const dict_end = dc.end_idx;
+        const dict_end = dc.indexed_end;
         var attempts = attempts_in;
         var dict_match = dc.hash[hashPtr(src[ip..])];
         var m = dict_match +% lowest -% dict_end;
         while (ip_index -% m <= max_distance and attempts > 0) {
             attempts -= 1;
-            const mp = dict_match -% dc.prefix_idx;
+            const mp = dict_match -% dc.prefix_start;
             if (mp + 4 <= d.bytes.len and read32(d.bytes[mp..]) == pattern) {
                 const v_limit = @min(ip + (dict_end - dict_match), i_high);
                 var mlt: i32 = @intCast(seq.countMatch(src[ip + seq.min_match .. v_limit], d.bytes[mp + seq.min_match ..]) + seq.min_match);
@@ -720,15 +720,15 @@ pub const Chains = struct {
     fn midFill(c: *Chains, v: View) void {
         const size = v.src.len;
         if (size <= 8) return;
-        const prefix_idx = v.prefix_idx;
-        const target = prefix_idx + @as(u32, @intCast(size)) - 8;
+        const prefix_start = v.prefix_start;
+        const target = prefix_start + @as(u32, @intCast(size)) - 8;
         var idx = c.next_to_update;
         while (idx < target) : (idx += 3) {
-            c.table4()[hash4(v.src[idx - prefix_idx ..])] = idx;
-            c.table8()[hash8(v.src[idx + 1 - prefix_idx ..])] = idx + 1;
+            c.table4()[hash4(v.src[idx - prefix_start ..])] = idx;
+            c.table8()[hash8(v.src[idx + 1 - prefix_start ..])] = idx + 1;
         }
         idx = if (size > 32 * 1024 + 8) target - 32 * 1024 else c.next_to_update;
-        while (idx < target) : (idx += 1) c.table8()[hash8(v.src[idx - prefix_idx ..])] = idx;
+        while (idx < target) : (idx += 1) c.table8()[hash8(v.src[idx - prefix_start ..])] = idx;
         c.next_to_update = target;
     }
 
@@ -746,13 +746,13 @@ pub const Chains = struct {
         const mflimit = src.len - seq.mf_limit;
         const match_limit = src.len - seq.last_literals;
         const ilimit = src.len - 8;
-        const prefix_idx = v.prefix_idx;
-        const ilimit_idx = prefix_idx + @as(u32, @intCast(ilimit));
-        const dict_idx = c.low_limit;
+        const prefix_start = v.prefix_start;
+        const ilimit_idx = prefix_start + @as(u32, @intCast(ilimit));
+        const dict_start = c.low_limit;
         const g_dict_end = c.low_limit;
 
         while (ip <= mflimit) {
-            const ip_index = prefix_idx + @as(u32, @intCast(ip));
+            const ip_index = prefix_start + @as(u32, @intCast(ip));
             var match_len: usize = 0;
             var distance: u32 = 0;
             found: {
@@ -762,15 +762,15 @@ pub const Chains = struct {
                     const pos8 = t8[h8];
                     t8[h8] = ip_index;
                     if (ip_index - pos8 <= max_distance) {
-                        if (pos8 >= prefix_idx) {
-                            match_len = seq.countMatch(src[ip..match_limit], src[pos8 - prefix_idx ..]);
+                        if (pos8 >= prefix_start) {
+                            match_len = seq.countMatch(src[ip..match_limit], src[pos8 - prefix_start ..]);
                             if (match_len >= seq.min_match) {
                                 distance = ip_index - pos8;
                                 break :found;
                             }
-                        } else if (pos8 >= dict_idx) {
-                            const mp = pos8 - dict_idx;
-                            const safe = @min(prefix_idx - pos8, match_limit - ip);
+                        } else if (pos8 >= dict_start) {
+                            const mp = pos8 - dict_start;
+                            const safe = @min(prefix_start - pos8, match_limit - ip);
                             match_len = seq.countMatch(src[ip..][0..safe], v.hist[mp..]);
                             if (match_len >= seq.min_match) {
                                 distance = ip_index - pos8;
@@ -785,16 +785,16 @@ pub const Chains = struct {
                     const pos4 = t4[h4];
                     t4[h4] = ip_index;
                     if (ip_index - pos4 <= max_distance) {
-                        if (pos4 >= prefix_idx) {
-                            match_len = seq.countMatch(src[ip..match_limit], src[pos4 - prefix_idx ..]);
+                        if (pos4 >= prefix_start) {
+                            match_len = seq.countMatch(src[ip..match_limit], src[pos4 - prefix_start ..]);
                             if (match_len >= seq.min_match) {
                                 // A short match: check one position on for a longer.
                                 const h8 = hash8(src[ip + 1 ..]);
                                 const pos8 = t8[h8];
                                 const m2_distance = ip_index + 1 -% pos8;
                                 distance = ip_index - pos4;
-                                if (m2_distance <= max_distance and pos8 >= prefix_idx and ip < mflimit) {
-                                    const ml2 = seq.countMatch(src[ip + 1 .. match_limit], src[pos8 - prefix_idx ..]);
+                                if (m2_distance <= max_distance and pos8 >= prefix_start and ip < mflimit) {
+                                    const ml2 = seq.countMatch(src[ip + 1 .. match_limit], src[pos8 - prefix_start ..]);
                                     if (ml2 > match_len) {
                                         t8[h8] = ip_index + 1;
                                         ip += 1;
@@ -804,9 +804,9 @@ pub const Chains = struct {
                                 }
                                 break :found;
                             }
-                        } else if (pos4 >= dict_idx) {
-                            const mp = pos4 - dict_idx;
-                            const safe = @min(prefix_idx - pos4, match_limit - ip);
+                        } else if (pos4 >= dict_start) {
+                            const mp = pos4 - dict_start;
+                            const safe = @min(prefix_start - pos4, match_limit - ip);
                             match_len = seq.countMatch(src[ip..][0..safe], v.hist[mp..]);
                             if (match_len >= seq.min_match) {
                                 distance = ip_index - pos4;
@@ -841,13 +841,13 @@ pub const Chains = struct {
             t4[hash4(src[ip + 1 ..])] = ip_index + 1;
             if (!e.sequence(src, &ip, @intCast(match_len), @intCast(distance))) return e.overflow(src, &ip, .{ .len = @intCast(match_len), .off = @intCast(distance) });
             // And its end.
-            const end_idx = prefix_idx + @as(u32, @intCast(ip));
-            if (end_idx - 2 < ilimit_idx) {
-                if (ip > 5) t8[hash8(src[ip - 5 ..])] = end_idx - 5;
-                t8[hash8(src[ip - 3 ..])] = end_idx - 3;
-                t8[hash8(src[ip - 2 ..])] = end_idx - 2;
-                t4[hash4(src[ip - 2 ..])] = end_idx - 2;
-                t4[hash4(src[ip - 1 ..])] = end_idx - 1;
+            const indexed_end = prefix_start + @as(u32, @intCast(ip));
+            if (indexed_end - 2 < ilimit_idx) {
+                if (ip > 5) t8[hash8(src[ip - 5 ..])] = indexed_end - 5;
+                t8[hash8(src[ip - 3 ..])] = indexed_end - 3;
+                t8[hash8(src[ip - 2 ..])] = indexed_end - 2;
+                t4[hash4(src[ip - 2 ..])] = indexed_end - 2;
+                t4[hash4(src[ip - 1 ..])] = indexed_end - 1;
             }
         }
         return e.last(src);
@@ -862,7 +862,7 @@ const Dict = struct {
     /// A chains dictionary searched for LZ4MID: two candidates.
     fn hcSearch(d: Dict, src: []const u8, ip: usize, ip_index: u32, i_high: usize, g_dict_end: u32) Match {
         const dc = d.chains;
-        const dict_end = dc.end_idx;
+        const dict_end = dc.indexed_end;
         var dict_match = dc.hash[Chains.hashPtr(src[ip..])];
         var m = dict_match +% g_dict_end -% dict_end;
         var longest: i32 = seq.min_match - 1;
@@ -871,7 +871,7 @@ const Dict = struct {
         const pattern = read32(src[ip..]);
         while (ip_index -% m <= max_distance and attempts > 0) {
             attempts -= 1;
-            const mp = dict_match -% dc.prefix_idx;
+            const mp = dict_match -% dc.prefix_start;
             if (mp + 4 <= d.bytes.len and read32(d.bytes[mp..]) == pattern) {
                 const v_limit = @min(ip + (dict_end - dict_match), i_high);
                 const mlt: i32 = @intCast(seq.countMatch(src[ip + seq.min_match .. v_limit], d.bytes[mp + seq.min_match ..]) + seq.min_match);
@@ -891,13 +891,13 @@ const Dict = struct {
 /// LZ4MID's search of a dictionary indexed for LZ4MID.
 fn midSearchDict(d: Dict, src: []const u8, ip: usize, ip_index: u32, i_high: usize, g_dict_end: u32) Match {
     const dc = d.chains;
-    const dict_end = dc.end_idx;
+    const dict_end = dc.indexed_end;
     const t4 = dc.hash[0 .. 1 << mid_hash_log];
     const t8 = dc.hash[1 << mid_hash_log ..][0 .. 1 << mid_hash_log];
     for ([_]u32{ t8[Chains.hash8(src[ip..])], t4[Chains.hash4(src[ip..])] }) |l_dict| {
         const m = l_dict +% g_dict_end -% dict_end;
         if (ip_index -% m <= max_distance) {
-            const mp = l_dict -% dc.prefix_idx;
+            const mp = l_dict -% dc.prefix_start;
             if (mp < d.bytes.len) {
                 const safe = @min(dict_end - l_dict, i_high - ip);
                 const mlt = seq.countMatch(src[ip..][0..safe], d.bytes[mp..]);
@@ -914,9 +914,9 @@ fn midSearchDict(d: Dict, src: []const u8, ip: usize, ip_index: u32, i_high: usi
 const View = struct {
     src: []const u8,
     begin: usize = 0,
-    prefix_idx: u32,
+    prefix_start: u32,
     hist: []const u8,
-    dict_idx: u32, // glint-ignore: P008 -- no-danger: the prefix's and the dictionary's starts on lz4's one virtual axis, subtracted from each other: one kind, not distinct identities
+    dict_start: u32,
 };
 
 /// Sequences written as lz4hc writes them, with its room checks.

@@ -3,6 +3,7 @@
 //! it.
 
 const std = @import("std");
+const instructions = @import("kernels_instructions");
 
 /// The register `reg` continued over `bytes`.
 pub fn crc32(reg: u32, bytes: []const u8) u32 {
@@ -16,20 +17,12 @@ pub fn crc32(reg: u32, bytes: []const u8) u32 {
         c = crc32x(c, std.mem.readInt(u64, rest[0..8], .little));
         rest = rest[8..];
     }
-    for (rest) |b| c = asm ("crc32b %[out:w], %[in:w], %[b:w]" // glint-ignore: P007 -- boundary: one instruction on registers; the bytes come from a bounded slice
-        : [out] "=r" (-> u32),
-        : [in] "r" (c),
-          [b] "r" (@as(u32, b)),
-    );
+    for (rest) |b| c = instructions.crc32b(c, b);
     return c;
 }
 
 inline fn crc32x(c: u32, word: u64) u32 {
-    return asm ("crc32x %[out:w], %[in:w], %[word:x]" // glint-ignore: P007 -- boundary: one instruction on registers; the word comes from a bounded slice
-        : [out] "=r" (-> u32),
-        : [in] "r" (c),
-          [word] "r" (word),
-    );
+    return instructions.crc32x(c, word);
 }
 
 /// The CRC-32C register `reg` continued over `bytes`.
@@ -37,17 +30,9 @@ pub fn crc32c(reg: u32, bytes: []const u8) u32 {
     var c = reg;
     var rest = bytes;
     while (rest.len >= 8) {
-        c = asm ("crc32cx %[out:w], %[in:w], %[word:x]" // glint-ignore: P007 -- boundary: one instruction on registers; the word comes from a bounded slice
-            : [out] "=r" (-> u32),
-            : [in] "r" (c),
-              [word] "r" (std.mem.readInt(u64, rest[0..8], .little)),
-        );
+        c = instructions.crc32cx(c, std.mem.readInt(u64, rest[0..8], .little));
         rest = rest[8..];
     }
-    for (rest) |b| c = asm ("crc32cb %[out:w], %[in:w], %[b:w]" // glint-ignore: P007 -- boundary: one instruction on registers; the bytes come from a bounded slice
-        : [out] "=r" (-> u32),
-        : [in] "r" (c),
-          [b] "r" (@as(u32, b)),
-    );
+    for (rest) |b| c = instructions.crc32cb(c, b);
     return c;
 }

@@ -234,8 +234,7 @@ pub const Compressor = struct {
     /// A tile stream of `in` into `out`, as DirectStorage reads it: a page
     /// a 64 KiB tile. Its length.
     pub fn compress(c: *Compressor, in: []const u8, out: []u8) CompressError!usize {
-        // glint-ignore: Z026 -- tile_size is not zero
-        const tiles = std.math.divCeil(usize, in.len, tile_size) catch unreachable;
+        const tiles = std.math.divCeil(usize, in.len, tile_size) catch aegis.assert.never("tile_size is not zero");
         if (tiles > max_tiles) return error.InputTooLarge;
         const data = header_len + 4 * tiles;
         if (out.len < data) return error.OutputTooSmall;
@@ -269,7 +268,6 @@ pub fn pageBound(len: usize) usize {
 
 /// The longest tile stream `compress` writes for `len` bytes.
 pub fn bound(len: usize) usize {
-    // glint-ignore: Z026 -- tile_size is not zero
-    const tiles = std.math.divCeil(usize, len, tile_size) catch unreachable;
+    const tiles = std.math.divCeil(usize, len, tile_size) catch aegis.assert.never("tile_size is not zero");
     return header_len + 4 * tiles + tiles * pageBound(tile_size) - (tiles * tile_size - len);
 }

@@ -132,7 +132,7 @@ pub fn bound(format: Format, len: usize) usize {
 
 /// LZMA2 of `len` bytes in stored chunks.
 fn storedLen(len: usize) usize {
-    return len + 3 * (std.math.divCeil(usize, len, chunk_max) catch unreachable) + 1; // glint-ignore: Z026 -- chunk_max is a nonzero constant, and an unsigned divCeil fails only on a zero divisor
+    return len + 3 * (std.math.divCeil(usize, len, chunk_max) catch aegis.assert.never("chunk_max is a nonzero constant, and an unsigned divCeil fails only on a zero divisor")) + 1;
 }
 
 pub const Finders = union(MatchFinder) {

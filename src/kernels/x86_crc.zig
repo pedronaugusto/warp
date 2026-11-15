@@ -2,24 +2,17 @@
 //! Built with SSE4.2; run only where the CPU has it.
 
 const std = @import("std");
+const instructions = @import("kernels_instructions");
 
 /// The register `reg` continued over `bytes`.
 pub fn crc32c(reg: u32, bytes: []const u8) u32 {
     var c: u64 = reg;
     var rest = bytes;
     while (rest.len >= 8) {
-        c = asm ("crc32q %[word], %[c]" // glint-ignore: P007 -- boundary: one instruction on registers; the word comes from a bounded slice
-            : [c] "=r" (-> u64),
-            : [in] "0" (c),
-              [word] "r" (std.mem.readInt(u64, rest[0..8], .little)),
-        );
+        c = instructions.crc32q(c, std.mem.readInt(u64, rest[0..8], .little));
         rest = rest[8..];
     }
     var c32: u32 = @truncate(c);
-    for (rest) |b| c32 = asm ("crc32b %[b], %[c]" // glint-ignore: P007 -- boundary: one instruction on registers; the bytes come from a bounded slice
-        : [c] "=r" (-> u32),
-        : [in] "0" (c32),
-          [b] "r" (b),
-    );
+    for (rest) |b| c32 = instructions.crc32cByte(c32, b);
     return c32;
 }

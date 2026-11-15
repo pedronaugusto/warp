@@ -16,6 +16,7 @@
 //! itself.
 
 const std = @import("std");
+const instructions = @import("kernels_instructions");
 
 /// x^n mod P, reflected (bit 31 is x^0).
 pub fn xPowModP(comptime polynomial: u32, comptime n: u32) u32 {
@@ -109,19 +110,11 @@ pub const Arm = struct {
     pub const vector = @Vector(2, u64);
 
     pub inline fn clmulLo(x: vector, k: vector) vector {
-        return asm ("pmull %[r].1q, %[x].1d, %[k].1d" // glint-ignore: P007 -- boundary: one instruction on vector registers, no memory
-            : [r] "=w" (-> vector),
-            : [x] "w" (x),
-              [k] "w" (k),
-        );
+        return instructions.pmull(x, k);
     }
 
     pub inline fn clmulHi(x: vector, k: vector) vector {
-        return asm ("pmull2 %[r].1q, %[x].2d, %[k].2d" // glint-ignore: P007 -- boundary: one instruction on vector registers, no memory
-            : [r] "=w" (-> vector),
-            : [x] "w" (x),
-              [k] "w" (k),
-        );
+        return instructions.pmull2(x, k);
     }
 };
 
@@ -141,11 +134,7 @@ pub const X86Sse = struct {
     }
 
     inline fn clmul(comptime select: u8, x: vector, k: vector) vector {
-        return asm ("pclmulqdq $" ++ std.fmt.comptimePrint("{d}", .{select}) ++ ", %[k], %[r]" // glint-ignore: P007 -- boundary: one instruction on vector registers, no memory
-            : [r] "=x" (-> vector),
-            : [x] "0" (x),
-              [k] "x" (k),
-        );
+        return instructions.pclmulqdq(select, x, k);
     }
 };
 
@@ -165,12 +154,6 @@ pub const X86Avx2 = struct {
     }
 
     inline fn clmul(comptime select: u8, x: anytype, k: @TypeOf(x)) @TypeOf(x) {
-        const R = @TypeOf(x);
-        const imm = std.fmt.comptimePrint("{d}", .{select});
-        return asm ("vpclmulqdq $" ++ imm ++ ", %[k], %[x], %[r]" // glint-ignore: P007 -- boundary: one instruction on vector registers, no memory
-            : [r] "=x" (-> R),
-            : [x] "x" (x),
-              [k] "x" (k),
-        );
+        return instructions.vpclmulqdq(select, x, k);
     }
 };

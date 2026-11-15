@@ -6,18 +6,13 @@
 //! decoders share it.
 
 const aegis = @import("aegis");
+const instructions = @import("kernels_instructions");
 
 /// `x`, as a value the optimizer cannot rewrite through: a sum built from
 /// it stays the sum written, so `chainless(ip + 3) + lit` keeps the `+ 3`
 /// off the path from `lit`, where reassociation would put it back.
 pub inline fn chainless(x: usize) usize {
-    return switch (@import("builtin").cpu.arch) {
-        .aarch64, .aarch64_be, .x86_64, .x86, .arm, .armeb, .thumb, .thumbeb, .riscv32, .riscv64 => asm ("" // glint-ignore: P007 -- boundary: an empty template; the value passes through its register
-            : [out] "=r" (-> usize),
-            : [in] "0" (x),
-        ),
-        else => x,
-    };
+    return instructions.barrier(x);
 }
 
 /// Copy a match of `len` bytes to `out[at..]` from `offset` back, with

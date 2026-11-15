@@ -280,10 +280,9 @@ fn json(p: *Prng, out: []u8) void {
             if (!put(out, &at, "\"") or !put(out, &at, key) or !put(out, &at, "\":")) return;
             var buf: [24]u8 = undefined;
             const value = switch (p.below(4)) {
-                // glint-ignore: Z026 -- 24 bytes hold any u64 in decimal
-                0 => std.mem.print(&buf, "{d}", .{seq}) catch unreachable,
-                // glint-ignore: Z026 -- 24 bytes hold any u64 in decimal
-                1 => std.mem.print(&buf, "{d}", .{p.below(1000)}) catch unreachable,
+                // 24 bytes hold any u64 in decimal.
+                0 => buf[0..std.fmt.printInt(&buf, seq, 10, .lower, .{})],
+                1 => buf[0..std.fmt.printInt(&buf, p.below(1000), 10, .lower, .{})],
                 2 => if (p.below(2) == 0) "true" else "false",
                 else => blk: {
                     const w = vocabulary.word(wordIndex(p));

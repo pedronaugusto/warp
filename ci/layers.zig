@@ -2,6 +2,7 @@
 const gantry = @import("gantry");
 
 pub const layers: []const gantry.rules.Layer = &.{
+    .{ .name = "instructions", .patterns = &.{"src/kernels/instructions.zig"} },
     .{ .name = "fold", .patterns = &.{"src/kernels/fold.zig"} },
     .{ .name = "kernels", .patterns = &.{
         "src/kernels/arm_crc.zig",
@@ -115,6 +116,7 @@ pub const layers: []const gantry.rules.Layer = &.{
 pub const entries: []const []const u8 = &.{};
 
 pub const modules: []const gantry.NamedModule = &.{
+    .{ .name = "kernels_instructions", .path = "src/kernels/instructions.zig" },
     .{ .name = "kernels_fold", .path = "src/kernels/fold.zig" },
     .{ .name = "kernels_arm_crc", .path = "src/kernels/arm_crc.zig" },
     .{ .name = "kernels_arm_pmull", .path = "src/kernels/arm_pmull.zig" },

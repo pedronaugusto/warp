@@ -27,6 +27,13 @@
         "A009"
       ],
       "reason": "the host tool behind addCompressedAsset reads one input, the asset, whose bytes are compressed whole and never parsed: the read is bounded (max_source) and nothing in it is trusted as structure"
+    },
+    {
+      "file": "src/kernels/instructions.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "the machine instructions the kernels need and Zig has no builtin for (carry-less multiplies, CRC32, the AVX2 byte sums, UDOT, an optimizer barrier): each one instruction on registers that touches no memory, inline in a kernel module built with the CPU feature it needs"
     }
   ]
 }

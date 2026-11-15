@@ -2,6 +2,8 @@
 //! chains, the byte sums and the weighted sums both by dot products. Built
 //! with the DotProd extension; run only where the CPU has it.
 
+const instructions = @import("kernels_instructions");
+
 const base = 65521;
 const u32x4 = @Vector(4, u32);
 const u8x16 = @Vector(16, u8);
@@ -69,10 +71,5 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
 }
 
 inline fn udot(acc: u32x4, a: u8x16, b: u8x16) u32x4 {
-    return asm ("udot %[r].4s, %[a].16b, %[b].16b" // glint-ignore: P007 -- boundary: one instruction on vector registers, no memory
-        : [r] "=w" (-> u32x4),
-        : [acc] "0" (acc),
-          [a] "w" (a),
-          [b] "w" (b),
-    );
+    return instructions.udot(acc, a, b);
 }

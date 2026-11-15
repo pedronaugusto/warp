@@ -7,6 +7,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Breaking
 
+- The lz4 HC finder's positions (`lz4.Compressor`'s chains, private) are named for what they are, places on lz4's one virtual axis: `prefix_idx` is `prefix_start`, `end_idx` `indexed_end`, and a view's `dict_idx` `dict_start`.
 - `bzip2.Decompress.init` and `bzip2.Decompress.Reader.init` refuse a buffer shorter than `memory` (a reader's also than its 4 KiB) with `error.BufferTooSmall`, as `bzip2.Decompressor.initBuffer` does: the BWT vector comes from the same plan, typed, where the buffer was reinterpreted as `u32`s.
 - `xz.Compressor.Error` and `xz.Compress.Error` name `LimitExceeded`: a stream whose index would pass the 16 GiB its footer can name is refused (see Fixed).
 - `snappy.Compressor.initBuffer` takes a buffer aligned to its block's alignment (8), where it named 16; its tables are typed parts of one block (`aegis.parts`), each parser's laid over the others', where they were one byte buffer reinterpreted per parser.
@@ -36,6 +37,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- No `glint-ignore` is left in warp: the kernels' machine instructions (carry-less multiplies, CRC32, the AVX2 byte sums, UDOT) and the LZ copy's optimizer barrier are one seam of their own, `src/kernels/instructions.zig` (glint.json's P007), each one instruction on registers that touches no memory; every error the code holds impossible is an `aegis.assert.never` with its reason, checked in every build; the benchmark generator prints its numbers with `std.fmt.printInt`, which cannot fail.
 - The family move: pins aegis f52eabe, ladar ee89780 and ensign 9689f8e (each on that one aegis), and in the development build preflight ci-standard f991816 and shakedown b168f3a; ci.yml regenerated.
 - glint 0.8's adoption: the codecs' unchecked code is three seams (glint.json's P007: `src/c.zig`, the zlib C ABI, whole; `src/zstd/copy.zig`, the wild and overlap copies; `src/zstd/match/probe.zig`, the match finders' raw probe), each primitive's precondition (the slack its caller keeps, what may overlap) checked in safe builds. Every other site is on slices and typed parts: brotli's decoder and encoder, the match finders, the shared LZ copy, inflate's copies, lz4, snappy, bzip2 and deflate's sequences over its graph's nodes. A contract property per codec holds it: any bytes decode reading nothing outside the input and writing nothing outside the output, each against an unmapped page, and what each encoder writes decodes back into every output length up to 40 bytes past it; a fast path's slack made one short of what its copies need fails it (zstd's 32, inflate's 273, lz4's and snappy's 32 past a match, brotli's 8 of input). The benchmark pass compares the restructured kernels against v0.4.5 before the next release.
 - Pins aegis c8982a8, still 0.2.4: six additive commits after 3c0b13e (the role declarations a linter reads, `lint_rules`), the aegis the development build's preflight selects. Nothing warp calls changed.

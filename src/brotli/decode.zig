@@ -969,7 +969,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
             command_table = t.command[s.blocks.command_tree..];
         }
         const c = codes.commands[decodeOk(&f.br, command_table)];
-        f.br.fill(false, @as(u6, c.insert_extra) + c.copy_extra) catch unreachable; // glint-ignore: Z026 -- a fast read (careful = false) has no error path; fill states its loads
+        f.br.fill(false, @as(u6, c.insert_extra) + c.copy_extra) catch aegis.assert.never("a fast read (careful = false) has no error path; fill states its loads");
         const insert = @as(u32, c.insert_offset) + @as(u24, @intCast(f.br.peek(c.insert_extra)));
         f.br.drop(c.insert_extra);
         const copy = @as(u32, c.copy_offset) + @as(u24, @intCast(f.br.peek(c.copy_extra)));
@@ -1028,7 +1028,7 @@ noinline fn fastCommands(s: *State, t: *Tables, r: *Reader, h: anytype) StepErro
                 push = symbol != 0;
             } else {
                 const range = t.distance_ranges[symbol];
-                f.br.fill(false, range.extra) catch unreachable; // glint-ignore: Z026 -- a fast fill (careful = false) has no error path; its loads are stated by fill's invariants
+                f.br.fill(false, range.extra) catch aegis.assert.never("a fast fill (careful = false) has no error path; its loads are stated by fill's invariants");
                 // `extra` is 5 bits: at most 31 of them.
                 d = range.offset +% (@as(u32, @as(u31, @intCast(f.br.peek(range.extra)))) << npostfix);
                 f.br.drop(range.extra);
@@ -1119,7 +1119,7 @@ const Fast = struct {
 
 /// A fast read's symbol: fast reads fail only on no input.
 inline fn decodeOk(r: *Reader, table: []const Entry) u32 {
-    return huffman.decode(r, false, table) catch unreachable; // glint-ignore: Z026 -- a fast read (careful = false) has no error path; fill states its loads
+    return huffman.decode(r, false, table) catch aegis.assert.never("a fast read (careful = false) has no error path; fill states its loads");
 }
 
 /// `literals` by how the current block type finds its trees.
