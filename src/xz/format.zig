@@ -4,6 +4,7 @@
 //! written as liblzma writes them.
 
 const std = @import("std");
+const aegis = @import("aegis");
 const filter_ = @import("filter.zig");
 const Crc32 = @import("../checksum/crc32.zig").Crc32;
 const Crc64Xz = @import("../checksum/crc64xz.zig").Crc64Xz;
@@ -15,6 +16,11 @@ pub const header_magic = [6]u8{ 0xfd, '7', 'z', 'X', 'Z', 0 };
 pub const footer_magic = [2]u8{ 'Y', 'Z' };
 pub const header_len = 12;
 pub const footer_len = 12;
+/// The longest index a stream footer names: its backward size, a 32-bit count of 4-byte units.
+pub const max_index_len: u64 = 1 << 34;
+/// The most index records a stream's index can hold: each takes two bytes or more (two
+/// variable-length integers), after the indicator, the count and the CRC-32.
+pub const max_records: u64 = (max_index_len - 1 - 10 - 4) / 2;
 
 /// A block's check.
 pub const Check = enum(u4) {
@@ -240,6 +246,7 @@ pub fn writeStreamHeader(out: *[header_len]u8, check: Check) void {
 
 /// A stream footer: the index's length (a multiple of 4) and the check.
 pub fn writeStreamFooter(out: *[footer_len]u8, index_len: u64, check: Check) void {
+    aegis.assert.invariant(index_len % 4 == 0 and index_len != 0 and index_len <= max_index_len, "an index a footer can name");
     std.mem.writeInt(u32, out[4..8], @intCast(index_len / 4 - 1), .little);
     out[8] = 0;
     out[9] = @backingInt(check);

@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 const Serial = @import("../Compressor.zig");
 const Lzma = @import("../../lzma/Compressor.zig");
 const format = @import("../format.zig");
+const grow = @import("../../grow.zig");
 
 pub const Options = struct {
     /// Workers, each encoding one block at a time.
@@ -55,8 +56,9 @@ const Worker = struct {
 
 options: Options,
 workers: []Worker,
-/// Private: the records of the blocks placed in the current stream.
-records: std.ArrayList(Serial.Record) = .empty,
+/// Private: the records of the blocks placed in the current stream; at most
+/// `Serial.max_records`.
+records: aegis.bounded.Buffer(Serial.Record),
 gpa: Allocator,
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
@@ -83,7 +85,11 @@ pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
         w.* = .{ .encoder = encoder, .out = try gpa.alloc(u8, blockBound(o, block)) };
         made += 1;
     }
-    return .{ .options = options, .workers = workers, .gpa = gpa };
+    const records = aegis.bounded.Buffer(Serial.Record).initAllocated(gpa, 0, Serial.max_records) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        error.CapacityExceeded => aegis.assert.never("max_records fits the address space"),
+    };
+    return .{ .options = options, .workers = workers, .gpa = gpa, .records = records };
 }
 
 pub fn deinit(c: *Compressor) void {
@@ -91,7 +97,7 @@ pub fn deinit(c: *Compressor) void {
         w.encoder.deinit();
         c.gpa.free(w.out);
     }
-    c.records.deinit(c.gpa);
+    c.records.deinit(grow.keep(Serial.Record));
     c.gpa.free(c.workers);
     c.* = undefined;
 }
@@ -115,8 +121,10 @@ pub fn compress(c: *Compressor, io: Io, in: []const u8, out: []u8) Error!usize {
     if (out.len < format.header_len) return error.OutputTooSmall;
     format.writeStreamHeader(out[0..format.header_len], o.check);
     var pos: usize = format.header_len;
-    c.records.clearRetainingCapacity();
+    c.records.clear(grow.keep(Serial.Record));
     const block: usize = @intCast(c.options.blockSize());
+    // A record for each block, room for them all made first.
+    try grow.room(Serial.Record, &c.records, Serial.max_records, if (in.len == 0) 0 else (in.len - 1) / block + 1);
     var at: usize = 0;
     var next: usize = 0;
     var busy: usize = 0;
@@ -143,7 +151,7 @@ pub fn compress(c: *Compressor, io: Io, in: []const u8, out: []u8) Error!usize {
         pos = try c.place(w, out, pos);
         i = (i + 1) % c.workers.len;
     }
-    pos += try Serial.writeIndex(out, pos, c.records.items, o.check);
+    pos += try Serial.writeIndex(out, pos, c.records.items(), o.check);
     return pos;
 }
 
@@ -153,6 +161,7 @@ fn place(c: *Compressor, w: *Worker, out: []u8, pos: usize) Serial.Error!usize {
     const len = w.record.span;
     if (out.len - pos < len) return error.OutputTooSmall;
     @memcpy(out[pos..][0..len], w.out[0..len]);
-    try c.records.append(c.gpa, w.record);
+    var record = w.record;
+    c.records.append(&record) catch aegis.assert.never("room was made for every block's record");
     return pos + len;
 }

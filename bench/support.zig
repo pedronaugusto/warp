@@ -26,6 +26,7 @@ pub const Error = std.mem.Allocator.Error || Io.Writer.Error || Io.Reader.Error 
     warp.snappy.Error || warp.snappy.Compressor.Error || warp.snappy.Compressor.InitError || warp.snappy.Compressor.StreamError ||
     warp.snappy.StreamError || warp.snappy.Compress.Error || warp.snappy.Compress.InitError || warp.snappy.parallel.Decompressor.Error ||
     warp.snappy.Decompress.InitError || warp.lz4.Decompress.InitError ||
+    warp.xz.Compressor.Error || warp.xz.Compress.Error ||
     std.compress.flate.Decompress.Error || error{ WrongLength, WrongOutput, InvalidOptions };
 
 pub const Row = shakedown.bench.Row;

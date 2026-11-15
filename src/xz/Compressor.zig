@@ -15,6 +15,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
 const format = @import("format.zig");
+const grow = @import("../grow.zig");
 const filter_ = @import("filter.zig");
 const Lzma = @import("../lzma/Compressor.zig");
 const Crc32 = @import("../checksum/crc32.zig").Crc32;
@@ -57,6 +58,9 @@ pub const InitError = Allocator.Error || error{InvalidOptions};
 pub const Error = Allocator.Error || error{
     /// `out` is shorter than the stream; `bound(...)` always holds it.
     OutputTooSmall,
+    /// The stream's index would pass the 16 GiB its footer can name: more blocks than one
+    /// xz stream holds, which a larger `block_size` avoids.
+    LimitExceeded,
 };
 
 /// Private: LZMA2's encoder.
@@ -68,15 +72,23 @@ hasher: format.Hasher,
 /// Private: a block's input with the filters applied.
 scratch: []u8 = &.{},
 /// Private: the records of the blocks `compress` has written of its stream,
-/// for the index.
-records: std.ArrayList(Record) = .empty,
+/// for the index; at most `max_records`.
+records: aegis.bounded.Buffer(Record),
 gpa: Allocator,
+
+/// The most records `records` holds: the index's, where the address space allows.
+pub const max_records: usize = @min(format.max_records, std.math.maxInt(usize) / @sizeOf(Record));
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
     if (!options.valid()) return error.InvalidOptions;
     const hasher = format.Hasher.writer(options.check) orelse return error.InvalidOptions;
-    var c: Compressor = .{ .lzma = try .init(gpa, options.lzma, options.tablesInput()), .options = options, .hasher = hasher, .gpa = gpa };
+    var c: Compressor = .{ .lzma = try .init(gpa, options.lzma, options.tablesInput()), .options = options, .hasher = hasher, .gpa = gpa, .records = undefined };
     errdefer c.lzma.deinit();
+    c.records = aegis.bounded.Buffer(Record).initAllocated(gpa, 0, max_records) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        error.CapacityExceeded => aegis.assert.never("max_records fits the address space"),
+    };
+    errdefer c.records.deinit(grow.keep(Record));
     if (options.filters.len != 0) if (options.max_input) |m| {
         c.scratch = try gpa.alloc(u8, options.blockLen(m.raw()));
     };
@@ -86,7 +98,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!Compressor {
 pub fn deinit(c: *Compressor) void {
     c.lzma.deinit();
     c.gpa.free(c.scratch);
-    c.records.deinit(c.gpa);
+    c.records.deinit(grow.keep(Record));
     c.* = undefined;
 }
 
@@ -108,16 +120,18 @@ pub fn compress(c: *Compressor, in: []const u8, out: []u8) Error!usize {
     format.writeStreamHeader(out[0..format.header_len], o.check);
     var pos: usize = format.header_len;
     const block_len = o.blockLen(in.len);
-    c.records.clearRetainingCapacity();
+    c.records.clear(grow.keep(Record));
+    // A record for each block, room for them all made first.
+    try grow.room(Record, &c.records, max_records, if (in.len == 0) 0 else (in.len - 1) / block_len + 1);
     var rest = in;
     while (rest.len != 0) {
         const n = @min(rest.len, block_len);
-        const r = try c.blockRecord(rest[0..n], out[pos..]);
-        try c.records.append(c.gpa, r);
+        var r = try c.blockRecord(rest[0..n], out[pos..]);
+        c.records.append(&r) catch aegis.assert.never("room was made for every block's record");
         pos += r.span;
         rest = rest[n..];
     }
-    pos += try writeIndex(out, pos, c.records.items, o.check);
+    pos += try writeIndex(out, pos, c.records.items(), o.check);
     return pos;
 }
 
@@ -172,6 +186,7 @@ pub fn writeIndex(out: []u8, end: usize, records: []const Record, check: Check) 
     for (records) |r| len += format.vliLen(r.unpadded) + format.vliLen(r.uncompressed);
     len += format.vliLen(records.len);
     const index_len = std.mem.alignForward(usize, len, 4) + 4;
+    if (index_len > format.max_index_len) return error.LimitExceeded;
     if (out.len - end < index_len + format.footer_len) return error.OutputTooSmall;
     const index = out[end..][0..index_len];
     @memset(index, 0);

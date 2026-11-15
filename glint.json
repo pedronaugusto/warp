@@ -20,6 +20,13 @@
         "P007"
       ],
       "reason": "the match finders' raw probe: the input addressed by index on the axis the tables store, each read's bytes checked against the input in safe builds"
+    },
+    {
+      "file": "build/asset.zig",
+      "rules": [
+        "A009"
+      ],
+      "reason": "the host tool behind addCompressedAsset reads one input, the asset, whose bytes are compressed whole and never parsed: the read is bounded (max_source) and nothing in it is trusted as structure"
     }
   ]
 }

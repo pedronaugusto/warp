@@ -6,6 +6,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const Inflate = @import("stream/Inflate.zig");
 const container = @import("container.zig");
+const grow = @import("grow.zig");
 const Io = std.Io;
 
 points: []Inflate.Checkpoint,
@@ -16,11 +17,21 @@ gpa: std.mem.Allocator,
 
 pub const BuildError = std.mem.Allocator.Error || Inflate.DecodeError || error{Truncated};
 
+/// The most boundaries an input of `len` bytes holds: a DEFLATE block takes ten bits or more,
+/// so fewer blocks end than the input has bytes.
+fn pointsMax(len: usize) usize {
+    return @min(len +| 1, std.math.maxInt(usize) / @sizeOf(Inflate.Checkpoint));
+}
+
 /// Record a boundary at least `spacing` decoded bytes after the previous
 /// one. Small blocks are coalesced; an index never invents a boundary.
 pub fn build(gpa: std.mem.Allocator, in: []const u8, accept: container.Accept, spacing: usize) BuildError!Index {
-    var points: std.ArrayList(Inflate.Checkpoint) = .empty;
-    errdefer points.deinit(gpa);
+    const most = pointsMax(in.len);
+    var points = aegis.bounded.Buffer(Inflate.Checkpoint).initAllocated(gpa, 0, most) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        error.CapacityExceeded => aegis.assert.never("pointsMax fits the address space"),
+    };
+    defer points.deinit(grow.keep(Inflate.Checkpoint));
     const window = try gpa.alloc(u8, 32768);
     defer gpa.free(window);
     const output = try gpa.alloc(u8, 65536);
@@ -36,14 +47,22 @@ pub fn build(gpa: std.mem.Allocator, in: []const u8, accept: container.Accept, s
         // Checkpoints are taken in output order.
         aegis.assert.invariant(last <= z.out_total, "last <= z.out_total");
         if (step.status == .block_end and z.out_total - last >= @max(spacing, 1)) {
-            try points.append(gpa, z.checkpoint() catch aegis.assert.never("checkpoint refuses only off a block boundary or after a failure, and decode just returned block_end"));
+            grow.room(Inflate.Checkpoint, &points, most, 1) catch |err| switch (err) {
+                error.OutOfMemory => |e| return e,
+                error.LimitExceeded => aegis.assert.never("a block ends in ten bits or more: no more boundaries than input bytes"),
+            };
+            var point = z.checkpoint() catch aegis.assert.never("checkpoint refuses only off a block boundary or after a failure, and decode just returned block_end");
+            points.append(&point) catch aegis.assert.never("room was made for the point");
 
             last = z.out_total;
         }
         if (step.status == .done or (step.status == .member_end and rest.len == 0)) break;
         if (step.status == .need_input and rest.len == 0) return error.Truncated;
     }
-    return .{ .points = try points.toOwnedSlice(gpa), .in_len = in.len - rest.len, .out_len = z.out_total, .accept = accept, .gpa = gpa };
+    // The points the index owns, exactly as many as were found.
+    const owned = try gpa.alloc(Inflate.Checkpoint, points.len());
+    @memcpy(owned, points.items());
+    return .{ .points = owned, .in_len = in.len - rest.len, .out_len = z.out_total, .accept = accept, .gpa = gpa };
 }
 
 pub fn deinit(index: *Index) void {

@@ -13,6 +13,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/kernels/x86_avx2.zig",
     } },
     .{ .name = "diagnostic", .patterns = &.{"src/Diagnostic.zig"} },
+    .{ .name = "growth", .patterns = &.{"src/grow.zig"} },
     .{ .name = "checksum kernel names", .patterns = &.{"src/checksum/kernel.zig"} },
     .{ .name = "crc", .patterns = &.{"src/checksum/crc.zig"} },
     .{ .name = "checksums", .patterns = &.{ "src/checksum/crc32.zig", "src/checksum/crc32c.zig", "src/checksum/adler32.zig", "src/checksum/crc32bzip2.zig", "src/checksum/crc64xz.zig" } },

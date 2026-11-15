@@ -15,6 +15,7 @@ const aegis = @import("aegis");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const format = @import("format.zig");
+const grow = @import("../grow.zig");
 const filter_ = @import("filter.zig");
 const Lzma = @import("../lzma/Compressor.zig");
 const LzmaCompress = @import("../lzma/Compress.zig");
@@ -51,6 +52,10 @@ pub const InitError = Allocator.Error || error{InvalidOptions};
 pub const Error = Allocator.Error || error{
     /// `finish` saw another input size than pledged.
     SizeMismatch,
+    /// Another block's record would take the stream's index past the 16 GiB its footer can
+    /// name: more blocks than one xz stream holds, which a larger `block_size` avoids. The
+    /// stream fails.
+    LimitExceeded,
     /// The stream is finished, or failed.
     Finished,
 };
@@ -99,14 +104,21 @@ block_out: u64 = 0,
 header_len: usize = 0,
 /// A block's LZMA2, staged for its header (with `block_size`).
 staged: []u8 = &.{},
-/// The index's records so far, and their count.
-records: std.ArrayList(u8) = .empty,
+/// The index's records so far, encoded, at most `max_record_bytes`; and their count.
+records: aegis.bounded.Buffer(u8),
 count: u64 = 0,
 total: u64 = 0,
 /// Bytes queued for the caller: up to three pieces, in order.
 pieces: [3][]const u8 = @splat(&.{}),
 small: [96]u8 = undefined,
-tail: std.ArrayList(u8) = .empty,
+/// The index and footer, made by `end`.
+tail: []u8 = &.{},
+
+/// The most bytes of records an index holds beside its indicator, count, padding and CRC-32,
+/// within the 16 GiB a footer names.
+const max_record_bytes: usize = @intCast(@min(format.max_index_len - 18, std.math.maxInt(usize)));
+/// The most bytes one block's record takes: two variable-length integers.
+const record_max = 2 * 10;
 
 pub fn init(gpa: Allocator, options: Options) InitError!Compress {
     if (!options.valid()) return error.InvalidOptions;
@@ -115,8 +127,14 @@ pub fn init(gpa: Allocator, options: Options) InitError!Compress {
         .lzma = try .init(gpa, .{ .lzma = options.lzma }),
         .gpa = gpa,
         .hasher = .init(options.check),
+        .records = undefined,
     };
     errdefer s.lzma.deinit();
+    s.records = aegis.bounded.Buffer(u8).initAllocated(gpa, 0, max_record_bytes) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        error.CapacityExceeded => aegis.assert.never("max_record_bytes fits the address space"),
+    };
+    errdefer s.records.deinit(grow.keep(u8));
     if (options.filters.len != 0) s.pipe = try gpa.alloc(u8, pipe_len);
     errdefer gpa.free(s.pipe);
     if (options.block_size) |b| s.staged = try gpa.alloc(u8, Lzma.bound(.lzma2, @intCast(b)));
@@ -127,15 +145,15 @@ pub fn deinit(s: *Compress) void {
     s.lzma.deinit();
     s.gpa.free(s.pipe);
     s.gpa.free(s.staged);
-    s.records.deinit(s.gpa);
-    s.tail.deinit(s.gpa);
+    s.records.deinit(grow.keep(u8));
+    s.gpa.free(s.tail);
     s.* = undefined;
 }
 
 /// Start another stream with the same options, keeping the memory.
 pub fn reset(s: *Compress) void {
     s.lzma.reset();
-    s.records.clearRetainingCapacity();
+    s.records.clear(grow.keep(u8));
     s.count = 0;
     s.total = 0;
     s.pieces = @splat(&.{});
@@ -160,7 +178,7 @@ pub fn write(s: *Compress, in: []const u8, out: []u8) Error!Step {
             .header => s.start(),
             .idle => {
                 if (ip == in.len) break;
-                s.open();
+                try s.open();
             },
             .block => {
                 if (s.options.block_size) |b| if (s.block_in == b) {
@@ -248,7 +266,12 @@ fn spec(s: *const Compress, compressed: ?u64, uncompressed: ?u64) format.BlockSp
     return .{ .compressed = compressed, .uncompressed = uncompressed, .filters = s.options.filters, .dictionary = s.options.lzma.dictionary };
 }
 
-fn open(s: *Compress) void {
+/// A block begins, room made first for its record: past the index's limit the stream fails.
+fn open(s: *Compress) Error!void {
+    grow.room(u8, &s.records, max_record_bytes, record_max) catch |err| {
+        if (err == error.LimitExceeded) s.go(.idle, .fail);
+        return err;
+    };
     s.block_in = 0;
     s.block_out = 0;
     s.hasher = .init(s.options.check);
@@ -352,7 +375,10 @@ fn close(s: *Compress, out: []u8, op: *usize) Error!bool {
     var pos: usize = 0;
     format.putVli(&vli, &pos, s.header_len + data + check);
     format.putVli(&vli, &pos, s.block_in);
-    try s.records.appendSlice(s.gpa, vli[0..pos]);
+    for (vli[0..pos]) |b| {
+        var byte = b;
+        s.records.append(&byte) catch aegis.assert.never("open made room for the block's record");
+    }
     s.count += 1;
     s.lzma.reset();
     s.go(.closing, .closed);
@@ -361,21 +387,24 @@ fn close(s: *Compress, out: []u8, op: *usize) Error!bool {
 
 /// The index of the blocks' records and the footer, queued.
 fn end(s: *Compress) Error!void {
-    s.tail.clearRetainingCapacity();
     var vli: [10]u8 = undefined;
     var pos: usize = 0;
     format.putVli(&vli, &pos, s.count);
-    try s.tail.append(s.gpa, 0);
-    try s.tail.appendSlice(s.gpa, vli[0..pos]);
-    try s.tail.appendSlice(s.gpa, s.records.items);
-    while (s.tail.items.len % 4 != 0) try s.tail.append(s.gpa, 0);
-    var crc: [4]u8 = undefined;
-    std.mem.writeInt(u32, &crc, Crc32.hash(s.tail.items), .little);
-    try s.tail.appendSlice(s.gpa, &crc);
-    const index_len = s.tail.items.len;
-    try s.tail.appendNTimes(s.gpa, 0, format.footer_len);
-    format.writeStreamFooter(s.tail.items[index_len..][0..format.footer_len], index_len, s.options.check);
-    s.pieces[0] = s.tail.items;
+    const records = s.records.items();
+    const index_len = std.mem.alignForward(usize, 1 + pos + records.len, 4) + 4;
+    const len = index_len + format.footer_len;
+    if (s.tail.len < len) {
+        s.gpa.free(s.tail);
+        s.tail = &.{};
+        s.tail = try s.gpa.alloc(u8, len);
+    }
+    const tail = s.tail[0..len];
+    @memset(tail, 0);
+    @memcpy(tail[1..][0..pos], vli[0..pos]);
+    @memcpy(tail[1 + pos ..][0..records.len], records);
+    std.mem.writeInt(u32, tail[index_len - 4 ..][0..4], Crc32.hash(tail[0 .. index_len - 4]), .little);
+    format.writeStreamFooter(tail[index_len..][0..format.footer_len], index_len, s.options.check);
+    s.pieces[0] = tail;
     s.go(.idle, .end);
 }
 
