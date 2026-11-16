@@ -388,6 +388,45 @@ const BitWriter = struct {
     }
 };
 
+test "a stream cut where the reader holds whole bytes it loaded reads as it does whole (the release tier's fuzz finding)" {
+    // The reference's stream 362 with byte 23 made 0xd2 (a bit flipped), cut at 23 and 24: the
+    // first feed ended holding whole bytes a fast read had loaded, and the next gave them back
+    // at a byte boundary to an input that never held them (Windows ReleaseSafe, warp 0e8a04d's
+    // release tier: `r.count >> 3 <= r.pos`). Every other single cut of it reads the same too.
+    const gpa = testing.allocator;
+    const c = try corpus.Corpus.parse(streams);
+    var it = c.records();
+    var r = it.next().?;
+    for (0..362) |_| r = it.next().?;
+    const bytes = try gpa.dupe(u8, r.fields[4]);
+    defer gpa.free(bytes);
+    bytes[23] = 0xd2;
+    const d = try newDecompressor(gpa);
+    defer gpa.destroy(d);
+    const out = try gpa.alloc(u8, 1 << 20);
+    defer gpa.free(out);
+    const whole = d.decompress(bytes, out, .{ .streams = .one });
+    const z = try gpa.create(Decompress);
+    defer gpa.destroy(z);
+    const window = try gpa.alloc(u8, Decompress.windowLength(24));
+    defer gpa.free(window);
+    const out2 = try gpa.alloc(u8, out.len);
+    defer gpa.free(out2);
+    var cuts: [2]usize = .{ 23, 24 };
+    for (0..bytes.len + 2) |round| {
+        if (round != 0) cuts = .{ round - 1, round - 1 };
+        z.* = .init(window, .{ .streams = .one });
+        const pieces = streamWhole(z, bytes, out2, &cuts);
+        if (whole) |a| {
+            const b = try pieces;
+            try testing.expectEqualSlices(u8, out[0..a.out_len], out2[0..b.out_len]);
+        } else |err| switch (err) {
+            error.OutputTooSmall => {},
+            else => try testing.expectError(err, pieces),
+        }
+    }
+}
+
 test "the decoder holds its worst case and no stream" {
     try testing.expect(@sizeOf(Decompressor) <= 1400 << 10);
 }

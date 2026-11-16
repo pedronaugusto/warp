@@ -127,11 +127,21 @@ pub const Reader = struct {
     /// so `in[pos..]` is the next input byte.
     pub fn unload(r: *Reader) void {
         aegis.assert.invariant(r.count & 7 == 0, "r.count & 7 == 0");
-        // The loaded bytes came from before `pos`.
-        aegis.assert.invariant(r.count >> 3 <= r.pos, "r.count >> 3 <= r.pos");
-        r.pos -= r.count >> 3;
-        r.buf = 0;
-        r.count = 0;
+        r.giveBack();
+    }
+
+    /// Give back the whole bytes loaded and not taken, keeping only the
+    /// bits of a partial byte (fewer than eight), so `in[pos..]` is the
+    /// next input byte after them. A reader made over a new input carries
+    /// fewer than eight bits in, so every whole byte loaded came from its
+    /// own `in`, before `pos`: a resumable decoder gives them back before
+    /// it keeps the reader's bits across inputs.
+    pub fn giveBack(r: *Reader) void {
+        const whole = r.count >> 3;
+        aegis.assert.invariant(whole <= r.pos, "a reader's loaded bytes came from its own input");
+        r.pos -= whole;
+        r.count &= 7;
+        r.buf &= ~(~@as(u64, 0) << r.count);
     }
 };
 

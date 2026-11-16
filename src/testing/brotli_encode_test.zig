@@ -182,9 +182,13 @@ const Case = struct {
         var prep = try prepared(gpa, dict);
         defer if (prep) |*d| d.deinit(gpa);
         const large = shakedown.gen.intRange(src, u8, 0, 7) == 0;
+        const quality = shakedown.gen.intRange(src, u4, 0, 11);
+        // Qualities 10 and 11 size the streaming binary-tree finder by the window, as the
+        // reference does: 2^window_bits nodes, 8 GiB at 30 bits, every byte of which the test
+        // allocator writes. Large windows are fuzzed below them; at them, up to 24 bits.
         const options: Compressor.Options = .{
-            .quality = shakedown.gen.intRange(src, u4, 0, 11),
-            .window_bits = shakedown.gen.intRange(src, u5, 10, if (large) 30 else 24),
+            .quality = quality,
+            .window_bits = shakedown.gen.intRange(src, u5, 10, if (large and quality < 10) 30 else 24),
             .large_window = large,
             .mode = shakedown.gen.enumValue(src, Compressor.Mode),
             .block_bits = if (shakedown.gen.boolean(src)) shakedown.gen.intRange(src, u5, 16, 24) else null,
@@ -220,11 +224,19 @@ const Case = struct {
 /// One third of the encoder's 300 fuzz cases, from a seed of its own drawn from the run's, so
 /// the three parts are 300 distinct cases and each stays inside the test runner's 120 s bound
 /// on the slowest hosted runner (Windows, Debug), where the 300 in one test passed it.
+///
+/// The kept encoders live across cases, and a native fuzzer checks each input for leaks on its
+/// own (the hardened fuzz campaign), so they take a heap of their own, checked for leaks when the
+/// part ends; what a case allocates stays the case's.
 fn fuzzPart(part: u64) !void {
-    var kept: Kept = .{ .whole = .init(testing.allocator, .{}), .stream = try .init(testing.allocator, .{}) };
-    defer kept.whole.deinit();
-    defer kept.stream.deinit();
-    try shakedown.check(testing.allocator, &kept, Case.run, .{ .cases = 100, .seed = testing.random_seed ^ (part *% 0x9e3779b97f4a7c15) });
+    var heap: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    {
+        var kept: Kept = .{ .whole = .init(heap.allocator(), .{}), .stream = try .init(heap.allocator(), .{}) };
+        defer kept.whole.deinit();
+        defer kept.stream.deinit();
+        try shakedown.check(testing.allocator, &kept, Case.run, .{ .cases = 100, .seed = testing.random_seed ^ (part *% 0x9e3779b97f4a7c15) });
+    }
+    try testing.expectEqual(0, heap.deinit());
 }
 
 test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input (1 of 3)" {

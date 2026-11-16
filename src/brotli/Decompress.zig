@@ -161,6 +161,7 @@ fn feed(z: *Decompress, in: []const u8, ip: *usize) Error!engine.Status {
         const start = z.taken -| z.carry_len;
         var r: bits.Reader = .{ .in = z.carry[0..z.carry_len], .base = start *| 8, .buf = z.bit_buf, .count = z.bit_count };
         const status = try z.run(&r);
+        r.giveBack();
         z.bit_buf = r.buf;
         z.bit_count = r.count;
         aegis.assert.invariant(r.pos <= r.in.len, "r.pos <= r.in.len");
@@ -183,6 +184,7 @@ fn feed(z: *Decompress, in: []const u8, ip: *usize) Error!engine.Status {
     }
     var r: bits.Reader = .{ .in = rest, .base = z.taken *| 8, .buf = z.bit_buf, .count = z.bit_count };
     const status = try z.run(&r);
+    r.giveBack();
     aegis.assert.invariant(r.pos <= rest.len, "r.pos <= rest.len");
     rest = rest[r.pos..];
     ip.* = in.len - rest.len;

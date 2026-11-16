@@ -13,7 +13,6 @@
   ],
   "compile_once": true,
   "hardened": true,
-  "shards": {"riscv64": 4},
   "jobs": [
     {
       "name": "sizes",
