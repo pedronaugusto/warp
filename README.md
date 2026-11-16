@@ -4,7 +4,8 @@ warp compresses and decompresses DEFLATE in Zig, raw or in RFC 1950 and gzip
 wrappers, Zstandard frames through `warp.zstd` and LZ4 blocks and frames
 through `warp.lz4`, Snappy and S2 blocks and streams through `warp.snappy`, Brotli
 streams through `warp.brotli`, xz, `.lzma` and raw LZMA/LZMA2 through `warp.xz` and
-`warp.lzma` and GDeflate through `warp.gdeflate`, and decodes bzip2 through `warp.bzip2`. It
+`warp.lzma` and GDeflate through `warp.gdeflate`, and decodes bzip2 through `warp.bzip2`
+and GIF's LZW through `warp.lzw`. It
 computes CRC-32, CRC-32C, Adler-32, bzip2's CRC-32 and xz's CRC-64. Whole-buffer and streaming calls use caller memory
 and allocate nothing after initialization, except Brotli encoding, which allocates
 as the reference does for a stream other than one its encoder wrote before, and from
@@ -477,7 +478,7 @@ CRC-64 and SHA-256 checks, indexes, stream padding and concatenated streams
 raw LZMA with its properties given apart (`decompressLzma1`: a known size with
 or without an end marker, or the marker alone, as 7z and zip store it), raw
 LZMA2 (`decompressLzma2`) and `.lzma` files (`decompressAlone`). A whole-buffer
-decoder holds one coder's probabilities (about 30 KiB) and allocates nothing;
+decoder holds one coder's probabilities (about 28 KiB) and allocates nothing;
 `Diagnostic` records the refusal's offset and reason.
 
 `xz.Decompress` and `lzma.Decompress` are resumable at every input and output
@@ -563,12 +564,32 @@ answers where to start for an offset: start a `Decompress` there with
 existing stream, as S2's `IndexStream`. `snappy-bench` measures blocks,
 streams, workers and seeks.
 
+### GIF's LZW
+
+`warp.lzw` decodes LZW as GIF codes it: codes least significant bit first,
+from a literal width of 0 to 8 (GIF's minimum code size), with clear and end
+codes, growing to 12 bits. What Wuffs's decoder (0.4.0-alpha.12, `std/lzw`)
+accepts, warp accepts, reading the same bytes and writing the same output,
+and what it refuses, warp refuses: a code past the one the table adds next
+(`InvalidStream`, `bad_code`), or an input that ends before the end code
+(`Truncated`); `Diagnostic` gives the byte and the output written before.
+A full table is kept until a clear, as GIF encoders that defer clears need.
+
+`warp.lzw.decompress(in, out, .{ .literal_width = w })` decodes one stream
+through its end code into `out` and returns the bytes it read (through the
+end code's byte; a GIF's sub-block bytes after it are the caller's) and
+wrote. `Decompress` is resumable: `decode(in, out)` takes input and gives
+output in pieces of any size, so a GIF decoder hands it each sub-block's
+bytes as it reads them, and `finish` refuses a stream cut short. Its state
+is fixed (about 28 KiB) and it allocates nothing. TIFF's and compress(1)'s
+variants are not decoded.
+
 ## Scope
 
 Raw DEFLATE, the RFC 1950 wrapper, gzip, Zstandard and LZ4 compression and decompression;
 Snappy and S2 blocks and streams, compression and decompression;
 Brotli compression and decompression; GDeflate compression and decompression on the CPU;
-bzip2 decompression; xz, `.lzma` and raw LZMA/LZMA2 compression and decompression;
+bzip2 decompression; GIF's LZW decompression; xz, `.lzma` and raw LZMA/LZMA2 compression and decompression;
 checksums, streaming adapters, dictionaries, indexes, parallel codecs, BGZF,
 Deflate64 decoding, a C stream ABI and build-time compressed assets. RFC 1950
 specifies a DEFLATE payload with a header, optional preset dictionary ID and

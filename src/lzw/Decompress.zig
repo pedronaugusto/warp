@@ -1,7 +1,7 @@
 //! Resumable LZW decoding, GIF's variant: input and output in pieces of any
-//! size, in a fixed state of about 30 KiB and no allocation. Acceptance is
-//! Wuffs's `std/lzw` decoder's (0.4.0-alpha.12), which browsers' GIF
-//! decoders share in behaviour: codes least significant bit first, from
+//! size, in a fixed state of about 28 KiB and no allocation. Acceptance is
+//! Wuffs's `std/lzw` decoder's (0.4.0-alpha.12): codes least significant
+//! bit first, from
 //! `literal_width + 1` bits, one wider each time the next code reaches a
 //! power of two, to at most 12; a full table adds nothing until a clear
 //! code; a code past the next one the table would add is refused.
@@ -212,8 +212,10 @@ pub fn finish(d: *Decompress) Error!void {
         .failed => return error.InvalidStream,
         .codes => {},
     }
+    // The bits held are short of a code; whole bytes among them are
+    // given back, as Wuffs gives them back.
     if (d.options.diagnostic) |diag| diag.* = .{
-        .offset = .fromRaw(d.taken),
+        .offset = .fromRaw(d.taken - d.n_bits / 8),
         .output = .fromRaw(d.given),
         .reason = .truncated,
     };

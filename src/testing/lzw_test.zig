@@ -1,4 +1,6 @@
-//! GIF's LZW against Wuffs's decoder: a plain decoder written here from
+//! GIF's LZW against Wuffs 0.4.0-alpha.12 (testdata/lzw-streams.corpus,
+//! captured in trials warp/lzw): every record's verdict, bytes read and
+//! output, whole and in pieces. Then a plain decoder written here from
 //! Wuffs's rules (its `std/lzw` README and decoder), an encoder that
 //! writes every shape a GIF stream takes (clears early, late or never, a
 //! full table kept, no end code, bytes after it), and the properties both
@@ -8,13 +10,17 @@ const std = @import("std");
 const testing = std.testing;
 const shakedown = @import("shakedown");
 const lzw = @import("../lzw.zig");
+const corpus = @import("corpus.zig");
+
+const streams = @embedFile("lzw-streams.corpus");
 
 const Verdict = enum { ok, bad_code, truncated };
 
 const Plain = struct {
     out: []u8,
-    /// The bytes read: through the byte holding the last code's last bit,
-    /// or all of them when the input ends first.
+    /// The bytes read: through the byte holding the last bit of the last
+    /// code read whole (the end code, a refused code, or the last before
+    /// the input ends).
     in_len: usize,
     verdict: Verdict,
 };
@@ -33,7 +39,8 @@ fn plainDecode(gpa: std.mem.Allocator, literal_width: u4, in: []const u8) !Plain
     var next = end;
     var prev: ?usize = null;
     while (true) {
-        if (bit + width > in.len * 8) return .{ .out = try out.toOwnedSlice(gpa), .in_len = in.len, .verdict = .truncated };
+        // Wuffs gives back the whole bytes after the last code it read.
+        if (bit + width > in.len * 8) return .{ .out = try out.toOwnedSlice(gpa), .in_len = (bit + 7) / 8, .verdict = .truncated };
         var code: usize = 0;
         for (0..width) |k| code |= @as(usize, (in[(bit + k) / 8] >> @intCast((bit + k) % 8)) & 1) << @intCast(k);
         bit += width;
@@ -177,17 +184,33 @@ fn warpWhole(gpa: std.mem.Allocator, literal_width: u4, in: []const u8, cap: usi
     }
 }
 
-/// warp's verdict on `in` fed in pieces of sizes the source draws, with
+/// Piece sizes from a fuzz case's source.
+const SourceCuts = struct {
+    s: *shakedown.Source,
+    fn size(c: SourceCuts, lo: usize, hi: usize) usize {
+        return shakedown.gen.intRange(c.s, usize, lo, hi);
+    }
+};
+
+/// Piece sizes from a seeded generator.
+const RandomCuts = struct {
+    r: std.Random,
+    fn size(c: RandomCuts, lo: usize, hi: usize) usize {
+        return c.r.intRangeAtMost(usize, lo, hi);
+    }
+};
+
+/// warp's verdict on `in` fed in pieces of sizes `cuts` draws, with
 /// output in pieces too.
-fn warpPieces(gpa: std.mem.Allocator, literal_width: u4, in: []const u8, s: *shakedown.Source) !Plain {
+fn warpPieces(gpa: std.mem.Allocator, literal_width: u4, in: []const u8, cuts: anytype) !Plain {
     var diag: lzw.Diagnostic = .{};
     var d: lzw.Decompress = try .init(.{ .literal_width = literal_width, .diagnostic = &diag });
     var out: std.ArrayList(u8) = .empty;
     var at: usize = 0;
     var buf: [600]u8 = undefined;
     while (true) {
-        const take = @min(in.len - at, shakedown.gen.intRange(s, usize, 1, 40));
-        const room = shakedown.gen.intRange(s, usize, 1, buf.len);
+        const take = @min(in.len - at, cuts.size(1, 40));
+        const room = cuts.size(1, buf.len);
         const step = d.decode(in[at..][0..take], buf[0..room]) catch |err| switch (err) {
             error.InvalidStream => {
                 // The failing call's bytes before the refused code are in
@@ -205,7 +228,7 @@ fn warpPieces(gpa: std.mem.Allocator, literal_width: u4, in: []const u8, s: *sha
             .output_full => {},
             .need_input => if (at == in.len and take == 0) {
                 d.finish() catch |err| switch (err) {
-                    error.Truncated => return .{ .out = try out.toOwnedSlice(gpa), .in_len = at, .verdict = .truncated },
+                    error.Truncated => return .{ .out = try out.toOwnedSlice(gpa), .in_len = @intCast(diag.offset.raw()), .verdict = .truncated },
                     else => return err,
                 };
                 return error.TestUnexpectedResult;
@@ -218,6 +241,39 @@ fn expectSame(want: Plain, got: Plain, check_in_len: bool) !void {
     try testing.expectEqual(want.verdict, got.verdict);
     try testing.expectEqualSlices(u8, want.out, got.out);
     if (check_in_len) try testing.expectEqual(want.in_len, got.in_len);
+}
+
+test "Wuffs's verdicts: every captured stream is read as Wuffs reads it, whole and in pieces" {
+    const c = try corpus.Corpus.parse(streams);
+    try testing.expectEqual(@as(usize, 7), c.fields);
+    var prng: std.Random.DefaultPrng = .init(0x77ff);
+    var it = c.records();
+    var n: usize = 0;
+    while (it.next()) |rec| : (n += 1) {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const gpa = arena.allocator();
+        const f = rec.fields;
+        const lw = try std.fmt.parseInt(u4, f[1], 10);
+        const want_verdict: Verdict = if (std.mem.eql(u8, f[3], "ok")) .ok else if (std.mem.eql(u8, f[3], "bad code")) .bad_code else if (std.mem.eql(u8, f[3], "truncated input")) .truncated else return error.BadCorpus;
+        const in_len = try std.fmt.parseInt(usize, f[4], 10);
+        const out_len = try std.fmt.parseInt(usize, f[5], 10);
+        for ([_]bool{ false, true }) |pieces| {
+            const got = if (pieces)
+                try warpPieces(gpa, lw, f[2], RandomCuts{ .r = prng.random() })
+            else
+                try warpWhole(gpa, lw, f[2], out_len);
+            var hash: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(got.out, &hash, .{});
+            var want_hash: [32]u8 = undefined;
+            _ = try std.fmt.hexToBytes(&want_hash, f[6]);
+            if (got.verdict != want_verdict or got.in_len != in_len or got.out.len != out_len or !std.mem.eql(u8, &want_hash, &hash)) {
+                std.debug.print("record {d} ({s}, width {d}, {s}): Wuffs {s} read {d} wrote {d}; warp {t} read {d} wrote {d}\n", .{ rec.index, f[0], lw, if (pieces) "in pieces" else "whole", f[3], in_len, out_len, got.verdict, got.in_len, got.out.len });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+    try testing.expect(n > 5000);
 }
 
 test "every literal width round-trips, with clears early, late and never" {
@@ -293,7 +349,8 @@ test "an input that ends before the end code is truncated, its bytes handed out"
     var diag: lzw.Diagnostic = .{};
     try testing.expectError(error.Truncated, lzw.decompress(stream, &out, .{ .diagnostic = &diag }));
     try testing.expectEqual(lzw.Diagnostic.Reason.truncated, diag.reason);
-    try testing.expectEqual(@as(u64, stream.len), diag.offset.raw());
+    // The last byte holds no whole code past the last one read.
+    try testing.expect(diag.offset.raw() == stream.len or diag.offset.raw() + 1 == stream.len);
     try testing.expectEqualStrings(data, out[0..@intCast(diag.output.raw())]);
 }
 
@@ -372,7 +429,7 @@ fn agrees(_: void, case: *shakedown.Case) !void {
     // The plain decoder's output is the room: a decoder that gives more
     // fails as OutputTooSmall.
     try expectSame(want, try warpWhole(case.gpa, lw, input, want.out.len), true);
-    try expectSame(want, try warpPieces(case.gpa, lw, input, s), true);
+    try expectSame(want, try warpPieces(case.gpa, lw, input, SourceCuts{ .s = s }), true);
 }
 
 test "fuzz: any bytes and encoded streams, cut, flipped and followed by more, answer as the plain decoder, whole and in pieces" {

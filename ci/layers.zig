@@ -160,6 +160,7 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "snappy-invalid.corpus",
         "snappy-streams.corpus",
         "snappy-stream-invalid.corpus",
+        "lzw-streams.corpus",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },
 };

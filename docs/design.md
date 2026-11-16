@@ -1,6 +1,6 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Snappy and S2 blocks, Brotli, GDeflate and xz/LZMA, bzip2 decoding, and their checksums. Production depends
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Snappy and S2 blocks, Brotli, GDeflate and xz/LZMA, bzip2 and GIF's LZW decoding, and their checksums. Production depends
 only on the standard library. Callers provide memory and, for parallel calls,
 `std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
 

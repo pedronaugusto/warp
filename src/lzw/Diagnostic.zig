@@ -2,8 +2,10 @@
 
 const aegis = @import("aegis");
 
-/// The byte of the input holding the last bit of the refused code, or,
-/// for `truncated`, the input's length.
+/// For `bad_code`, the byte of the input holding the refused code's last
+/// bit; for `truncated`, the input through the byte holding the last bit
+/// of the last code read whole, as Wuffs counts what it read (the bits
+/// after it are short of a code).
 offset: aegis.units.Bytes(u64) = .fromRaw(0),
 /// The bytes decoded before the refusal: every code before the refused one
 /// is decoded and handed out, as the reference hands them out.
