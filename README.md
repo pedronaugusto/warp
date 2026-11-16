@@ -478,7 +478,7 @@ CRC-64 and SHA-256 checks, indexes, stream padding and concatenated streams
 raw LZMA with its properties given apart (`decompressLzma1`: a known size with
 or without an end marker, or the marker alone, as 7z and zip store it), raw
 LZMA2 (`decompressLzma2`) and `.lzma` files (`decompressAlone`). A whole-buffer
-decoder holds one coder's probabilities (about 28 KiB) and allocates nothing;
+decoder holds one coder's probabilities (about 30 KiB) and allocates nothing;
 `Diagnostic` records the refusal's offset and reason.
 
 `xz.Decompress` and `lzma.Decompress` are resumable at every input and output
