@@ -1,5 +1,5 @@
 //! DEFLATE, zlib, gzip, zstd, LZ4 and Brotli: compression and decompression;
-//! bzip2 decompression; GDeflate compression and decompression on the CPU;
+//! bzip2 and GIF's LZW decompression; GDeflate compression and decompression on the CPU;
 //! CRC-32, CRC-32C, Adler-32 and bzip2's CRC-32.
 
 const checksum = @import("checksum.zig");
@@ -22,6 +22,8 @@ pub const xz = @import("xz.zig");
 pub const Bcj2 = @import("Bcj2.zig");
 /// Snappy and S2 blocks.
 pub const snappy = @import("snappy.zig");
+/// LZW, GIF's variant: decoding.
+pub const lzw = @import("lzw.zig");
 /// GDeflate pages and DirectStorage tile streams, compressed at DEFLATE's levels
 /// and decoded on the CPU.
 pub const gdeflate = @import("gdeflate.zig");

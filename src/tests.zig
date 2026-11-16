@@ -48,6 +48,8 @@ test {
     _ = @import("lzma.zig");
     _ = @import("xz.zig");
     _ = @import("Bcj2.zig");
+    _ = @import("lzw.zig");
+    _ = @import("testing/lzw_test.zig");
     _ = @import("snappy.zig");
     _ = @import("testing/snappy_test.zig");
     _ = @import("testing/zstd_fse_test.zig");

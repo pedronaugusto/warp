@@ -110,6 +110,9 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "snappy parallel coders", .patterns = &.{ "src/snappy/parallel/Compressor.zig", "src/snappy/parallel/Decompressor.zig" } },
     .{ .name = "snappy parallel", .patterns = &.{"src/snappy/parallel.zig"} },
     .{ .name = "snappy", .patterns = &.{"src/snappy.zig"} },
+    .{ .name = "lzw elements", .patterns = &.{"src/lzw/Diagnostic.zig"} },
+    .{ .name = "lzw streams", .patterns = &.{"src/lzw/Decompress.zig"} },
+    .{ .name = "lzw", .patterns = &.{"src/lzw.zig"} },
     .{ .name = "public", .patterns = &.{"src/warp.zig"} },
 };
 
