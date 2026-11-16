@@ -158,6 +158,24 @@ fn roundTrip(gpa: std.mem.Allocator, z: []const u8, in: []const u8, dict: []cons
     try testing.expectEqualSlices(u8, in, back[0..r.out_len]);
 }
 
+/// The machine the fuzz property runs on: the smallest the suite has, preflight's QEMU guests,
+/// hold 2 GiB, their run's files included, and a case holds two streaming encoders at once (a
+/// fresh one and the kept one), each written whole by the test allocator. A streaming encoder
+/// fed in pieces holds a ring of 2^(1 + max(window, block)) bytes past its window, as the
+/// reference's does, and qualities 10 and 11 add a binary-tree finder of 2^window nodes; the
+/// windows the property draws keep each encoder within `encoder_bytes`. Wider windows are the
+/// reference corpus's (25, 26 and 30 bits, byte for byte).
+const Machine = struct {
+    const encoder_bytes = 320 << 20;
+    const large_window_bits = 27;
+    const tree_window_bits = 24;
+    const block_bits = 24;
+
+    fn windowBits(quality: u4, large: bool) u5 {
+        return if (large and quality < 10) large_window_bits else tree_window_bits;
+    }
+};
+
 /// One encoder of each kind that every fuzz case uses after a fresh one,
 /// on whatever the case before it left.
 const Kept = struct {
@@ -183,15 +201,12 @@ const Case = struct {
         defer if (prep) |*d| d.deinit(gpa);
         const large = shakedown.gen.intRange(src, u8, 0, 7) == 0;
         const quality = shakedown.gen.intRange(src, u4, 0, 11);
-        // Qualities 10 and 11 size the streaming binary-tree finder by the window, as the
-        // reference does: 2^window_bits nodes, 8 GiB at 30 bits, every byte of which the test
-        // allocator writes. Large windows are fuzzed below them; at them, up to 24 bits.
         const options: Compressor.Options = .{
             .quality = quality,
-            .window_bits = shakedown.gen.intRange(src, u5, 10, if (large and quality < 10) 30 else 24),
+            .window_bits = shakedown.gen.intRange(src, u5, 10, Machine.windowBits(quality, large)),
             .large_window = large,
             .mode = shakedown.gen.enumValue(src, Compressor.Mode),
-            .block_bits = if (shakedown.gen.boolean(src)) shakedown.gen.intRange(src, u5, 16, 24) else null,
+            .block_bits = if (shakedown.gen.boolean(src)) shakedown.gen.intRange(src, u5, 16, Machine.block_bits) else null,
             .disable_literal_context_modeling = shakedown.gen.boolean(src),
             .dictionary = if (prep) |*d| d else null,
         };
@@ -249,6 +264,31 @@ test "brotli encode fuzz: any input, options, dictionary, flushes and metadata d
 
 test "brotli encode fuzz: any input, options, dictionary, flushes and metadata decode to the input (3 of 3)" {
     try fuzzPart(3);
+}
+
+test "the fuzz property's widest encoders fit the machine it runs on" {
+    // Two bytes flushed apart: the second feed grows the ring to its whole size, and each
+    // flush ends a block, which takes the match finder.
+    const p: Params = .{ .options = .{}, .size_hint = false, .flush_every = 1, .metadata = 0 };
+    for ([_]u4{ 0, 4, 9, 10, 11 }) |quality| for ([_]bool{ false, true }) |large| {
+        if (quality >= 10 and large) continue;
+        var counting: std.testing.FailingAllocator = .init(testing.allocator, .{});
+        const gpa = counting.allocator();
+        var s = try Compress.init(gpa, .{
+            .quality = quality,
+            .window_bits = Machine.windowBits(quality, large),
+            .large_window = large,
+            .block_bits = Machine.block_bits,
+        });
+        defer s.deinit();
+        const z = try stream(testing.allocator, &s, "ab", p, 64);
+        defer testing.allocator.free(z);
+        const held = counting.allocated_bytes - counting.freed_bytes;
+        testing.expect(held <= Machine.encoder_bytes) catch |err| {
+            std.debug.print("quality {d}, large {}: {d} bytes held\n", .{ quality, large, held });
+            return err;
+        };
+    };
 }
 
 test "a whole-buffer encoder keeps what a stream the size of one it wrote before needs" {
