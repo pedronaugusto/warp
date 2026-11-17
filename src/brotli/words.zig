@@ -1,9 +1,10 @@
 //! The encoder's index of the static dictionary for qualities 2-9: two
 //! buckets per 14-bit hash of a word's first four bytes, one for words of
 //! eight bytes or more and one for shorter, each naming one word. It is
-//! built at comptime as the reference builds it (longest words first, the
+//! static data (dictionary_hash.bin), as the reference's is generated; the
+//! tests build it as the reference builds it (longest words first, the
 //! last word of each length first, a word staying once the reference's
-//! "frozen" bitmap fixes it), and pinned against the reference's table.
+//! "frozen" bitmap fixes it) and pin both against the reference's table.
 
 const std = @import("std");
 const aegis = @import("aegis");
@@ -19,9 +20,28 @@ pub inline fn hash14(data: []const u8, at: usize) u32 {
 
 pub const Hash = struct { words: [buckets]u16, lengths: [buckets]u8 };
 
-pub const hash: Hash = blk: {
-    @setEvalBranchQuota(4_000_000);
-    var h: Hash = .{ .words = @splat(0), .lengths = @splat(0) };
+/// The index: each bucket's word (u16, little-endian), then each bucket's
+/// length, 0 for none. Built at comptime, it cost every program that
+/// compresses Brotli some 2 GiB of the compiler's memory.
+const hash_data = @embedFile("dictionary_hash.bin");
+
+comptime {
+    aegis.assert.invariant(hash_data.len == 3 * buckets, "the index holds a word and a length per bucket");
+}
+
+/// Bucket `i`'s word.
+pub inline fn hashWord(i: usize) u16 {
+    return std.mem.readInt(u16, hash_data[2 * i ..][0..2], .little);
+}
+
+/// Bucket `i`'s word's length, 0 for an empty bucket.
+pub inline fn hashLength(i: usize) u8 {
+    return hash_data[2 * buckets + i];
+}
+
+/// The index as the reference builds it, into `h`.
+fn buildHash(h: *Hash) void {
+    h.* = .{ .words = @splat(0), .lengths = @splat(0) };
     var global: usize = 0;
     var len: usize = dictionary.max_word;
     while (len >= dictionary.min_word) : (len -= 1) {
@@ -33,16 +53,17 @@ pub const hash: Hash = blk: {
             const key = (std.mem.readInt(u32, dictionary.data[at..][0..4], .little) *% find.hash_mul32) >> (32 - 14);
             const idx = (key << 1) + @intFromBool(len < 8);
             if (h.lengths[idx] & 0x80 == 0) {
-                const final = tables.dictionary_hash_frozen[global / 8] & (1 << (global % 8)) != 0;
-                h.words[idx] = j;
-                h.lengths[idx] = len + if (final) 0x80 else 0;
+                const bit: u3 = @truncate(global);
+                const final = tables.dictionary_hash_frozen[global / 8] & (@as(u8, 1) << bit) != 0;
+                // A word's index is below 2^15 and its length at most 24.
+                h.words[idx] = @intCast(j);
+                h.lengths[idx] = @as(u8, @intCast(len)) | @as(u8, if (final) 0x80 else 0);
             }
             global += 1;
         }
     }
     for (&h.lengths) |*l| l.* &= 0x7f;
-    break :blk h;
-};
+}
 
 pub inline fn hash15(data: []const u8, at: usize) u32 {
     return (find.load32(data, at) *% find.hash_mul32) >> (32 - 15);
@@ -234,12 +255,19 @@ test "the dictionary lookup is the reference's, and what `build` makes" {
     for (r.words, 0..) |w, j| try std.testing.expectEqual(w, lutWord(j));
 }
 
-test "the dictionary hash is the reference's" {
+test "the dictionary hash is the reference's, and what `buildHash` makes" {
     var sha: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(std.mem.sliceAsBytes(&hash.words), &sha, .{});
+    std.crypto.hash.sha2.Sha256.hash(hash_data[0 .. 2 * buckets], &sha, .{});
     try std.testing.expectEqualSlices(u8, &try hex("5f60018015074e571ec29147973866b82ada416b08325bf75d8e3c94bc83fb37"), &sha);
-    std.crypto.hash.sha2.Sha256.hash(&hash.lengths, &sha, .{});
+    std.crypto.hash.sha2.Sha256.hash(hash_data[2 * buckets ..], &sha, .{});
     try std.testing.expectEqualSlices(u8, &try hex("05720624c4ffa3f378a4b9363e32627cbecd7efc761009aa49d5e78d65b0c82b"), &sha);
+    const h = try std.testing.allocator.create(Hash);
+    defer std.testing.allocator.destroy(h);
+    buildHash(h);
+    for (h.words, h.lengths, 0..) |w, l, i| {
+        try std.testing.expectEqual(w, hashWord(i));
+        try std.testing.expectEqual(l, hashLength(i));
+    }
 }
 
 fn hex(comptime s: []const u8) ![32]u8 {

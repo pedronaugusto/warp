@@ -87,8 +87,8 @@ pub fn searchStaticDictionary(common: *Common, data: []const u8, at: usize, max_
     const n: usize = if (shallow) 1 else 2;
     for (0..n) |_| {
         common.dict_num_lookups += 1;
-        const len = words.hash.lengths[key];
-        if (len != 0 and testStaticDictionaryItem(len, words.hash.words[key], data, at, max_length, max_backward, max_distance, out)) {
+        const len = words.hashLength(key);
+        if (len != 0 and testStaticDictionaryItem(len, words.hashWord(key), data, at, max_length, max_backward, max_distance, out)) {
             common.dict_num_matches += 1;
         }
         key += 1;
