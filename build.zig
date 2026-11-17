@@ -1,19 +1,20 @@
 const std = @import("std");
 
 /// What a project that depends on warp builds: the `warp` module, the library,
-/// `libz` with `-Dc-abi`, and `addCompressedAsset` for a build that embeds a
-/// compressed file. The tests, checks, benchmarks and gate are `dev`'s.
+/// `libz` (the zlib C stream ABI), and `addCompressedAsset` for a build that
+/// embeds a compressed file. No option changes what a consumer compiles: each
+/// artifact is declared always and built only when a step asks for it
+/// (`dependency.artifact("z")`). The tests, checks, benchmarks and gate are
+/// `dev`'s.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const module = b.addModule("warp", .{ .root_source_file = b.path("src/warp.zig"), .target = target, .optimize = optimize });
     addSourceImports(b, module, target, optimize);
     b.installArtifact(b.addLibrary(.{ .name = "warp", .root_module = module }));
-    if (b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false) {
-        const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
-        addSourceImports(b, c_module, target, optimize);
-        b.installArtifact(b.addLibrary(.{ .name = "z", .root_module = c_module }));
-    }
+    const c_module = b.createModule(.{ .root_source_file = b.path("src/c.zig"), .target = target, .optimize = optimize });
+    addSourceImports(b, c_module, target, optimize);
+    b.installArtifact(b.addLibrary(.{ .name = "z", .root_module = c_module }));
 }
 
 /// warp's development: its tests, checks, examples and benchmarks under
@@ -22,9 +23,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const test_filter = b.option([]const u8, "test-filter", "Select tests by name");
-    const c_abi = b.option(bool, "c-abi", "Build the zlib C stream ABI as libz") orelse false;
-    // Declare measurement settings up front, as options of this build.
-    const package = b.dependency("warp", .{ .target = target, .optimize = optimize, .@"c-abi" = c_abi });
+    const package = b.dependency("warp", .{ .target = target, .optimize = optimize });
     const p = package.builder;
 
     const module = package.module("warp");
@@ -85,7 +84,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     check.dependOn(&tests.step);
     check.dependOn(&concurrent_tests.step);
     check.dependOn(&library.step);
-    if (c_abi) check.dependOn(&package.artifact("z").step);
+    check.dependOn(&package.artifact("z").step);
 
     const cli = b.addExecutable(.{
         .name = "warp",

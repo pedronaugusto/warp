@@ -247,7 +247,8 @@ the reader).
 
 ### C and build integration
 
-`zig build -Dc-abi=true` also builds `libz.a`. The stream ABI supports raw,
+`zig build` also builds `libz.a`, and a consumer build takes it as
+`dependency.artifact("z")`. The stream ABI supports raw,
 RFC 1950, gzip and automatic decoding, caller allocation callbacks, dictionaries,
 flushes, level changes, resets, state copies, gzip headers, full-flush recovery,
 convenience calls, state introspection, retained-history resets and checksums. C callers supply the stream ABI declarations; this package

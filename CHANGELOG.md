@@ -7,6 +7,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Breaking
 
+- `-Dc-abi` is gone: `libz` (the zlib C stream ABI) is an artifact warp always declares, built only when a step asks for it (`dependency.artifact("z")`). Zig makes a second instance of a package for every distinct set of arguments it is given, so an option that changes what a consumer compiles splits warp in two once two packages depend on it.
 - The lz4 HC finder's positions (`lz4.Compressor`'s chains, private) are named for what they are, places on lz4's one virtual axis: `prefix_idx` is `prefix_start`, `end_idx` `indexed_end`, and a view's `dict_idx` `dict_start`.
 - `bzip2.Decompress.init` and `bzip2.Decompress.Reader.init` refuse a buffer shorter than `memory` (a reader's also than its 4 KiB) with `error.BufferTooSmall`, as `bzip2.Decompressor.initBuffer` does: the BWT vector comes from the same plan, typed, where the buffer was reinterpreted as `u32`s.
 - `xz.Compressor.Error` and `xz.Compress.Error` name `LimitExceeded`: a stream whose index would pass the 16 GiB its footer can name is refused (see Fixed).
