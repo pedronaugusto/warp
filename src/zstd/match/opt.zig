@@ -205,7 +205,11 @@ const newReps = sequences.updateReps;
 
 fn findAll(comptime mls: u4, st: *State, w: Window, b: Bytes, curr: usize, end: usize, reps: [3]u32, zero_literals: bool) []const Match {
     if (curr < st.next) return &.{};
-    while (st.next < curr) st.next += insert(mls, st, w, b, st.next, end, curr);
+    while (st.next < curr) {
+        // Inserted before `st.next` is read for the sum: `insert` is handed `st`.
+        const inserted = insert(mls, st, w, b, st.next, end, curr);
+        st.next += inserted;
+    }
     st.next = curr;
     const matches = &st.workspace.matches;
     var n: usize = 0;
