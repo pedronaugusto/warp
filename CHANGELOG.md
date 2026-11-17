@@ -38,6 +38,7 @@ All notable changes to warp are documented here. The format follows
 
 ### Changed
 
+- The development build pins preflight ci-standard 9c18016 and shakedown b99b768, the family's target, where it pinned preflight 158c176 and shakedown b168f3a; ci.yml regenerated (`bay dev generate`). Its ensign is raised to 1e6ff3c, where it pinned 9689f8e: the ensign preflight 9c18016 selects.
 - The riscv64 suite under QEMU is sized by its recorded durations (`ci/durations.json`, from the release tier's record), where `shards.riscv64` fixed it at four jobs that ran out of their time.
 - No `glint-ignore` is left in warp: the kernels' machine instructions (carry-less multiplies, CRC32, the AVX2 byte sums, UDOT) and the LZ copy's optimizer barrier are one seam of their own, `src/kernels/instructions.zig` (glint.json's P007), each one instruction on registers that touches no memory; every error the code holds impossible is an `aegis.assert.never` with its reason, checked in every build; the benchmark generator prints its numbers with `std.fmt.printInt`, which cannot fail.
 - The family move: pins aegis f52eabe, ladar ee89780 and ensign 9689f8e (each on that one aegis), and in the development build preflight ci-standard f991816 and shakedown b168f3a; ci.yml regenerated.
