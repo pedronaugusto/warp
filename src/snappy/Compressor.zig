@@ -92,12 +92,14 @@ dict: DictTables,
 /// The block `init` took, which `deinit` frees; null over parts or a buffer.
 held: ?struct { gpa: Allocator, block: Block },
 
-fn Pair(comptime T: type) type {
+/// A parser's two tables, as `Work` and `DictTables` hold them.
+pub fn Pair(comptime T: type) type {
     return struct { long: []T, short: []T };
 }
 
 /// The parsers' tables, one parser's in use: they lie over one another.
-const Work = struct {
+/// Made and used only by the compressor: its fields are internal.
+pub const Work = struct {
     pub const arrangement: aegis.parts.Arrangement = .overlap;
     reference: []u16,
     fast: []u32,
@@ -106,7 +108,8 @@ const Work = struct {
 };
 
 /// A dictionary's tables for each parser, one parser's in use.
-const DictTables = struct {
+/// Made and used only by the compressor: its fields are internal.
+pub const DictTables = struct {
     pub const arrangement: aegis.parts.Arrangement = .overlap;
     fast: []u16,
     better: Pair(u16),

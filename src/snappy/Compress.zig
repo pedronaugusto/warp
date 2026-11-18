@@ -29,7 +29,8 @@ pub const Error = error{
 };
 pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
 
-const Phase = enum { active, flushing, finishing, done };
+/// Where the stream is, kept and moved only by `Compress`.
+pub const Phase = enum { active, flushing, finishing, done };
 
 options: Options,
 compressor: Compressor,

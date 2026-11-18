@@ -23,7 +23,8 @@ pub const Options = struct {
     passes: ?u32 = null,
 };
 
-const Worker = struct {
+/// A deflate worker's engine and buffers, made and run only by the compressor: its fields are internal.
+pub const Worker = struct {
     group: Io.Group = .init,
     engine: deflate.Engine,
     input: []u8,
@@ -338,7 +339,8 @@ pub const Decompressor = struct {
     }
 };
 
-const DecodeWorker = struct {
+/// An inflate worker's window and span, made and run only by the decompressor: its fields are internal.
+pub const DecodeWorker = struct {
     window: [32768]u8,
     input: []const u8,
     output: []u8,

@@ -23,7 +23,8 @@ pub const Options = struct {
     concurrency: u16 = 8,
 };
 
-const Config = struct {
+/// The settings each job is made with, set only by the compressor: its fields are internal.
+pub const Config = struct {
     params: Encoder.Params,
     encoder: Encoder.Options,
     job_len: usize,
@@ -61,7 +62,8 @@ fn config(options: Options) error{InvalidOptions}!Config {
     return .{ .params = p, .encoder = encoder, .job_len = job, .overlap = overlap, .output_len = (if (coded.compare(bound) == .lt) bound else coded).raw(), .rsync_mask = rsync_mask };
 }
 
-const Worker = struct {
+/// A worker's encoder and buffers, made and run only by the compressor: its fields are internal.
+pub const Worker = struct {
     encoder: Encoder,
     input: []u8,
     output: []u8,
@@ -79,7 +81,8 @@ const Worker = struct {
     }
 };
 
-const Job = struct { group: Io.Group align(64) = .init };
+/// A job's task group, made and awaited only by the compressor.
+pub const Job = struct { group: Io.Group align(64) = .init };
 
 const Cuts = struct {
     rolling: u64 = 0,

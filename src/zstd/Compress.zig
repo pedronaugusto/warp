@@ -33,7 +33,8 @@ pub const Step = struct { in_len: usize, out_len: usize };
 pub const Drain = struct { out_len: usize, done: bool };
 pub const Error = error{ SizeMismatch, Finished };
 
-const Phase = enum { active, flushing, finishing, done, failed };
+/// Where the stream is, kept and moved only by `Compress`.
+pub const Phase = enum { active, flushing, finishing, done, failed };
 options: Options,
 encoder: Encoder,
 params: Encoder.Params,

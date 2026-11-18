@@ -34,7 +34,8 @@ pub const Error = error{
 
 const history_len = 65536;
 
-const Phase = enum { active, flushing, finishing, done };
+/// Where the stream is, kept and moved only by `Compress`.
+pub const Phase = enum { active, flushing, finishing, done };
 
 options: Options,
 compressor: Compressor,

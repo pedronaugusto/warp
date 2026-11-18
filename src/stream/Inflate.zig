@@ -50,7 +50,8 @@ stop: enum { none, block, trees } = .none,
 error_in_len: usize = 0,
 error_out_len: usize = 0,
 
-const Tables = union {
+/// The decoding tables of the format in use, kept only by `Inflate`.
+pub const Tables = union {
     deflate: inflate_.Tables,
     deflate64: inflate_.TablesFor(true),
 };

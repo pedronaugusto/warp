@@ -14,7 +14,8 @@ pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
 pub const Error = Native.Error || Io.Cancelable;
 
 const max_sequences = 0x7f00 + 0xffff;
-const Slot = struct {
+/// A block's decode, made and run only by the decompressor: its fields are internal.
+pub const Slot = struct {
     prepared: decode.Prepared,
     kind: frame.Block.Kind = .raw,
     bytes: []const u8 = &.{},

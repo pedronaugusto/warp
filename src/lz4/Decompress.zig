@@ -67,7 +67,8 @@ fn stageLen(b: usize) usize {
     return if (b >= frame.legacy_block_len) @max(b + 4, frame.legacy_block_max) else b + 4;
 }
 
-const Phase = enum { header, skip, block_header, payload, drain, checksum, legacy_header, legacy_payload, done };
+/// Where the stream is, kept and moved only by `Decompress`.
+pub const Phase = enum { header, skip, block_header, payload, drain, checksum, legacy_header, legacy_payload, done };
 
 /// What a unit read says comes next: a frame of a kind, a block, the end
 /// mark with a checksum after it, the last frame's end or another frame,

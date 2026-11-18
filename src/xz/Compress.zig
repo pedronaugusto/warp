@@ -60,7 +60,8 @@ pub const Error = Allocator.Error || error{
     Finished,
 };
 
-const Phase = enum { header, idle, block, closing, ending, done, failed };
+/// Where the stream is, kept and moved only by `Compress`.
+pub const Phase = enum { header, idle, block, closing, ending, done, failed };
 /// `start`: the stream header is out. `open`: a block begins. `close`: its
 /// input ends. `closed`: its last bytes are queued. `end`: the input ends
 /// between blocks. `out`: the index and footer are out. `fail`: the

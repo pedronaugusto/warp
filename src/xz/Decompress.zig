@@ -68,7 +68,8 @@ pub fn windowLength(dictionary: u64) usize {
     return @intCast(engine.dictionary(dictionary));
 }
 
-const Phase = enum { stream_header, block_start, block_header, block_data, block_padding, check, index_field, index_padding, index_crc, footer, stream_padding, done };
+/// Where the stream is, kept and moved only by `Decompress`.
+pub const Phase = enum { stream_header, block_start, block_header, block_data, block_padding, check, index_field, index_padding, index_crc, footer, stream_padding, done };
 
 /// `read`: a part is read and the next follows. `index`: the index
 /// indicator where a block would start. `more`: another index field.

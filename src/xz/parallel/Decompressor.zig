@@ -39,9 +39,11 @@ pub const Error = Native.Error || Io.Cancelable;
 
 /// A block: its compressed data and where it starts in the input, its
 /// padding and stored check, and the output it fills.
-const Job = struct { header: format.BlockHeader, data: []const u8, base: u64, padding: []const u8, stored: []const u8, dest: []u8, check: format.Check };
+/// Made only by the parallel decompressor: its fields are internal.
+pub const Job = struct { header: format.BlockHeader, data: []const u8, base: u64, padding: []const u8, stored: []const u8, dest: []u8, check: format.Check };
 
-const Worker = struct {
+/// A worker's coder and block, made and run only by the parallel decompressor: its fields are internal.
+pub const Worker = struct {
     group: Io.Group = .init,
     coder: lzma = .init,
     job: Job = undefined,

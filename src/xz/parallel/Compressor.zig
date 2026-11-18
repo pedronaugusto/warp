@@ -38,7 +38,8 @@ pub const Options = struct {
 pub const InitError = Serial.InitError;
 pub const Error = Serial.Error || Io.Cancelable;
 
-const Worker = struct {
+/// A worker's encoder and output, made and run only by the parallel compressor: its fields are internal.
+pub const Worker = struct {
     group: Io.Group = .init,
     encoder: Serial,
     /// The block encoded, and its index record (its length the span).

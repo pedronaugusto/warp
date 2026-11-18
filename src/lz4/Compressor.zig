@@ -27,7 +27,8 @@ previous: []const u8 = &.{},
 gpa: ?std.mem.Allocator,
 storage: []align(64) u8,
 
-const Bound = struct {
+/// A dictionary bound to the tables, made only by the compressor: its fields are internal.
+pub const Bound = struct {
     bytes: []const u8,
     table: *fast.Table,
     chains: ?*hc.Chains,

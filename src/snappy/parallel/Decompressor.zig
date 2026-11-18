@@ -29,7 +29,8 @@ pub const Statistics = struct {
 pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
 pub const Error = streams.DecompressError || Io.Cancelable;
 
-const Worker = struct {
+/// A worker's task, made and run only by the parallel decompressor: its fields are internal.
+pub const Worker = struct {
     group: Io.Group = .init,
     refused: bool = false,
 

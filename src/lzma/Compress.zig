@@ -51,7 +51,8 @@ pub const Error = error{
     Unsupported,
 };
 
-const Phase = enum { active, finishing, done, failed };
+/// Where the stream is, kept and moved only by `Compress`.
+pub const Phase = enum { active, finishing, done, failed };
 /// `finish`: the input ends. `end`: the stream's last bytes are out.
 /// `fail`: the pledged size was not met. `reset`: another stream begins.
 const Event = enum { finish, end, fail, reset };

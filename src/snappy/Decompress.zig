@@ -41,7 +41,8 @@ pub const InitError = error{
     BufferTooSmall,
 };
 
-const Phase = enum { header, body, skip, drain };
+/// Where the stream is, kept and moved only by `Decompress`.
+pub const Phase = enum { header, body, skip, drain };
 
 /// What a unit read says comes next: a chunk read whole, one to read past,
 /// or a block handed out.

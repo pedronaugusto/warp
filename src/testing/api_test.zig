@@ -415,3 +415,26 @@ fn roundTripAnything(_: void, case: *shakedown.Case) !void {
 test "fuzz: any input at any level, strategy and container comes back whole" {
     try shakedown.check(testing.allocator, {}, roundTripAnything, .{ .cases = 300 });
 }
+
+test "each type a public field holds is named from warp's public paths" {
+    const warp = @import("../warp.zig");
+    const named = .{
+        warp.bzip2.parallel.Decompressor.Worker,  warp.bzip2.parallel.Decompressor.Outcome,
+        warp.lz4.Compress.Phase,                  warp.lz4.Compressor.Bound,
+        warp.lz4.Decompress.Phase,                warp.lzma.Compress.Phase,
+        warp.parallel.Worker,                     warp.parallel.DecodeWorker,
+        warp.snappy.Compress.Phase,               warp.snappy.Compressor.Pair(u16),
+        warp.snappy.Compressor.Work,              warp.snappy.Compressor.DictTables,
+        warp.snappy.Decompress.Phase,             warp.snappy.parallel.Compressor.Worker,
+        warp.snappy.parallel.Decompressor.Worker, warp.Deflate.Closing,
+        warp.Deflate.Closing.Stage,               warp.Deflate.Mode,
+        warp.Deflate.Change,                      warp.Inflate.Tables,
+        warp.xz.Compress.Phase,                   warp.xz.Decompress.Phase,
+        warp.xz.parallel.Compressor.Worker,       warp.xz.parallel.Decompressor.Job,
+        warp.xz.parallel.Decompressor.Worker,     warp.zstd.Compress.Phase,
+        warp.zstd.Decompress.Phase,               warp.zstd.parallel.Config,
+        warp.zstd.parallel.Worker,                warp.zstd.parallel.Job,
+        warp.zstd.parallel.Decompressor.Slot,
+    };
+    try testing.expectEqual(31, named.len);
+}

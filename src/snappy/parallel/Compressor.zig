@@ -22,7 +22,8 @@ pub const Options = struct {
 pub const InitError = Serial.InitError;
 pub const Error = Serial.StreamError || Io.Cancelable;
 
-const Worker = struct {
+/// A worker's compressor and output, made and run only by the parallel compressor: its fields are internal.
+pub const Worker = struct {
     group: Io.Group = .init,
     compressor: Serial,
     /// The chunk made, and its length.

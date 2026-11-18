@@ -21,7 +21,8 @@ pub const Status = enum { need_input, output_full, frame_end, done };
 pub const Step = struct { in_len: usize, out_len: usize, status: Status };
 pub const Error = Decompressor.Error;
 
-const Phase = enum { header, skip, block_header, payload, drain, checksum, frame_end, done };
+/// Where the stream is, kept and moved only by `Decompress`.
+pub const Phase = enum { header, skip, block_header, payload, drain, checksum, frame_end, done };
 
 /// What a unit read says comes next: a frame of a kind, another block,
 /// the checksum or the frame's end after the last block, the last frame's

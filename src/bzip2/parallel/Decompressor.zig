@@ -54,7 +54,8 @@ pub const Error = Native.Error || Io.Cancelable;
 const block_magic: u64 = 0x3141_5926_5359;
 const magic_bits = 48;
 
-const Worker = struct {
+/// A worker's block and buffers, made and run only by the decompressor: its fields are internal.
+pub const Worker = struct {
     group: Io.Group = .init,
     tt: []u32,
     out: []u8,
@@ -91,7 +92,8 @@ const Worker = struct {
     }
 };
 
-const Outcome = enum {
+/// How a worker's block went, set by the worker and read by the decompressor.
+pub const Outcome = enum {
     /// The block decoded whole into the worker's output.
     whole,
     /// Its output fills the worker's; the rest waits in its state.

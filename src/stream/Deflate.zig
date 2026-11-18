@@ -95,11 +95,13 @@ pub const Options = struct {
 
 /// A flush or finish under way: the input still buffered is parsed, then
 /// the rest to the mode's end, then the mark written.
-const Closing = struct {
+/// Kept and moved only by `Deflate`: its fields are internal.
+pub const Closing = struct {
     mode: Mode,
     step: Stage = .buffered,
 
-    const Stage = enum { buffered, parse, mark, done };
+    /// The closing's steps, moved only by its machine.
+    pub const Stage = enum { buffered, parse, mark, done };
     const Event = enum { pumped, parsed, marked };
     const Machine = aegis.state.Machine(Stage, Event, .{ .initial = .buffered, .terminal = &.{.done}, .edges = &.{
         .{ .from = .buffered, .on = .pumped, .to = .parse },
@@ -113,8 +115,10 @@ const Closing = struct {
         c.step = comptime Machine.after(from, on);
     }
 };
-const Mode = enum { partial, sync, full, block, finish };
-const Change = struct { level: u4, strategy: Strategy };
+/// What a flush or finish ends with, kept only by `Deflate`.
+pub const Mode = enum { partial, sync, full, block, finish };
+/// The level and strategy a `setLevel` under way changes to, kept only by `Deflate`.
+pub const Change = struct { level: u4, strategy: Strategy };
 
 /// The engine's tables, the window and the pending output, one block.
 const Parts = struct { engine: deflate.Engine.Parts, window: []u8, pending: []u8 };
