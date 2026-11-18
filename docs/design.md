@@ -1,22 +1,25 @@
 # Design
 
-warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Snappy and S2 blocks, Brotli, GDeflate and xz/LZMA, bzip2 and GIF's LZW decoding, and their checksums. Production depends
-only on the standard library. Callers provide memory and, for parallel calls,
-`std.Io`. Initialization reserves bounded storage; codec calls allocate nothing.
+warp owns DEFLATE, zlib, gzip, Zstandard, LZ4, Snappy and S2 blocks, Brotli, GDeflate and xz/LZMA, bzip2 and GIF's LZW decoding, and the family's checksums. Production depends
+on std, aegis and ladar (CPU features). Callers provide memory and, for parallel calls,
+`std.Io`. Initialization reserves bounded storage; codec calls allocate nothing (Brotli's encoder excepted, below).
 
 ## Ownership and layers
 
 `ci/layers.zig` declares the production graph from lowest layer to public root.
-The build exports `checksums`, `deflate` and `zstd` independently, and `warp`
-aggregates the same module instances. DEFLATE and Zstandard share one bit writer;
-DEFLATE and the aggregate share one checksum module and CPU dispatch. Private
-CRC polynomial operations serve that module and the optional C ABI.
+The build exports one module, `warp`, and declares two artifacts, `libwarp` and
+`libz` (the zlib-compatible C stream interface, `src/c.zig`), built only when a step
+asks for them. DEFLATE and Zstandard share one bit writer; every codec shares one
+checksum module and its CPU dispatch. Private CRC polynomial operations serve that
+module and the C interface.
 Bits, checksum kernels and CPU detection support entropy and match search.
 DEFLATE encoding and decoding are independent engines. Container owners wrap
 those engines; whole-buffer and streaming values share them. Adapters handle
 `std.Io.Reader` and `std.Io.Writer`. Indexes, BGZF and parallel jobs sit above the
 codec values. The optional C interface translates stream operations at that
 boundary. `src/warp.zig` exposes supported calls, rather than engine namespaces.
+Archive formats (tar, zip, 7z) are hold's, on warp's codecs; HTTP content coding and
+WebSocket framing are uplink's; git's object and pack formats are relic's.
 
 Zstandard has independent bits, entropy, match search, block engines and frame
 owners beneath `warp.zstd`. It imports no DEFLATE engine. Dictionaries own parsed
@@ -77,8 +80,8 @@ nothing the loop holds is kept alive across a call (on x86-64 it would be spille
 to the stack every round). The output adapter says whether a match reaches the
 output, copies it, or copies it from the history out of line. Smaller streaming
 windows retain explicit distance checks.
-Parallel values own worker storage and ordered job state. CPU detection owns the
-single cached feature choice. There is no shared mutable codec state.
+Parallel values own worker storage and ordered job state. ladar holds the process's
+one detected feature set. There is no shared mutable codec state.
 
 Each resumable decoder's phase is an `aegis.state.Machine`: the edges are
 declared beside the phases, and one function per decoder changes the phase,
@@ -198,6 +201,50 @@ decodes each block into its range of the output, falling back to the
 whole-buffer decoder for any refusal so the answer is always its own. The
 index of a whole-buffer stream is gathered by reading back its own chunks,
 so no entry storage is held; the resumable encoder keeps its entries.
+
+## Decisions
+
+Scope is set by the best implementation of each format in any language: what its reference library does, warp
+does, and what it refuses or leaves experimental, warp leaves out. Speed targets are measured against the fastest
+implementations in private trials, never in this repository; they steer work and do not block a landing.
+
+- **Acceptance is the reference's.** Each decoder accepts exactly what its format's reference accepts and refuses
+  what it refuses, for the same reason, pinned by a captured differential corpus: zlib 1.3.1's inflate (header and
+  trailer checks always on), zstd 1.5.7, lz4 1.10, google/brotli 1.2.1, libbz2 1.0.8, liblzma 5.8.4, google's
+  Snappy decoder and S2's. One deliberate difference: LZ4 blocks that break only the encoder's end-of-block rules are
+  accepted, because the reference's answer there depends on the caller's spare output and warp's never does.
+- **Output sizes.** DEFLATE: per level, each standard corpus's total no larger than zlib's, the one size gate in CI.
+  zstd: within 0.5% of the reference per level. LZ4, Brotli, xz/LZMA, Snappy and S2 write their reference's bytes, so
+  their ratio is the reference's by construction and the captured streams pin the encoders. GDeflate's lane writer
+  re-serializes the reference's decoded symbols to its exact bytes, so the layout is the format and not only what
+  one decoder reads; its parser is DEFLATE's own.
+- **One engine per direction**, whole-buffer calls on the caller's slices and streaming values around the same
+  engine; sans-I/O engines with `std.Io.Reader`/`Writer` adapters on top, and only parallel calls take an `Io`.
+- **Safe at the buffer's end.** A fast loop never reads outside its input or writes outside its output; a careful
+  loop takes the tail. Margins (`inflate_margin`) are speed hints, never conditions of safety.
+- **Zero allocations per call.** State is caller-held; `memory(options)` is exact; `init(gpa, …)` allocates once and
+  `initBuffer` takes the caller's memory. A call clears nothing: positions are virtual and continue across calls,
+  so setup is O(input), never O(table). Brotli's encoder alone keeps the reference's per-stream buffers (its q10–11
+  buffers depend on the input), reused across streams by `reset`.
+- **Determinism.** Output depends on input, options, dictionary and flush points only; never on chunking, CPU,
+  kernel or worker count (parallel zstd writes the same frame for any worker count). gzip headers default to MTIME 0
+  and OS 255.
+- **Levels are numbers** on each format's own scale: DEFLATE 0 stored, 1–9 zlib's, 10–12 the near-optimal band
+  (13–15 mean 12), default 6, compared with others at equal output size, not equal level number; zstd −131072..22
+  (default 3); LZ4 −65536..12 on lz4frame's scale (default 1); Brotli 0–11 (default 11); xz presets 0–9 and extreme;
+  Snappy's levels 1–2 and S2's fast, better and best.
+- **Checksums** CRC-32, CRC-32C, Adler-32, CRC-32/BZIP2 and CRC-64/XZ, behind one CPU dispatch with folding kernels
+  per feature module; XXH32 and XXH64 come from std, which already runs them at memory speed.
+- **DEFLATE for RFC 7692:** raw streams, `sync` flush, window bits 8–15 on both sides, `reset(.keep_history)` for
+  context takeover, and dictionary priming so a connection keeps only its 2^w history.
+- **Defaults that follow the format's tools:** every gzip member decoded (`members = .one` stops after the first);
+  zstd's `max_window` 128 MiB, the reference's decode limit; LZ4 frames as the `lz4` command writes them (4 MiB
+  independent blocks, content checksum); Brotli and bzip2 read one stream or all concatenated ones (`streams`).
+- **Out of scope:** archive containers; bzip2 encoding (nobody writes new bzip2); zstd's pre-1.0 legacy formats, its
+  C ABI and sequence-level API; Brotli's serialized shared dictionaries (experimental in the reference) and several
+  prefix dictionaries in one stream; S2's LZ4 converters and self-extracting archives; GPU decoding of GDeflate;
+  lzip and 7z's BCJ2 (a 7z coder over several inputs, hold's); callback decoding, raw token APIs and a C header (C
+  callers declare the stream interface themselves); compression at comptime (the build step runs a host program).
 
 ## Invariants
 
