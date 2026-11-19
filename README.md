@@ -199,6 +199,9 @@ as an aegis count of bits (DEFLATE) or bytes (zstd).
 
 `Inflate.decode` and `Deflate.write`, `flush`, and `finish` resume at any input
 or output byte. `Inflate.Reader` and `Deflate.Writer` adapt them to `std.Io`.
+`Inflate.Contiguous` decodes into one output the caller owns, which is the
+stream's history: no window, and each `decode(in, limit)` writes at most `limit`
+bytes and returns, so a long stream decodes in bounded steps.
 Window sizes are 8-15 bits; resets may keep history for context takeover.
 `Deflate.Options.max_level = 12` reserves the storage needed to change from a
 lower level to a near-optimal one. `Compressor.Options.passes` and

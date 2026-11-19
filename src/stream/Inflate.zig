@@ -9,6 +9,8 @@
 //!
 //! `Reader` is a `std.Io.Reader` whose own buffer is the history: it
 //! decodes into the buffer in place, and never copies a byte twice.
+//! `Contiguous` decodes into one output the caller owns, which is the
+//! history: no window, and a bounded number of bytes per call.
 
 const Inflate = @This();
 
@@ -344,11 +346,15 @@ fn step(z: *Inflate, in: []const u8, out: []u8, op: usize, start: usize, history
             return e;
         },
     };
-    // Whole bytes read ahead go back to the caller.
-    const in_len = s.consumed();
-    const partial: u3 = @truncate(s.bitsleft);
-    z.bitsleft = partial;
-    z.bitbuf = s.bitbuf & ~(~@as(u64, 0) << partial);
+    // Whole bytes read ahead go back to the caller: those of this call's input,
+    // the buffer's newest. Bytes it carries from an earlier call (`absorb`) were
+    // taken there, and stay in hand: a call that stops before reading past them
+    // (its output full) hands back all of its own input and keeps them.
+    const back = @min(s.bitsleft / 8, s.ip);
+    const in_len = s.ip - back;
+    const kept: u6 = @intCast(s.bitsleft - 8 * back);
+    z.bitsleft = kept;
+    z.bitbuf = s.bitbuf & ~(~@as(u64, 0) << kept);
     z.in_total += in_len;
     return .{
         .in_len = in_len,
@@ -427,6 +433,55 @@ const Resume = struct {
         s.bitsleft = r.bitsleft;
         s.virtual = r.virtual;
         s.op = r.op;
+    }
+};
+
+/// Decoding into one output the caller owns, which is the stream's own
+/// history: no window is kept and nothing is copied out of the output.
+/// Each call decodes at most `limit` more bytes and returns, so a stream of
+/// any length is decoded in bounded steps (a cancel checked between them).
+pub const Contiguous = struct {
+    /// Private: the stream's state; it keeps no window.
+    inflate: Inflate,
+    /// Private: the output.
+    out: []u8,
+    /// Private: the bytes of `out` written so far.
+    op: usize = 0,
+    /// Private: where the current member's output starts in `out`, and the
+    /// history before it (a raw stream's dictionary, or nothing).
+    start: usize = 0,
+    history: inflate_.History = .{},
+
+    /// The whole output is `out`; a stream that encodes more is stopped at
+    /// its end (`output_full` with `written().len == out.len`).
+    pub fn init(out: []u8, options: Options) error{InvalidOptions}!Contiguous {
+        try checkOptions(options);
+        return .{ .inflate = .{ .tables = tablesFor(options), .options = options, .window = &.{} }, .out = out };
+    }
+
+    /// Decode from `in`, at most `limit` more bytes of output. Call again
+    /// with the input after `in_len` until `done` (or `member_end` at the
+    /// end of the input). `output_full` is the limit reached, or the whole
+    /// output when `written().len == out.len`; `out_len` counts this
+    /// call's bytes.
+    pub fn decode(c: *Contiguous, in: []const u8, limit: usize) DecodeError!Step {
+        const before = c.op;
+        const end = before + @min(limit, c.out.len - before);
+        const stepped = try c.inflate.step(in, c.out[0..end], before, c.start, c.history);
+        // What the step wrote follows what was written, within the limit.
+        aegis.assert.invariant(before <= stepped.op, "before <= stepped.op");
+        aegis.assert.invariant(stepped.op <= end, "stepped.op <= end");
+        c.op = stepped.op;
+        if (stepped.replaced) {
+            c.history = stepped.history;
+            c.start = stepped.start;
+        }
+        return .{ .in_len = stepped.in_len, .out_len = stepped.op - before, .status = stepped.status };
+    }
+
+    /// The bytes decoded so far: `out`'s first.
+    pub fn written(c: *const Contiguous) []u8 {
+        return c.out[0..c.op];
     }
 };
 

@@ -384,3 +384,134 @@ test "a dictionary: raw streams reach into it, zlib streams name it, and reset k
     try testing.expectEqual(Inflate.Status.done, r2.status);
     try testing.expectEqualSlices(u8, second, out[0..r2.out_len]);
 }
+
+/// A stream decoded into one output of `out_len` bytes, in steps of at
+/// most the limits `random` gives (or the whole output), the input in
+/// pieces too.
+fn decodeContiguous(gpa: std.mem.Allocator, stream: []const u8, out_len: usize, options: Inflate.Options, random: ?std.Random) !Outcome {
+    const out = try gpa.alloc(u8, out_len);
+    errdefer gpa.free(out);
+    var z: Inflate.Contiguous = try .init(out, options);
+    var at: usize = 0;
+    var last: Inflate.Status = .need_input;
+    while (true) {
+        const in_len = if (random) |r| @min(stream.len - at, 1 + r.uintLessThan(usize, 40)) else stream.len - at;
+        const limit = if (random) |r| r.uintLessThan(usize, 3000) else out_len;
+        const before = z.written().len;
+        const step = z.decode(stream[at..][0..in_len], limit) catch |err| return .{ .out = try gpa.realloc(out, z.written().len), .in_len = at, .result = err };
+        try testing.expect(step.out_len <= limit);
+        try testing.expectEqual(before + step.out_len, z.written().len);
+        at += step.in_len;
+        last = step.status;
+        switch (step.status) {
+            .done => break,
+            .output_full => if (z.written().len == out_len) break,
+            .need_input, .member_end => if (at == stream.len and step.out_len == 0 and in_len == 0) break,
+            .block_end => {},
+        }
+    }
+    return .{ .out = try gpa.realloc(out, z.written().len), .in_len = at, .result = last };
+}
+
+test "every stream in the corpus decodes into one output that is its own history, in bounded steps" {
+    const gpa = testing.allocator;
+    const c = try corpus.Corpus.parse(corpus.streams);
+    var it = c.records();
+    var prng: std.Random.DefaultPrng = .init(0xc0471);
+    var count: usize = 0;
+    while (it.next()) |r| {
+        const in = try corpus.input(gpa, r.fields[2]);
+        defer gpa.free(in);
+        const dictionary = if (r.fields[3].len != 0) try corpus.input(gpa, r.fields[3]) else try gpa.alloc(u8, 0);
+        defer gpa.free(dictionary);
+        const stream = r.fields[5];
+        const bits: u4 = if (std.mem.find(u8, r.fields[1], "wbits=")) |i| blk: {
+            var words = std.mem.tokenizeScalar(u8, r.fields[1][i + 6 ..], ' ');
+            break :blk try std.fmt.parseInt(u4, words.next().?, 10);
+        } else 15;
+        const options: Inflate.Options = .{ .accept = accept(r.fields[4]), .dictionary = dictionary, .window_bits = bits };
+        // Every 5th stream in small steps and pieces; every stream whole.
+        const random: ?std.Random = if (r.index % 5 == 0 and in.len < 300_000) prng.random() else null;
+        const got = try decodeContiguous(gpa, stream, in.len, options, random);
+        defer gpa.free(got.out);
+        const status = got.result catch |err| {
+            std.debug.print("{s} {s} {s}: {t}\n", .{ r.fields[0], r.fields[1], r.fields[2], err });
+            return err;
+        };
+        testing.expect(status == .done or status == .member_end) catch |err| {
+            std.debug.print("{s} {s} {s}: ended {t} after {d} of {d}\n", .{ r.fields[0], r.fields[1], r.fields[2], status, got.in_len, stream.len });
+            return err;
+        };
+        try testing.expectEqual(stream.len, got.in_len);
+        try testing.expectEqualSlices(u8, in, got.out);
+        count += 1;
+    }
+    try testing.expect(count > 3000);
+}
+
+test "one output: a stream longer than it stops at its end, and gzip members each start their own history" {
+    const gpa = testing.allocator;
+    const data = try gen.alloc(gpa, .json, 8, 100_000);
+    defer gpa.free(data);
+    var c = try Compressor.init(gpa, .{});
+    defer c.deinit();
+    const stream = try gpa.alloc(u8, Compressor.bound(data.len, .{}));
+    defer gpa.free(stream);
+    const n = try c.compress(data, stream, .{});
+    // One byte short: the output fills and the stream goes on.
+    const short = try decodeContiguous(gpa, stream[0..n], data.len - 1, .{}, null);
+    defer gpa.free(short.out);
+    try testing.expectEqual(Inflate.Status.output_full, try short.result);
+    try testing.expectEqualSlices(u8, data[0 .. data.len - 1], short.out);
+    // A limit of nothing makes no progress and says so.
+    var out: [64]u8 = undefined;
+    var z: Inflate.Contiguous = try .init(&out, .{});
+    try testing.expectEqual(@as(usize, 0), (try z.decode(stream[0..n], 0)).out_len);
+    // Two gzip members: the second's matches reach only into its own output.
+    var a: [128]u8 = undefined;
+    const a_len = try c.compress("first member, first member, ", &a, .{ .container = .gzip });
+    var b: [128]u8 = undefined;
+    const b_len = try c.compress("second member, second member", &b, .{ .container = .gzip });
+    const both = try std.mem.concat(gpa, u8, &.{ a[0..a_len], b[0..b_len] });
+    defer gpa.free(both);
+    z = try .init(&out, .{ .accept = .gzip });
+    const first = try z.decode(both, out.len);
+    try testing.expectEqual(Inflate.Status.member_end, first.status);
+    const second = try z.decode(both[first.in_len..], out.len);
+    try testing.expectEqual(Inflate.Status.member_end, second.status);
+    try testing.expectEqualStrings("first member, first member, second member, second member", z.written());
+    // A container Deflate64 cannot have is refused.
+    try testing.expectError(error.InvalidOptions, Inflate.Contiguous.init(&out, .{ .format = .deflate64 }));
+}
+
+test "a call that stops on a full output before reading past the bits it carries keeps them, and hands back only its own input" {
+    const gpa = testing.allocator;
+    const data = try gen.alloc(gpa, .json, 9, 20_000);
+    defer gpa.free(data);
+    var c = try Compressor.init(gpa, .{});
+    defer c.deinit();
+    const stream = try gpa.alloc(u8, Compressor.bound(data.len, .{}));
+    defer gpa.free(stream);
+    const n = try c.compress(data, stream, .{});
+    var window: [1 << 15]u8 = undefined;
+    var z: Inflate = try .init(&window, .{});
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var at: usize = 0;
+    var byte: [1]u8 = undefined;
+    // A byte of input at a time, each offered first with no room and then with one
+    // byte of it: bits carried from a byte taken earlier are never handed back.
+    while (true) {
+        const piece = stream[at..@min(n, at + 1)];
+        const none = try z.decode(piece, byte[0..0]);
+        try testing.expectEqual(@as(usize, 0), none.out_len);
+        at += none.in_len;
+        const one = try z.decode(stream[at..@min(n, at + 1)], &byte);
+        try out.appendSlice(gpa, byte[0..one.out_len]);
+        at += one.in_len;
+        if (one.status == .done) break;
+        try testing.expect(at <= n);
+    }
+    try testing.expectEqual(n, at);
+    try testing.expectEqualSlices(u8, data, out.items);
+}
