@@ -5,6 +5,8 @@ All notable changes to warp are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-22
+
 ### Breaking
 
 - `-Dc-abi` is gone: `libz` (the zlib C stream ABI) is an artifact warp always declares, built only when a step asks for it (`dependency.artifact("z")`). Zig makes a second instance of a package for every distinct set of arguments it is given, so an option that changes what a consumer compiles splits warp in two once two packages depend on it.
