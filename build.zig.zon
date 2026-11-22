@@ -6,12 +6,12 @@
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "docs", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#f52eabef3ec6534c3a74bea3a3b7d95a91ce2581",
-            .hash = "aegis-0.2.4-rsxouoquDQApwYDuGdd2YyEeTeNp6CnJoOZKdVCfc3jt",
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.4.0#4739dccd71cfc16b0c15bc27e2d7dca76de9bc21",
+            .hash = "aegis-0.4.0-rsxouv1KDgCdGc-mhY-qBfyE70ar4OQiGGKHKndirWnQ",
         },
         .ladar = .{
-            .url = "git+https://github.com/pedronaugusto/ladar#ee89780739434a8a1e1e7a9d94fceedc63ab0238",
-            .hash = "ladar-0.0.0-fezdEm6LAAAVMk4Fy0rdS7ToIaGTrwYCmj6X8a0Cm0an",
+            .url = "git+https://github.com/pedronaugusto/ladar?ref=v0.1.0#118198e79dcd02d4886e1134ab6e5388724c5cad",
+            .hash = "ladar-0.1.0-fezdEmGUAADsmWiaUnH-1rYzMSMUvuNen38bixu7EEFF",
         },
     },
     .dev_dependencies = .{
@@ -26,8 +26,8 @@
         },
 
         .ensign = .{
-            .url = "git+https://github.com/pedronaugusto/ensign#1e6ff3cbf3fa7fa6024ecc5e6e485a884af3b953",
-            .hash = "ensign-0.3.1-6eMTD4C3BQBEku2xvEmP1XX4xd4egoiEI4ztNGqx3foe",
+            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.4.0#b2eff8e12477646cb5080d4dc9046b9db01d4f6f",
+            .hash = "ensign-0.4.0-6eMTDzG9BQACQVy33mHglI09ENzUhYe8tWeRizNKAPky",
         },
     },
 }
