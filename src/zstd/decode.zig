@@ -955,6 +955,6 @@ inline fn readState(comptime State: type, r: *bits.Reader, log: u4) State {
 inline fn prefetchMatch(out: []u8, o: usize, prefix: usize, offset: usize) void {
     if (builtin.cpu.arch == .aarch64 and offset <= o - prefix) {
         aegis.assert.invariant(offset <= o, "offset <= o");
-        @prefetch(out.ptr + o - offset, .{});
+        @prefetch(&out[o - offset], .{});
     }
 }

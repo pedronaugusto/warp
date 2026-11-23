@@ -67,7 +67,7 @@ pub const MetaBlockSplit = struct {
 
 /// A slice's used part, the rest given back; on failure `s` is as it was.
 pub fn shrink(comptime T: type, gpa: Allocator, s: []T, n: usize) Allocator.Error![]T {
-    if (gpa.resize(s, n)) return s.ptr[0..n];
+    if (gpa.resize(s, n)) return s[0..n];
     const new = try gpa.alloc(T, n);
     @memcpy(new, s[0..n]);
     gpa.free(s);

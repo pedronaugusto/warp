@@ -3,6 +3,7 @@
 //! ThreadSanitizer.
 
 test {
+    _ = @import("adjacent.zig");
     _ = @import("checksum.zig");
     _ = @import("container.zig");
     _ = @import("gzip.zig");
@@ -14,6 +15,7 @@ test {
     _ = @import("match.zig");
     _ = @import("grow.zig");
     _ = @import("testing/contract_test.zig");
+    _ = @import("testing/adjacent_test.zig");
     _ = @import("deflate/block.zig");
     _ = @import("deflate/split.zig");
     _ = @import("testing/decode_test.zig");

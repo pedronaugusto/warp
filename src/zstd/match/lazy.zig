@@ -245,10 +245,10 @@ inline fn rowHash(comptime mls: u4, st: *const State, b: Bytes, i: usize) u32 {
 }
 
 inline fn prefetchRow(comptime rl: u3, st: *const State, row: usize) void {
-    @prefetch(st.hash.ptr + row, .{});
-    if (rl >= 5) @prefetch(st.hash.ptr + row + 16, .{});
-    @prefetch(st.tags.ptr + row, .{});
-    if (rl == 6) @prefetch(st.tags.ptr + row + 32, .{});
+    @prefetch(&st.hash[row], .{});
+    if (rl >= 5) @prefetch(&st.hash[row + 16], .{});
+    @prefetch(&st.tags[row], .{});
+    if (rl == 6) @prefetch(&st.tags[row + 32], .{});
 }
 
 /// The hashes of the next positions, rows fetched ahead.

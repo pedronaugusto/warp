@@ -8,6 +8,13 @@
       "reason": "the zlib C stream ABI: a C caller's z_stream hands over its opaque state and its input, output and header buffers as C pointers with their lengths beside them, which zlib's contract makes the caller's to keep true"
     },
     {
+      "file": "src/adjacent.zig",
+      "rules": [
+        "P007"
+      ],
+      "reason": "two slices that lie end to end in one buffer, joined into one: no checked slice spans both, so the join is made from their pointers, only once the second is known to start where the first ends"
+    },
+    {
       "file": "src/zstd/copy.zig",
       "rules": [
         "P007"

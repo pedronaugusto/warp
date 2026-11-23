@@ -8,6 +8,7 @@ const aegis = @import("aegis");
 const seq = @import("sequence.zig");
 const fast = @import("fast.zig");
 const hc = @import("hc.zig");
+const adjacent = @import("../adjacent.zig");
 const frame = @import("frame.zig");
 
 /// Private: the fast parser's table.
@@ -360,9 +361,9 @@ fn run(c: *Compressor, comptime directive: seq.Directive, in: []const u8, out: [
                     const reindex = c.table.kind != .large;
                     const start = c.table.begin(in.len, .large, true);
                     if (reindex) fast.loadFast(c.table, start, prev);
-                    if (prev.len > 0 and prev.ptr + prev.len == in.ptr) {
+                    const joined = if (prev.len > 0) adjacent.joined(prev, in) else null;
+                    if (joined) |src| {
                         // Just before the input in memory: one prefix.
-                        const src = prev.ptr[0 .. prev.len + in.len];
                         return fast.compress(.large, .table, directive, c.table, .{ .src = src, .begin = prev.len, .start = start - @as(u32, @intCast(prev.len)), .acceleration = accel }, out);
                     }
                     return fast.compress(.large, .table, directive, c.table, .{ .src = in, .start = start, .history = prev, .acceleration = accel }, out);

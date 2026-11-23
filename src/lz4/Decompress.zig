@@ -7,6 +7,7 @@ const Decompress = @This();
 const std = @import("std");
 const aegis = @import("aegis");
 const Io = std.Io;
+const adjacent = @import("../adjacent.zig");
 const block = @import("block.zig");
 const frame = @import("frame.zig");
 const decompress_ = @import("frames.zig");
@@ -135,7 +136,8 @@ pub fn init(buffer: []u8, options: Options) InitError!Decompress {
 }
 
 pub fn reset(s: *Decompress) void {
-    s.* = init(s.window.ptr[0 .. s.window.len + s.stage.len], s.options);
+    const buffer = adjacent.joined(s.window, s.stage) orelse aegis.assert.never("init cuts the window and the stage end to end from one buffer");
+    s.* = init(buffer, s.options);
 }
 
 /// Take input and give output as far as each allows.

@@ -13,6 +13,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const seq = @import("sequence.zig");
+const adjacent = @import("../adjacent.zig");
 
 const hash_log = 15;
 const mid_hash_log = hash_log - 1;
@@ -144,7 +145,8 @@ pub const Chains = struct {
         switch (prefix) {
             .none => c.begin(in.len, 0, false),
             .previous => |prev| {
-                if (prev.len > 0 and prev.ptr + prev.len == in.ptr and c.indexed_end <= rebase_at) {
+                const joined = if (prev.len > 0 and c.indexed_end <= rebase_at) adjacent.joined(prev, in) else null;
+                if (joined) |src| {
                     // Just before the input in memory: one prefix, as lz4
                     // continues a stream whose blocks lie end to end.
                     const first = c.indexed_end - @as(u32, @intCast(prev.len));
@@ -152,7 +154,7 @@ pub const Chains = struct {
                     c.low_limit = first;
                     c.next_to_update = @max(c.next_to_update, first);
                     c.indexed_end += @intCast(in.len);
-                    v.src = prev.ptr[0 .. prev.len + in.len];
+                    v.src = src;
                     v.begin = prev.len;
                 } else {
                     // Elsewhere: an external dictionary, its last positions
